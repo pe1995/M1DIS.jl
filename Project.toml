@@ -1,7 +1,16 @@
 name = "M1DIS"
 uuid = "7c40254d-53b2-4e6c-8b18-b05db208bd5f"
 authors = ["Philipp Eitner <eitner@mpia.de> and contributors"]
-version = "1.0.0-DEV"
+version = "1.1.0"
+
+[deps]
+DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
+DifferentialEquations = "0c46a032-eb83-5123-abaf-570d42b7fbaa"
+Interpolations = "a98d9a8b-a2ab-59e6-89dd-64a1c18fca59"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+MUST = "78ff202f-d08f-4a78-aa4d-c8e96fa3dcb9"
+Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
+TSO = "65303bd6-8358-47a4-91b9-056454446fac"
 
 [compat]
-julia = "1.6.7"
+TSO = "0.4.3"
