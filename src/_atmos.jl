@@ -1,14 +1,19 @@
-struct Atmos1D
-    τ
-    z 
-    T 
-    ρ 
-    P
-    F_rad
-    F_conv
-    dFconv_dT
+m1disBox(τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg) = begin
+    p = MUST.AtmosphericParameters(-99.0, teff, logg, Dict{Symbol,Float64}())
+    zz = reshape(z, 1, 1, :)
+    xx = zeros(size(zz))
+    yy = zeros(size(zz))
+    d = Dict(
+        :τ_ross=>reshape(τ, 1, 1, :),
+        :T=>reshape(T, 1, 1, :),
+        :d=>reshape(ρ, 1, 1, :),
+        :Pg=>reshape(P, 1, 1, :),
+        :F_rad=>reshape(F_rad, 1, 1, :),
+        :F_conv=>reshape(F_conv, 1, 1, :),
+        :dFconv_dT=>reshape(dFconv_dT, 1, 1, :)
+    )
+    MUST.Box(xx, yy, zz, d, p)
 end
-save_atmos(args...) = Atmos1D((deepcopy(a) for a in args)...)
 
 function initial_atmosphere(τ_grid; T_eff, logg, eos)
     # Gray atmosphere
@@ -36,7 +41,7 @@ end
 
 #= Iterative computation of the Atmosphere =#
 
-function evaluate_iteration!(result, iter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT; dt_tolerance_rel=0.001, flux_tolerance_rel=0.001, save_every=-1)
+function evaluate_iteration!(result, iter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg; dt_tolerance_rel=0.001, flux_tolerance_rel=0.001, save_every=-1)
 	store = save_every > 0 ? (iter%save_every == 0) : false
     F_total = F_rad .+ F_conv
 	flux_err_max = maximum(abs.(F_total[2:end-1] .- F_target)) / F_target
@@ -47,7 +52,7 @@ function evaluate_iteration!(result, iter, F_target, dT, τ, z, T, ρ, P, F_rad,
 
 	converged = (dt_err_max<dt_tolerance_rel) | (flux_err_max<flux_tolerance_rel)
 	if converged | store
-		append!(result, [save_atmos(τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT)])
+		append!(result, [m1disBox(τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg)])
 	end
 
 	converged
@@ -58,7 +63,7 @@ end
 
 Compute a M1DIS atmosphere iteratively based on the given binned opacity table, effective temperature and surface gravity.
 """
-function atmosphere(; T_eff, logg, eospath, τ=10 .^range(-5.0, 4, length=100), α_MLT=1.5, maxiter=200, kwargs...)	
+function atmosphere(; T_eff, logg, eospath, τ=10 .^range(-5.0, 4, length=100), α_MLT=1.5, maxiter=200, damping=0.4, kwargs...)	
 	eos = TSO.ExtendedEoS(eos=reload(SqEoS, joinpath(eospath, "eos_T.hdf5")))
 	opa = reload(SqOpacity, joinpath(eospath, "binned_opacities_T.hdf5"))
 	TSO.add_thermodynamics!(eos)
@@ -87,9 +92,9 @@ function atmosphere(; T_eff, logg, eospath, τ=10 .^range(-5.0, 4, length=100), 
 			T, P, ρ, τ, eos, exp10(logg), alpha_mlt=α_MLT
 		)
 
-		update_temperature_correction_atlas!(dT, F_rad, F_conv, T, τ, T_eff, damping=0.4)
+		update_temperature_correction_atlas!(dT, F_rad, F_conv, T, τ, T_eff, damping=damping)
 
-		converged = evaluate_iteration!(r, iter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT; kwargs...)
+		converged = evaluate_iteration!(r, iter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, T_eff, logg; kwargs...)
 		if converged 
 			@info "Atmosphere converged."
 			break
