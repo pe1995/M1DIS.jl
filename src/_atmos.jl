@@ -41,7 +41,7 @@ end
 
 #= Iterative computation of the Atmosphere =#
 
-function evaluate_iteration!(result, iter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg; dt_tolerance_rel=0.001, flux_tolerance_rel=0.001, save_every=-1)
+function evaluate_iteration!(result, iter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg; dt_tolerance_rel=0.0001, flux_tolerance_rel=0.001, save_every=-1)
 	store = save_every > 0 ? (iter%save_every == 0) : false
     F_total = F_rad .+ F_conv
 	flux_err_max = maximum(abs.(F_total[2:end-1] .- F_target)) / F_target
@@ -63,7 +63,7 @@ end
 
 Compute a M1DIS atmosphere iteratively based on the given binned opacity table, effective temperature and surface gravity.
 """
-function atmosphere(; T_eff, logg, eospath, τ=10 .^range(-5.0, 4, length=100), α_MLT=1.5, maxiter=200, damping=0.4, kwargs...)	
+function atmosphere(; T_eff, logg, eospath, τ=10 .^range(-5.0, 4, length=100), α_MLT=1.5, maxiter=500, damping=0.4, kwargs...)	
 	eos = TSO.ExtendedEoS(eos=reload(SqEoS, joinpath(eospath, "eos_T.hdf5")))
 	opa = reload(SqOpacity, joinpath(eospath, "binned_opacities_T.hdf5"))
 	TSO.add_thermodynamics!(eos)
