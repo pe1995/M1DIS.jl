@@ -63,9 +63,10 @@ end
 
 Compute a M1DIS atmosphere iteratively based on the given binned opacity table, effective temperature and surface gravity.
 """
-function atmosphere(; T_eff, logg, eospath, τ=10 .^range(-5.0, 4, length=100), α_MLT=1.5, maxiter=500, damping=0.4, kwargs...)	
-	eos = TSO.ExtendedEoS(eos=reload(SqEoS, joinpath(eospath, "eos_T.hdf5")))
-	opa = reload(SqOpacity, joinpath(eospath, "binned_opacities_T.hdf5"))
+function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=100), α_MLT=1.5, maxiter=500, damping=0.4, kwargs...)	
+	@assert !TSO.is_internal_energy(eos)
+	eos = TSO.ExtendedEoS(eos)
+	opa = opacity
 	TSO.add_thermodynamics!(eos)
 
 	T, ρ, P, z = initial_atmosphere(τ, T_eff=T_eff, logg=logg, eos=eos)
