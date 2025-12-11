@@ -41,7 +41,7 @@ end
 
 #= Iterative computation of the Atmosphere =#
 
-function evaluate_iteration!(result, iter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg; dt_tolerance_rel=0.0001, flux_tolerance_rel=0.001, save_every=-1)
+function evaluate_iteration!(result, iter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg; dt_tolerance_rel=0.001, flux_tolerance_rel=0.001, save_every=-1)
 	store = save_every > 0 ? (iter%save_every == 0) : false
     F_total = F_rad .+ F_conv
 	flux_err_max = maximum(abs.(F_total[2:end-1] .- F_target)) / F_target
@@ -63,7 +63,7 @@ end
 
 Compute a M1DIS atmosphere iteratively based on the given binned opacity table, effective temperature and surface gravity.
 """
-function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=100), α_MLT=1.5, maxiter=500, damping=0.4, kwargs...)	
+function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=100), α_MLT=1.5, maxiter=500, damping=0.4, λ_weights=nothing, kwargs...)	
 	eos = if typeof(eos) <: TSO.ExtendedEoS
 		@assert !TSO.is_internal_energy(@axed(eos.eos))
 		eos
@@ -74,7 +74,14 @@ function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=1
 
 		eos
 	end
-	opa = opacity
+	opa = if typeof(opacity) <: TSO.BinnedOpacities
+		if isnothing(λ_weights)
+			@warn "You passed a binned opacity object. If you are doing this because the table you are using is not actually binned, remember to pass λ_weights!"
+		end
+		opacity.opacity
+	else
+		opacity
+	end
 
 	T, ρ, P, z = initial_atmosphere(τ, T_eff=T_eff, logg=logg, eos=eos)
 	J, F_rad, g_rad = similar(T), similar(T), similar(T)
@@ -91,8 +98,8 @@ function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=1
 	
 	r = []
 	for iter in 1:maxiter
-		update_radiation_z_longchar!(
-			J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa
+		update_radiation_z_longchar_dagger!(
+			J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights
 		)
 
 		update_mixing_length!(

@@ -1,11 +1,11 @@
 [dependencies]
 cmake = "*"
 ipython = "*"
-openssl = ">=3, <3.6, >=3, <3.6"
+openssl = ">=3, <3.6"
 tqdm = "*"
 pandas = "*"
 dask = "*"
-matplotlib = ">=1"
+matplotlib = "*"
 imageio = "*"
 numba = "*"
 f90nml = "*"
@@ -19,7 +19,7 @@ scipy = "*"
     [dependencies.python]
     channel = "conda-forge"
     build = "*cp*"
-    version = ">=3.8,<4, >=3.9,<4"
+    version = ">=3.10,<3.14"
 
 [project]
 name = ".CondaPkg"

@@ -2,10 +2,10 @@ module M1DIS
 
 using MUST
 using TSO
-using Makie
 using DelimitedFiles
 using DifferentialEquations
 using Interpolations
+using Dagger
 
 include("_constants.jl")
 include("_boundary.jl")
