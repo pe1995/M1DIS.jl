@@ -16,4 +16,4 @@ MUST = {rev = "main", url = "https://github.com/pe1995/MUST.jl"}
 TSO = {rev = "main", url = "https://github.com/pe1995/TSO.jl"}
 
 [compat]
-DifferentialEquations = "7.15.0"
+DifferentialEquations = "7.0 - 7.15"
