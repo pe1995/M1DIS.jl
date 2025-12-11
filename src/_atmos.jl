@@ -1,5 +1,5 @@
 m1disBox(τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg) = begin
-    p = MUST.AtmosphericParameters(-99.0, teff, logg, Dict{Symbol,Float64}())
+    p = MUST.AtmosphericParameters(-99.0, Base.convert(Float64, teff), Base.convert(Float64, logg), Dict{Symbol,Float64}())
     zz = reshape(z, 1, 1, :)
     xx = zeros(size(zz))
     yy = zeros(size(zz))

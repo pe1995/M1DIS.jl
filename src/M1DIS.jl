@@ -14,4 +14,6 @@ include("_RT.jl")
 include("_MLT.jl")
 include("_atmos.jl")
 
+export atmosphere
+
 end
