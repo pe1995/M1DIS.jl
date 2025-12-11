@@ -14,3 +14,8 @@ TSO = "65303bd6-8358-47a4-91b9-056454446fac"
 
 [compat]
 TSO = "0.4.3"
+
+[sources]
+TSO = {url = "https://github.com/pe1995/TSO.jl"}
+MUST = {url = "https://github.com/pe1995/MUST.jl"}
+
