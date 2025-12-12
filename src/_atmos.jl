@@ -74,13 +74,16 @@ function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=1
 
 		eos
 	end
-	opa = if typeof(opacity) <: TSO.BinnedOpacities
-		if isnothing(λ_weights)
-			@warn "You passed a binned opacity object. If you are doing this because the table you are using is not actually binned, remember to pass λ_weights!"
+	opa, λ_weights = if typeof(opacity) <: TSO.BinnedOpacities
+		w = if isnothing(λ_weights)
+			@warn "You passed a binned opacity object. If you are doing this because the table you are using is not actually binned, remember to pass λ_weights! Assuming midpoint from table."
+			TSO.ω_midpoint(opacity.opacities)
+		else
+			λ_weights
 		end
-		opacity.opacity
+		opacity.opacities, w
 	else
-		opacity
+		opacity, λ_weights
 	end
 
 	T, ρ, P, z = initial_atmosphere(τ, T_eff=T_eff, logg=logg, eos=eos)

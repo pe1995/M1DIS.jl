@@ -68,7 +68,7 @@ function update_radiation_z_longchar!(J, F, g_rad; T, ρ, z, eos, opa,
 				κ = k_cell[icell]
 				Δτ = κ * Δ / abs(μ) 
 				
-				trans = if Δτ < 1e-14
+				trans = if Δτ < 1e-6
 					1.0 - Δτ 
 				else
 					exp(-Δτ)
@@ -87,7 +87,7 @@ function update_radiation_z_longchar!(J, F, g_rad; T, ρ, z, eos, opa,
 				Δ = Δz[icell]
 				κ = k_cell[icell]
 				Δτ = κ * Δ / abs(μ)
-				trans = if Δτ < 1e-14
+				trans = if Δτ < 1e-6
 					1.0 - Δτ
 				else
 					exp(-Δτ)
@@ -163,7 +163,7 @@ function _radiation_chunk_kernel(bin_range, T, ρ, z, eos, opa,
                 Δ = Δz[icell]
                 κ = k_cell[icell]
                 Δτ = κ * Δ / abs(μ)
-                trans = (Δτ < 1e-14) ? (1.0 - Δτ) : exp(-Δτ)
+                trans = (Δτ < 1e-6) ? (1.0 - Δτ) : exp(-Δτ)
                 
                 I_in = I_up[icell+1]
                 S_c  = S_cell[icell]
@@ -178,7 +178,7 @@ function _radiation_chunk_kernel(bin_range, T, ρ, z, eos, opa,
                 Δ = Δz[icell]
                 κ = k_cell[icell]
                 Δτ = κ * Δ / abs(μ)
-                trans = (Δτ < 1e-14) ? (1.0 - Δτ) : exp(-Δτ)
+                trans = (Δτ < 1e-6) ? (1.0 - Δτ) : exp(-Δτ)
 
                 I_in = I_down[icell]
                 S_c  = S_cell[icell]
@@ -227,7 +227,7 @@ function update_radiation_z_longchar_dagger!(J, F, g_rad; T, ρ, z, eos, opa,
     bin_weights = isnothing(λ_weights) ? ones(nbin) : λ_weights
 
     n_workers = Base.Threads.nthreads() 
-    chunk_size = max(1, cld(nbin, n_workers * 4))
+    chunk_size = max(1, cld(nbin, n_workers))
     chunks = Iterators.partition(1:nbin, chunk_size)
 
     # 3. Spawn Tasks (Map)
