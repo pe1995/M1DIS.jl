@@ -230,7 +230,6 @@ function update_radiation_z_longchar_dagger!(J, F, g_rad; T, ρ, z, eos, opa,
     chunk_size = max(1, cld(nbin, n_workers))
     chunks = Iterators.partition(1:nbin, chunk_size)
 
-    # 3. Spawn Tasks (Map)
     tasks = map(chunks) do range
         Dagger.@spawn _radiation_chunk_kernel(
             range, T, ρ, z, eos, opa, 
