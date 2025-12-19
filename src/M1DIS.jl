@@ -6,6 +6,7 @@ using DelimitedFiles
 using DifferentialEquations
 using Interpolations
 using Dagger
+using FastGaussQuadrature
 
 include("_constants.jl")
 include("_boundary.jl")

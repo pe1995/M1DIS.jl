@@ -1,17 +1,23 @@
-m1disBox(τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg) = begin
+m1disBox(τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, dT, teff, logg, eos) = begin
     p = MUST.AtmosphericParameters(-99.0, Base.convert(Float64, teff), Base.convert(Float64, logg), Dict{Symbol,Float64}())
-    zz = reshape(z, 1, 1, :)
+    zz = reshape(z, 1, 1, :) |> deepcopy
     xx = zeros(size(zz))
     yy = zeros(size(zz))
+
+	τ_new = deepcopy(τ)
+	#update_τ_grid!(τ_new; T=T, ρ=ρ, z=z, eos=eos.eos)
+
     d = Dict(
-        :τ_ross=>reshape(τ, 1, 1, :),
-        :T=>reshape(T, 1, 1, :),
-        :d=>reshape(ρ, 1, 1, :),
-        :Pg=>reshape(P, 1, 1, :),
-        :F_rad=>reshape(F_rad, 1, 1, :),
-        :F_conv=>reshape(F_conv, 1, 1, :),
-        :dFconv_dT=>reshape(dFconv_dT, 1, 1, :)
+        :τ_ross=>reshape(τ_new, 1, 1, :) |> deepcopy,
+        :T=>reshape(T, 1, 1, :) |> deepcopy,
+        :d=>reshape(ρ, 1, 1, :) |> deepcopy,
+        :Pg=>reshape(P, 1, 1, :) |> deepcopy,
+        :F_rad=>reshape(F_rad, 1, 1, :) |> deepcopy,
+        :F_conv=>reshape(F_conv, 1, 1, :) |> deepcopy,
+        :dFconv_dT=>reshape(dFconv_dT, 1, 1, :) |> deepcopy,
+		:dT=>reshape(dT, 1, 1, :) |> deepcopy,
     )
+
     MUST.Box(xx, yy, zz, d, p)
 end
 
@@ -41,8 +47,8 @@ end
 
 #= Iterative computation of the Atmosphere =#
 
-function evaluate_iteration!(result, iter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg; dt_tolerance_rel=0.001, flux_tolerance_rel=0.001, save_every=-1)
-	store = save_every > 0 ? (iter%save_every == 0) : false
+function evaluate_iteration!(result, iter, maxiter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg, eos; dt_tolerance_rel=0.001, flux_tolerance_rel=0.001, save_every=-1)
+	store = save_every > 0 ? ((iter%save_every == 0) | (iter == maxiter)) : false
     F_total = F_rad .+ F_conv
 	flux_err_max = maximum(abs.(F_total[2:end-1] .- F_target)) / F_target
 	dt_err_max = maximum(abs.(dT[2:end-1] ./ T[2:end-1]))
@@ -52,7 +58,7 @@ function evaluate_iteration!(result, iter, F_target, dT, τ, z, T, ρ, P, F_rad,
 
 	converged = (dt_err_max<dt_tolerance_rel) | (flux_err_max<flux_tolerance_rel)
 	if converged | store
-		append!(result, [m1disBox(τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg)])
+		append!(result, [m1disBox(τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, dT, teff, logg, eos)])
 	end
 
 	converged
@@ -63,7 +69,7 @@ end
 
 Compute a M1DIS atmosphere iteratively based on the given binned opacity table, effective temperature and surface gravity.
 """
-function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=100), α_MLT=1.5, maxiter=500, damping=0.4, λ_weights=nothing, kwargs...)	
+function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=100), α_MLT=1.5, maxiter=500, damping=0.4, λ_weights=nothing, T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, use_threads=false, mafags_mlt=false, kwargs...)	
 	eos = if typeof(eos) <: TSO.ExtendedEoS
 		@assert !TSO.is_internal_energy(@axed(eos.eos))
 		eos
@@ -92,27 +98,43 @@ function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=1
     dFconv_dT = similar(T) 
 	dT = similar(T)
 
-	σ_SB = 5.670374e-5
+	#σ_SB = 5.670374e-5
     F_target = σ_SB * T_eff^4
 	#nf = count(log10.(τ) .> 3.)
+
+	# check for irradiation and compute it
+	Irr = isnothing(T_irradiation) ? nothing : irradiate(eos, opa, T_irradiation, R_irradiation, d_irradiation)
 
     @info "============================== M1DIS ===================================="
 	@info "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
 	
 	r = []
 	for iter in 1:maxiter
-		update_radiation_z_longchar_dagger!(
-			J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights
-		)
+		#=if use_threads
+			update_radiation_z_longchar_dagger!(
+				J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights, irradiation=Irr
+			)
+		else=#
+			update_radiation_z_longchar!(
+				J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights
+			)
+		#end
 
-		update_mixing_length!(
-			F_conv, v_conv, g_turb, dFconv_dT,
-			T, P, ρ, τ, eos, exp10(logg), alpha_mlt=α_MLT
-		)
+		if !mafags_mlt
+			update_mixing_length!(
+				F_conv, v_conv, g_turb, dFconv_dT,
+				T, P, ρ, τ, eos, exp10(logg), alpha_mlt=α_MLT
+			)
+		else
+			update_mixing_length_mafags!(
+				F_conv, v_conv, g_turb, dFconv_dT,
+				T, P, ρ, τ, eos, exp10(logg), alpha_mlt=α_MLT, Teff=T_eff
+			)
+		end
 
 		update_temperature_correction_atlas!(dT, F_rad, F_conv, T, τ, T_eff, damping=damping)
 
-		converged = evaluate_iteration!(r, iter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, T_eff, logg; kwargs...)
+		converged = evaluate_iteration!(r, iter, maxiter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, T_eff, logg, eos; kwargs...)
 		if converged 
 			@info "Atmosphere converged."
 			break

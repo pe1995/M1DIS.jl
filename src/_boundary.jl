@@ -46,3 +46,10 @@ function force_adiabatic_bottom!(T, P, eos_extended; n_force=5)
         end
     end
 end
+
+function irradiate(eos, opa, T_irradiation, R_irradiation, d_irradiation)
+    rho_min, rho_max = TSO.limits(eos.eos, 2)
+    rho_irr = exp((rho_max + rho_min) / 2)
+    S = lookup(eos.eos, opa, :src, Float64(log(rho_irr)), Float64(log(T_irradiation)))
+    S .* (R_irradiation ./ d_irradiation) .^2 #.* π
+end
