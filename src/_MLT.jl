@@ -13,16 +13,16 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
 
     lnrho = log.(ρ)
     lnT = log.(T)
-    
+
     # Pre-calculated thermodynamics
     κ_ross = exp.(TSO.extended_lookup(eos_extended, :lnRoss, lnrho, lnT))
     Cp_arr = TSO.extended_lookup(eos_extended, :cₚ, lnrho, lnT)
-    Q_arr  = TSO.extended_lookup(eos_extended, :Q, lnrho, lnT)
+    Q_arr = TSO.extended_lookup(eos_extended, :Q, lnrho, lnT)
     ∇ₐ_arr = TSO.extended_lookup(eos_extended, :∇ₐ, lnrho, lnT)
     χr_arr = TSO.extended_lookup(eos_extended, :χᵨ, lnrho, lnT)
     χt_arr = TSO.extended_lookup(eos_extended, :χₜ, lnrho, lnT)
-    
-    P_rad = (4.0 * σ_SB / (3.0 * c_light)) .* (T.^4)
+
+    P_rad = (4.0 * σ_SB / (3.0 * c_light)) .* (T .^ 4)
     P_tot = P_gas .+ P_rad
 
     # Calculate actual gradient
@@ -40,44 +40,46 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
         super_adi = ∇_actual[n] - ∇_ad
 
         if super_adi > 1e-6
-            Γ₁_approx = χr_arr[n] / (1 - χt_arr[n]*∇_ad)
+            Γ₁_approx = χr_arr[n] / (1 - χt_arr[n] * ∇_ad)
             c_sound = sqrt(Γ₁_approx * P_tot[n] / ρ[n])
-            
+
             Hp = P_tot[n] / (ρ[n] * g_surf)
-            Q  = Q_arr[n]
+            Q = Q_arr[n]
             Cp = Cp_arr[n]
-            κ  = κ_ross[n]
-            
+            κ = κ_ross[n]
+
             v_scale = sqrt(g_surf * Q * Hp / 8.0)
-            
-            numerator   = 24.0 * sqrt(2.0) * σ_SB * T[n]^3
+
+            numerator = 24.0 * sqrt(2.0) * σ_SB * T[n]^3
             denominator = κ * ρ[n] * Hp * alpha_mlt * ρ[n] * Cp * v_scale
             U = numerator / denominator
-            
+
             # Solve cubic equation: 2Uξ³ + ξ² + Uξ - super_adi = 0
             xi = 0.5
             for _ in 1:200
-                f_val = 2.0*U*xi^3 + xi^2 + U*xi - super_adi
-                df_dz = 6.0*U*xi^2 + 2.0*xi + U
+                f_val = 2.0 * U * xi^3 + xi^2 + U * xi - super_adi
+                df_dz = 6.0 * U * xi^2 + 2.0 * xi + U
                 dxi = f_val / df_dz
                 xi -= dxi
-                if abs(dxi) < 1e-6 * xi; break; end
+                if abs(dxi) < 1e-6 * xi
+                    break
+                end
             end
-            
+
             xi = max(xi, 1e-9)
             v_real = v_scale * xi
-            
+
             # Sound speed limit
             if v_real > c_sound
                 v_real = c_sound
                 xi = c_sound / v_scale
             end
-            
-            # Convective Flux
-            F_conv[n] = (9.0/8.0) * (ρ[n] * Cp * T[n]) * v_scale * xi^3
 
-            df_dxi = 6.0*U*xi^2 + 2.0*xi + U  
-        	dxi_dGrad = 1.0 / df_dxi
+            # Convective Flux
+            F_conv[n] = (9.0 / 8.0) * (ρ[n] * Cp * T[n]) * v_scale * xi^3
+
+            df_dxi = 6.0 * U * xi^2 + 2.0 * xi + U
+            dxi_dGrad = 1.0 / df_dxi
             dF_dGrad = F_conv[n] * (3.0 / xi) * dxi_dGrad
             dGrad_dT = ∇_actual[n] / T[n]
             dFconv_dT[n] = (F_conv[n] / T[n]) + (dF_dGrad * dGrad_dT)
@@ -92,10 +94,10 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
         end
     end
 
-	#=for n in 2:n_depth-1
-    	dFconv_dT[n] = (F_conv[n+1] - F_conv[n-1]) / (T[n+1] - T[n-1])
-	end=#
-	
+    #=for n in 2:n_depth-1
+        	dFconv_dT[n] = (F_conv[n+1] - F_conv[n-1]) / (T[n+1] - T[n-1])
+    	end=#
+
     for i in 2:n_depth-1
         grad_P_tau = (P_turb_arr[i+1] - P_turb_arr[i-1]) / (τ_ross[i+1] - τ_ross[i-1])
         g_turb[i] = κ_ross[i] * grad_P_tau
@@ -113,34 +115,34 @@ function update_mixing_length_mafags!(F_conv, v_conv, g_turb, dFconv_dT, T, P_ga
     # ------------------------
 
     n_depth = length(T)
-    
+
     # Reset outputs
     F_conv .= 0.0
     v_conv .= 0.0
     g_turb .= 0.0
     dFconv_dT .= 0.0
     P_turb_arr = zeros(n_depth)
-    
+
     lnrho = log.(ρ)
-    lnT   = log.(T)
-    
+    lnT = log.(T)
+
     # Thermodynamics
     κ_ross = exp.(TSO.extended_lookup(eos_extended, :lnRoss, lnrho, lnT))
     Cp_arr = TSO.extended_lookup(eos_extended, :cₚ, lnrho, lnT)
-    Q_arr  = TSO.extended_lookup(eos_extended, :Q, lnrho, lnT)
+    Q_arr = TSO.extended_lookup(eos_extended, :Q, lnrho, lnT)
     ∇ₐ_arr = TSO.extended_lookup(eos_extended, :∇ₐ, lnrho, lnT)
     χt_arr = TSO.extended_lookup(eos_extended, :χₜ, lnrho, lnT)
     χr_arr = TSO.extended_lookup(eos_extended, :χᵨ, lnrho, lnT)
 
-    FT = σ_SB * Teff^4 
+    FT = σ_SB * Teff^4
     HTOT = FT / (4.0 * π)
-    P_rad = (4.0 * σ_SB / (3.0 * c_light)) .* (T.^4)
+    P_rad = (4.0 * σ_SB / (3.0 * c_light)) .* (T .^ 4)
     P_tot = P_gas .+ P_rad
 
     # --- 1. Stable Gradient Calculation ---
     # Use Backward Difference (n, n-1) to couple grid points and eliminate spikes.
     GU_arr = zeros(n_depth)
-    dlnP_step = zeros(n_depth) 
+    dlnP_step = zeros(n_depth)
 
     @inbounds for n in 2:n_depth
         dlnT = log(T[n] / T[n-1])
@@ -160,30 +162,30 @@ function update_mixing_length_mafags!(F_conv, v_conv, g_turb, dFconv_dT, T, P_ga
 
     # --- Loop: Depths 1 to N ---
     @inbounds for n in 1:n_depth
-        GU   = GU_arr[n]
-        GAD  = ∇ₐ_arr[n]
+        GU = GU_arr[n]
+        GAD = ∇ₐ_arr[n]
         DELN = GU - GAD
-        
+
         if DELN > 1e-6
             # --- MAFAGS Logic ---
             TAUE = alpha_mlt * P_tot[n] * κ_ross[n] / g_surf
             TAU0 = Y1 * TAUE + 1.0 / TAUE
-            Hp   = P_tot[n] / (ρ[n] * g_surf)
-            
+            Hp = P_tot[n] / (ρ[n] * g_surf)
+
             # Efficiency factor A
             A_denom = max(GAD * FT, 1e-20) # Safeguard against GAD=0
-            A_temp  = alpha_mlt * TAU0 * P_tot[n] * Q_arr[n] / A_denom
-            A       = A0 * g_surf * Q_arr[n] * Hp * A_temp^2
-            
+            A_temp = alpha_mlt * TAU0 * P_tot[n] * Q_arr[n] / A_denom
+            A = A0 * g_surf * Q_arr[n] * Hp * A_temp^2
+
             # Solve Quadratic: Y^2 + 2Y - 4*A*DELN = 0
             Y = sqrt(1.0 + 4.0 * A * DELN) - 1.0
-            
+
             # Flux & Velocity
             FCN = 0.5 * alpha_mlt * FT * Y^3 / (A * TAU0)
-            VC  = (4.0 * π) * FT * Y / (ρ[n] * T[n] * Cp_arr[n] * TAU0)
-            
+            VC = (4.0 * π) * FT * Y / (ρ[n] * T[n] * Cp_arr[n] * TAU0)
+
             # --- Sound Speed Limit ---
-            Γ₁ = χr_arr[n] / (1.0 - χt_arr[n]*GAD)
+            Γ₁ = χr_arr[n] / (1.0 - χt_arr[n] * GAD)
             c_sound = sqrt(Γ₁ * P_tot[n] / ρ[n])
 
             is_limited = false
@@ -197,9 +199,9 @@ function update_mixing_length_mafags!(F_conv, v_conv, g_turb, dFconv_dT, T, P_ga
 
             F_conv[n] = FCN
             v_conv[n] = VC
-            
+
             # === ROBUST JACOBIAN (Fixes Convergence) ===
-            
+
             # 1. Gradient Contribution (Dominant Term)
             # This tells the solver that increasing T increases Flux dramatically.
             if is_limited
@@ -207,17 +209,17 @@ function update_mixing_length_mafags!(F_conv, v_conv, g_turb, dFconv_dT, T, P_ga
             else
                 Y_safe = max(Y, 1e-9)
                 # Derived from Y(Y+2) = 4*A*DELN
-                dY_dDELN = (2.0 * A) / (Y_safe + 1.0) 
-                
+                dY_dDELN = (2.0 * A) / (Y_safe + 1.0)
+
                 # F ~ Y^3 => dF/dY = 3*F/Y
                 dF_dGrad = FCN * (3.0 / Y_safe) * dY_dDELN
             end
-            
+
             # Exact Geometric Derivative: ∂∇/∂T = 1 / (T * dlnP)
             # This is critical. Using GU/T underestimates this by ~1/dlnP (~10-100x).
             # We use abs(dlnP) to ensure the direction is correct (Flux increases with T).
             dGrad_dT = 1.0 / (T[n] * max(abs(dlnP_step[n]), 1e-9))
-            
+
             term_grad = dF_dGrad * dGrad_dT
 
             # 2. Thermodynamic Contribution (Approximate)
@@ -233,19 +235,20 @@ function update_mixing_length_mafags!(F_conv, v_conv, g_turb, dFconv_dT, T, P_ga
             dFconv_dT[n] = 0.0
         end
     end
-    
+
     # Boundary Fallback
     if dFconv_dT[n_depth] == 0.0 && F_conv[n_depth] > 0
-         dFconv_dT[n_depth] = 4.0 * F_conv[n_depth] / T[n_depth]
+        dFconv_dT[n_depth] = 4.0 * F_conv[n_depth] / T[n_depth]
     end
 
     # Turbulent Pressure Gradient
-    P_turb_arr .= 0.5 .* ρ .* v_conv.^2
+    P_turb_arr .= 0.5 .* ρ .* v_conv .^ 2
     @inbounds for i in 2:n_depth-1
         grad_P_tau = (P_turb_arr[i+1] - P_turb_arr[i-1]) / (τ_ross[i+1] - τ_ross[i-1])
         g_turb[i] = κ_ross[i] * grad_P_tau
     end
-    g_turb[1] = g_turb[2]; g_turb[end] = g_turb[end-1]
+    g_turb[1] = g_turb[2]
+    g_turb[end] = g_turb[end-1]
 end
 
 
@@ -269,20 +272,20 @@ function update_temperature_correction_mafags!(dT, F_rad, F_conv, dFconv_dT, T, 
         # --- STABILITY FIX 1: Analytic Radiative Derivative ---
         # The approximation 4*F/T is unstable. 4*σ*T^3 is always positive and robust.
         deriv_rad = 4.0 * σ_SB * Temp^3
-        
+
         # Convection derivative (from MLT)
         deriv_conv = max(dFconv_dT[k], min_deriv)
 
         Jacobian = deriv_rad + deriv_conv
-        
+
         Flux_Error = F_target - (F_rad[k] + F_conv[k])
-        
+
         # Calculate Correction
         step = Flux_Error / Jacobian
 
         # --- STABILITY FIX 2: Absolute Clamping ---
         # Prevent wild oscillations by limiting step to 5% of T or 200K, whichever is smaller.
-        limit = min(max_step_frac * Temp, 200.0) 
+        limit = min(max_step_frac * Temp, 200.0)
         dT[k] = clamp(step, -limit, limit)
     end
 end
@@ -292,7 +295,7 @@ end
     F_tot = F_rad .+ F_conv
     ratio = (F_tot ./ F_target)
     ratio .= clamp.(ratio, 0.5, 2.0)
-	
+
     τ_new = similar(τ_grid)
     τ_new[1] = τ_grid[1] * ratio[1]
     @inbounds for k in 2:length(τ_grid)
@@ -304,7 +307,7 @@ end
     interp = linear_interpolation(log.(τ_new), log.(T), extrapolation_bc=Line())
     log_T_new = interp(log.(τ_grid))
     T_new = exp.(log_T_new)
-    
+
     flux_ratio = abs.(F_tot ./ F_target)
     corr_factor = (1.0 ./ flux_ratio) .^0.25
     blend = exp.(-0.1*τ_grid) 
@@ -317,12 +320,10 @@ end=#
 function update_temperature_correction_atlas!(dT, F_rad, F_conv, dFconv_dT, T, τ_grid, Teff; damping=0.5)
     F_target = σ_SB * Teff^4
     F_tot = F_rad .+ F_conv
-    
-    # --- Part 1: Unsold-Lucy (Standard) ---
-    # Keeps the smooth structure you verified in the second image.
+
     ratio = (F_tot ./ F_target)
     ratio .= clamp.(ratio, 0.5, 2.0)
-	
+
     τ_new = similar(τ_grid)
     τ_new[1] = τ_grid[1] * ratio[1]
     @inbounds for k in 2:length(τ_grid)
@@ -334,116 +335,16 @@ function update_temperature_correction_atlas!(dT, F_rad, F_conv, dFconv_dT, T, �
     interp = linear_interpolation(log.(τ_new), log.(T), extrapolation_bc=Line())
     log_T_new = interp(log.(τ_grid))
     T_new = exp.(log_T_new)
-    
-    # --- Part 2: Surface Dilution (The 20K Fix) ---
-    # We use the LOCAL ratio (to avoid the bump) but the BROADER blend (to fix the offset).
+
     local_ratio = F_tot ./ F_target
-    local_ratio = clamp.(local_ratio, 0.8, 1.2)
-    corr_factor_local = (1.0 ./ local_ratio) .^0.25
-    
-    # exp(-0.8*τ) ensures we correct the flux-forming layers (τ~1)
-    blend = exp.(-0.8 .* τ_grid) 
+    corr_factor_local = (1.0 ./ local_ratio) .^ 0.25
+    blend = exp.(-0.8 .* τ_grid)
     T_new .= T_new .* (1.0 .+ blend .* (corr_factor_local .- 1.0))
-
-    # --- Part 3: CONVECTIVE THROTTLING (The Convergence Fix) ---
-    # Calculate the raw Atlas step
     dT_raw = (T_new .- T)
-    
-    @inbounds for k in 1:length(dT)
-        # 1. Radiative Derivative (Analytic: 4σT^3)
-        deriv_rad = 4.0 * σ_SB * T[k]^3
-        
-        # 2. Total Derivative
-        # If convection is active, dFconv/dT is huge.
-        deriv_total = deriv_rad + dFconv_dT[k]
-        
-        # 3. Throttling Factor
-        # Ratio of "Radiative Sensitivity" to "Total Sensitivity"
-        # If Convection is 0, factor = 1.0 (Full Atlas Step)
-        # If Convection is stiff, factor -> 0.05 (Small, stable step)
-        factor = deriv_rad / max(deriv_total, 1e-20)
-        
-        # Apply damped, throttled correction
-        damp_depth = (1.0 + (damping - 1.0) * exp(-1.0 / τ_grid[k]))
-        dT[k] = damp_depth * factor * dT_raw[k]
-    end
-end
 
-
-"""
-    solve_energy_eq_tridiagonal!(dT, F_rad, F_conv, dFconv_dT, T, Teff)
-
-Solves the linearized energy equation considering the coupling between depths
-introduced by the convective gradient.
-System: -A_k * dT_{k-1} + B_k * dT_k - C_k * dT_{k+1} = Error_k
-"""
-function solve_energy_eq_tridiagonal!(dT, F_rad, F_conv, dFconv_dT, T, Teff; max_step_frac=0.1)
-    N = length(T)
-    F_target = σ_SB * Teff^4
-    
-    # Vectors for Tridiagonal Matrix algorithm (Thomas Algorithm)
-    # Lower diagonal (a), Main diagonal (b), Upper diagonal (c)
-    a = zeros(N) 
-    b = zeros(N)
-    c = zeros(N)
-    rhs = zeros(N) # Right hand side (Flux Error)
-
-    @inbounds for k in 1:N
-        # 1. RHS: The Flux Error to eliminate
-        rhs[k] = F_target - (F_rad[k] + F_conv[k])
-
-        # 2. Main Diagonal (Sensitivity of Local Flux to Local T)
-        # Radiative part (Analytic approx) + Convective part (Calculated by MLT)
-        deriv_rad = 4.0 * σ_SB * T[k]^3
-        b[k] = deriv_rad + dFconv_dT[k]
-
-        # 3. Off-Diagonals (Sensitivity of Convective Flux to Neighbors)
-        # We estimate these based on the structure of the gradient:
-        # Backward Diff (MAFAGS): Grad ~ ln(T_k) - ln(T_{k-1})
-        # Sensitivity to T_{k-1} is roughly equal and opposite to T_k, scaled by T.
-        
-        # Only compute coupling if convection is active
-        if F_conv[k] > 0.0
-            # D_conv is the gradient-driven part of the derivative.
-            # (Approximated from the total derivative, assuming thermodynamic part is small)
-            D_conv = dFconv_dT[k] 
-
-            if k > 1
-                # Sensitivity to T_{k-1}
-                # d(Grad)/dT_{k-1} ≈ - (T_k / T_{k-1}) * d(Grad)/dT_k
-                a[k] = - (T[k] / T[k-1]) * D_conv
-            end
-            
-            # Note: For Backward Difference (MAFAGS default), dependence on T_{k+1} is zero.
-            # If you were using Central Difference, you would add c[k] here.
-            c[k] = 0.0 
-        end
-    end
-
-    # 4. Boundary Conditions (keep T fixed at deep bottom if needed, or simple flux conservation)
-    # Top: Depends only on itself (already handled)
-    # Bottom: Assume adiabatic/fixed gradient or just simple diagonal
-    
-    # 5. Solve Tridiagonal System (Thomas Algorithm)
-    # Forward Elimination
-    c[1] = c[1] / b[1]
-    rhs[1] = rhs[1] / b[1]
-    
-    for i in 2:N
-        denom = b[i] - a[i] * c[i-1]
-        c[i] = c[i] / denom
-        rhs[i] = (rhs[i] - a[i] * rhs[i-1]) / denom
-    end
-
-    # Backward Substitution
-    dT[N] = rhs[N]
-    for i in (N-1):-1:1
-        dT[i] = rhs[i] - c[i] * dT[i+1]
-    end
-
-    # 6. Apply Clamping (Safety)
-    for k in 1:N
-        limit = max_step_frac * T[k]
-        dT[k] = clamp(dT[k], -limit, limit)
-    end
-end
+    deriv_rad = 4.0 * σ_SB * T.^3
+    deriv_total = deriv_rad .+ dFconv_dT
+    factor = deriv_rad ./ max(deriv_total, 1e-20)
+    damp_depth = (1.0 .+ (damping .- 1.0) .* exp.(-1.0 ./ τ_grid))
+    dT .= damp_depth .* factor .* dT_raw
+end 
