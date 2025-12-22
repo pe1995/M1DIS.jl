@@ -240,23 +240,15 @@ function update_temperature_correction_mafags!(dT, F_rad, F_conv, dFconv_dT, T, 
 
     @inbounds for k in 1:n_depth
         Temp = T[k]
-
-        # --- STABILITY FIX 1: Analytic Radiative Derivative ---
-        # The approximation 4*F/T is unstable. 4*σ*T^3 is always positive and robust.
         deriv_rad = 4.0 * σ_SB * Temp^3
-
-        # Convection derivative (from MLT)
         deriv_conv = max(dFconv_dT[k], min_deriv)
 
         Jacobian = deriv_rad + deriv_conv
 
         Flux_Error = F_target - (F_rad[k] + F_conv[k])
 
-        # Calculate Correction
         step = Flux_Error / Jacobian
 
-        # --- STABILITY FIX 2: Absolute Clamping ---
-        # Prevent wild oscillations by limiting step to 5% of T or 200K, whichever is smaller.
         limit = min(max_step_frac * Temp, 200.0)
         dT[k] = clamp(step, -limit, limit)
     end
