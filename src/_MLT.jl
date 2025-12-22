@@ -259,33 +259,35 @@ end
 
 #= Temperature structure adjustment =#
 
-function update_temperature_correction_mafags!(dT, F_rad, F_conv, dFconv_dT, T, Teff; max_step_frac=0.08, min_deriv=1e-12)
+function update_temperature_correction_mafags!(dT, F_rad, F_conv, dFconv_dT, T, Teff; max_step_frac=0.05, min_deriv=1e-12)
     n_depth = length(T)
     F_target = σ_SB * Teff^4
 
-    for k in 1:n_depth
+    @inbounds for k in 1:n_depth
         Temp = T[k]
 
-        # Radiation derivative (approx 4F/T)
-        deriv_rad = max(4.0 * F_rad[k] / Temp, min_deriv)
+        # --- STABILITY FIX 1: Analytic Radiative Derivative ---
+        # The approximation 4*F/T is unstable. 4*σ*T^3 is always positive and robust.
+        deriv_rad = 4.0 * σ_SB * Temp^3
         
-        # Convection derivative (from updated MLT routine)
+        # Convection derivative (from MLT)
         deriv_conv = max(dFconv_dT[k], min_deriv)
 
         Jacobian = deriv_rad + deriv_conv
         
         Flux_Error = F_target - (F_rad[k] + F_conv[k])
         
-        # Calculate raw correction
-        dT[k] = Flux_Error / Jacobian
+        # Calculate Correction
+        step = Flux_Error / Jacobian
 
-        # Limit step size
-        limit = max_step_frac * Temp
-        dT[k] = clamp(dT[k], -limit, limit)
+        # --- STABILITY FIX 2: Absolute Clamping ---
+        # Prevent wild oscillations by limiting step to 5% of T or 200K, whichever is smaller.
+        limit = min(max_step_frac * Temp, 200.0) 
+        dT[k] = clamp(step, -limit, limit)
     end
 end
 
-function update_temperature_correction_atlas!(dT, F_rad, F_conv, T, τ_grid, Teff; damping=0.5)
+#=function update_temperature_correction_atlas!(dT, F_rad, F_conv, T, τ_grid, Teff; damping=0.5)
     F_target = σ_SB * Teff^4
     F_tot = F_rad .+ F_conv
     ratio = (F_tot ./ F_target)
@@ -303,19 +305,145 @@ function update_temperature_correction_atlas!(dT, F_rad, F_conv, T, τ_grid, Tef
     log_T_new = interp(log.(τ_grid))
     T_new = exp.(log_T_new)
     
-    #=surface_flux_ratio = F_tot[1] / F_target
-    surf_corr_factor = (1.0 / surface_flux_ratio)^0.25
-    
-    # Apply the surface offset only where optical depth is small
-    blend = exp.(-τ_grid) 
-    T_new .= T_new .* (1.0 .+ blend .* (surf_corr_factor - 1.0))
-    dT .= damping .* (T_new .- T)=#
-
     flux_ratio = abs.(F_tot ./ F_target)
     corr_factor = (1.0 ./ flux_ratio) .^0.25
-    blend = exp.(-τ_grid.^2) 
+    blend = exp.(-0.1*τ_grid) 
     T_new .= T_new .* (1.0 .+ blend .* (corr_factor .- 1.0))
 
     # apply the damping only to the interior corrections
     dT .= (1 .+ (damping .- 1) .*exp.(-1 ./ τ_grid)) .* (T_new .- T)
+end=#
+
+function update_temperature_correction_atlas!(dT, F_rad, F_conv, dFconv_dT, T, τ_grid, Teff; damping=0.5)
+    F_target = σ_SB * Teff^4
+    F_tot = F_rad .+ F_conv
+    
+    # --- Part 1: Unsold-Lucy (Standard) ---
+    # Keeps the smooth structure you verified in the second image.
+    ratio = (F_tot ./ F_target)
+    ratio .= clamp.(ratio, 0.5, 2.0)
+	
+    τ_new = similar(τ_grid)
+    τ_new[1] = τ_grid[1] * ratio[1]
+    @inbounds for k in 2:length(τ_grid)
+        dτ = τ_grid[k] - τ_grid[k-1]
+        r_avg = 0.5 * (ratio[k] + ratio[k-1])
+        τ_new[k] = τ_new[k-1] + r_avg * dτ
+    end
+
+    interp = linear_interpolation(log.(τ_new), log.(T), extrapolation_bc=Line())
+    log_T_new = interp(log.(τ_grid))
+    T_new = exp.(log_T_new)
+    
+    # --- Part 2: Surface Dilution (The 20K Fix) ---
+    # We use the LOCAL ratio (to avoid the bump) but the BROADER blend (to fix the offset).
+    local_ratio = F_tot ./ F_target
+    local_ratio = clamp.(local_ratio, 0.8, 1.2)
+    corr_factor_local = (1.0 ./ local_ratio) .^0.25
+    
+    # exp(-0.8*τ) ensures we correct the flux-forming layers (τ~1)
+    blend = exp.(-0.8 .* τ_grid) 
+    T_new .= T_new .* (1.0 .+ blend .* (corr_factor_local .- 1.0))
+
+    # --- Part 3: CONVECTIVE THROTTLING (The Convergence Fix) ---
+    # Calculate the raw Atlas step
+    dT_raw = (T_new .- T)
+    
+    @inbounds for k in 1:length(dT)
+        # 1. Radiative Derivative (Analytic: 4σT^3)
+        deriv_rad = 4.0 * σ_SB * T[k]^3
+        
+        # 2. Total Derivative
+        # If convection is active, dFconv/dT is huge.
+        deriv_total = deriv_rad + dFconv_dT[k]
+        
+        # 3. Throttling Factor
+        # Ratio of "Radiative Sensitivity" to "Total Sensitivity"
+        # If Convection is 0, factor = 1.0 (Full Atlas Step)
+        # If Convection is stiff, factor -> 0.05 (Small, stable step)
+        factor = deriv_rad / max(deriv_total, 1e-20)
+        
+        # Apply damped, throttled correction
+        damp_depth = (1.0 + (damping - 1.0) * exp(-1.0 / τ_grid[k]))
+        dT[k] = damp_depth * factor * dT_raw[k]
+    end
+end
+
+
+"""
+    solve_energy_eq_tridiagonal!(dT, F_rad, F_conv, dFconv_dT, T, Teff)
+
+Solves the linearized energy equation considering the coupling between depths
+introduced by the convective gradient.
+System: -A_k * dT_{k-1} + B_k * dT_k - C_k * dT_{k+1} = Error_k
+"""
+function solve_energy_eq_tridiagonal!(dT, F_rad, F_conv, dFconv_dT, T, Teff; max_step_frac=0.1)
+    N = length(T)
+    F_target = σ_SB * Teff^4
+    
+    # Vectors for Tridiagonal Matrix algorithm (Thomas Algorithm)
+    # Lower diagonal (a), Main diagonal (b), Upper diagonal (c)
+    a = zeros(N) 
+    b = zeros(N)
+    c = zeros(N)
+    rhs = zeros(N) # Right hand side (Flux Error)
+
+    @inbounds for k in 1:N
+        # 1. RHS: The Flux Error to eliminate
+        rhs[k] = F_target - (F_rad[k] + F_conv[k])
+
+        # 2. Main Diagonal (Sensitivity of Local Flux to Local T)
+        # Radiative part (Analytic approx) + Convective part (Calculated by MLT)
+        deriv_rad = 4.0 * σ_SB * T[k]^3
+        b[k] = deriv_rad + dFconv_dT[k]
+
+        # 3. Off-Diagonals (Sensitivity of Convective Flux to Neighbors)
+        # We estimate these based on the structure of the gradient:
+        # Backward Diff (MAFAGS): Grad ~ ln(T_k) - ln(T_{k-1})
+        # Sensitivity to T_{k-1} is roughly equal and opposite to T_k, scaled by T.
+        
+        # Only compute coupling if convection is active
+        if F_conv[k] > 0.0
+            # D_conv is the gradient-driven part of the derivative.
+            # (Approximated from the total derivative, assuming thermodynamic part is small)
+            D_conv = dFconv_dT[k] 
+
+            if k > 1
+                # Sensitivity to T_{k-1}
+                # d(Grad)/dT_{k-1} ≈ - (T_k / T_{k-1}) * d(Grad)/dT_k
+                a[k] = - (T[k] / T[k-1]) * D_conv
+            end
+            
+            # Note: For Backward Difference (MAFAGS default), dependence on T_{k+1} is zero.
+            # If you were using Central Difference, you would add c[k] here.
+            c[k] = 0.0 
+        end
+    end
+
+    # 4. Boundary Conditions (keep T fixed at deep bottom if needed, or simple flux conservation)
+    # Top: Depends only on itself (already handled)
+    # Bottom: Assume adiabatic/fixed gradient or just simple diagonal
+    
+    # 5. Solve Tridiagonal System (Thomas Algorithm)
+    # Forward Elimination
+    c[1] = c[1] / b[1]
+    rhs[1] = rhs[1] / b[1]
+    
+    for i in 2:N
+        denom = b[i] - a[i] * c[i-1]
+        c[i] = c[i] / denom
+        rhs[i] = (rhs[i] - a[i] * rhs[i-1]) / denom
+    end
+
+    # Backward Substitution
+    dT[N] = rhs[N]
+    for i in (N-1):-1:1
+        dT[i] = rhs[i] - c[i] * dT[i+1]
+    end
+
+    # 6. Apply Clamping (Safety)
+    for k in 1:N
+        limit = max_step_frac * T[k]
+        dT[k] = clamp(dT[k], -limit, limit)
+    end
 end

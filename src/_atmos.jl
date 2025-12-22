@@ -97,10 +97,7 @@ function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=1
 	F_conv, v_conv, g_turb = similar(T), similar(T), similar(T)
     dFconv_dT = similar(T) 
 	dT = similar(T)
-
-	#σ_SB = 5.670374e-5
     F_target = σ_SB * T_eff^4
-	#nf = count(log10.(τ) .> 3.)
 
 	# check for irradiation and compute it
 	Irr = isnothing(T_irradiation) ? nothing : irradiate(eos, opa, T_irradiation, R_irradiation, d_irradiation)
@@ -116,7 +113,7 @@ function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=1
 			)
 		else=#
 			update_radiation_z_longchar!(
-				J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights
+				J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights, irradiation=Irr
 			)
 		#end
 
@@ -132,7 +129,7 @@ function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=1
 			)
 		end
 
-		update_temperature_correction_atlas!(dT, F_rad, F_conv, T, τ, T_eff, damping=damping)
+		update_temperature_correction_atlas!(dT, F_rad, F_conv, dFconv_dT, T, τ, T_eff, damping=damping)
 
 		converged = evaluate_iteration!(r, iter, maxiter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, T_eff, logg, eos; kwargs...)
 		if converged 

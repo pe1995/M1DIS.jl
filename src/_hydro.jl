@@ -25,6 +25,10 @@ function update_τ_grid!(τ; T, ρ, z, eos)
     ρκ = exp.(lookup(eos, :lnRoss, log.(ρ), log.(T)))
     ρκ .= exp.(log.(ρ)) .* ρκ
 
+    compute_τ_grid!(τ; z=z, ρκ=ρκ)
+end
+
+function compute_τ_grid!(τ; z, ρκ)
     # Integrate: τ(z) = [ ∫ ρκ dz ]_z0 ^z
     @inbounds for j in eachindex(τ)
         if j==1 
