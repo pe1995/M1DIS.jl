@@ -130,7 +130,7 @@ end
 
 
 
-#= Parallel version =#
+#= Parallel version ---> Needs update! =#
 
 function _radiation_chunk_kernel(bin_range, T, ρ, z, eos, opa, 
                                 μ_angles, μ_weights_scaled, bin_weights, 
