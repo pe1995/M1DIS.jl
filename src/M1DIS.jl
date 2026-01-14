@@ -7,6 +7,7 @@ using DifferentialEquations
 using Interpolations
 using Dagger
 using FastGaussQuadrature
+using LinearAlgebra
 
 include("_constants.jl")
 include("_boundary.jl")

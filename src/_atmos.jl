@@ -69,7 +69,7 @@ end
 
 Compute a M1DIS atmosphere iteratively based on the given binned opacity table, effective temperature and surface gravity.
 """
-function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=100), α_MLT=1.5, maxiter=500, damping=0.4, λ_weights=nothing, T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, use_threads=false, mafags_mlt=false, kwargs...)	
+function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=100), α_MLT=1.5, maxiter=500, damping=0.4, λ_weights=nothing, T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, use_threads=false, mafags_mlt=false, feutrier=false, kwargs...)	
 	eos = if typeof(eos) <: TSO.ExtendedEoS
 		@assert !TSO.is_internal_energy(@axed(eos.eos))
 		eos
@@ -97,6 +97,8 @@ function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=1
 	F_conv, v_conv, g_turb = similar(T), similar(T), similar(T)
     dFconv_dT = similar(T) 
 	dT = similar(T)
+    lambda_diagonal = similar(T)
+    # flux_jacobian = zeros(length(T), length(T)) # Not needed for simpler ALI solver
     F_target = σ_SB * T_eff^4
 
 	# check for irradiation and compute it
@@ -112,15 +114,22 @@ function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=1
 				J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights, irradiation=Irr
 			)
 		else=#
-			update_radiation_z_longchar!(
-				J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights, irradiation=Irr
-			)
+			if !feutrier
+				update_radiation_z_longchar!(
+					J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights, irradiation=Irr
+				)
+			else
+				update_radiation_z_feutrier!(
+					J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights, irradiation=Irr,
+                    diagonal_inv_operator=lambda_diagonal
+				)
+			end
 		#end
 
 		if !mafags_mlt
 			update_mixing_length!(
 				F_conv, v_conv, g_turb, dFconv_dT,
-				T, P, ρ, τ, eos, exp10(logg), alpha_mlt=α_MLT
+				T, P, ρ, τ, eos, exp10(logg), alpha_mlt=α_MLT, Teff=T_eff
 			)
 		else
 			update_mixing_length_mafags!(
@@ -129,7 +138,16 @@ function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=1
 			)
 		end
 
-		update_temperature_correction_atlas!(dT, F_rad, F_conv, dFconv_dT, T, τ, T_eff, damping=damping)
+        #if feutrier
+            # Using Standard ATLAS Strategy (Unsold-Mawe) -- ROBUST
+        #    update_temperature_correction_avrett_krook!(dT, F_rad, F_conv, dFconv_dT, T, τ, T_eff, lambda_diagonal, J; damping=damping)
+        #else
+            # For LongChar (Angle-dependent), use Avrett-Krook which is more general than standard Atlas
+            #update_temperature_correction_avrett_krook!(dT, F_rad, F_conv, dFconv_dT, T, τ, T_eff, nothing, J; damping=damping)
+			#update_temperature_correction_atlas!(dT, F_rad, F_conv, dFconv_dT, T, τ, T_eff; damping=damping)
+        #end
+        update_temperature_correction_robust!(dT, F_rad, F_conv, dFconv_dT, T, τ, T_eff, lambda_diagonal, J; damping=damping)
+
 
 		converged = evaluate_iteration!(r, iter, maxiter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, T_eff, logg, eos; kwargs...)
 		if converged 
@@ -138,7 +156,7 @@ function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=1
 		end
 
 		T .+= dT
-		#force_adiabatic_bottom!(T, P, eos, n_force=nf)
+		#force_adiabatic_bottom!(T, P, eos, n_force=20)
 		
 		# (Keep your existing T smoothing and adiabatic checks here...)
 		#=for k in 2:length(T)
