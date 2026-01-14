@@ -108,12 +108,15 @@ function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=1
 	@info "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
 	
 	r = []
+	if use_threads
+		@info "Running RT with $(Base.Threads.nthreads()) threads."
+	end
 	for iter in 1:maxiter
-		#=if use_threads
+		if use_threads
 			update_radiation_z_longchar_dagger!(
 				J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights, irradiation=Irr
 			)
-		else=#
+		else
 			if !feutrier
 				update_radiation_z_longchar!(
 					J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights, irradiation=Irr
@@ -124,7 +127,7 @@ function atmosphere(; T_eff, logg, eos, opacity, τ=10 .^range(-5.0, 4, length=1
                     diagonal_inv_operator=lambda_diagonal
 				)
 			end
-		#end
+		end
 
 		if !mafags_mlt
 			update_mixing_length!(

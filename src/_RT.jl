@@ -426,10 +426,12 @@ function _radiation_chunk_kernel(bin_range, T, ρ, z, eos, opa,
     
     S_nodes = similar(J_nu)
     k_rho_nodes = similar(J_nu)
-    I_up = similar(S_nodes)
-    I_down = similar(S_nodes)
     S_cell = zeros(Float64, ncells)
     k_cell = zeros(Float64, ncells)
+    
+    # Pre-allocate τ_vert and trace arrays if needed, but they are small (Nnodes)
+    Nnodes = length(T)
+    τ_vert = zeros(Float64, Nnodes)
 
     J_chunk = zeros(Float64, size(T))
     F_chunk = zeros(Float64, size(T))
@@ -441,10 +443,31 @@ function _radiation_chunk_kernel(bin_range, T, ρ, z, eos, opa,
 
         S_nodes .= lookup(eos, opa, :src, lnrho, lnt, bin)
         k_rho_nodes .= lookup(eos, opa, :κ, lnrho, lnt, bin)
+        
+        # Compute τ_vert for this bin (needed for trace_ray)
+        # We can reuse the serial logic: compute_τ_grid!
+        # But we need to define it or inline it. It is defined in _RT.jl? 
+        # Yes, compute_τ_grid! is likely available in the module scope.
+        compute_τ_grid!(τ_vert; z=z, ρκ=k_rho_nodes)
 
         @inbounds for i in 1:ncells
             S_cell[i] = 0.5 * (S_nodes[i] + S_nodes[i+1])
             k_cell[i] = 0.5 * (k_rho_nodes[i] + k_rho_nodes[i+1])
+        end
+
+        # --- Bottom Boundary Condition (Geometric Gradient) ---
+        if Nnodes > 1
+             dS = S_nodes[end] - S_nodes[end-1]
+             dz = z[end] - z[end-1] # Negative
+             dtau_dz = k_rho_nodes[end]
+             grad_S = -(dS / dz) / dtau_dz
+             if grad_S < 0
+                 grad_S = 0.0
+             end
+        else
+            dS_bot = S_nodes[end] - S_nodes[end-1]
+            dt_bot = k_cell[end] * Δz[end]
+            grad_S = dt_bot > 1e-30 ? (dS_bot / dt_bot) : 0.0
         end
 
         J_nu .= 0.0
@@ -452,48 +475,37 @@ function _radiation_chunk_kernel(bin_range, T, ρ, z, eos, opa,
 
         # Angular integration
         for (μ, wμ) in zip(μ_angles, μ_weights_scaled)
-            # Upward ray
-            dS = S_nodes[end] - S_nodes[end-1]
-            dt = k_cell[end] * (z[end] - z[end-1])
-			I_up[end] = S_nodes[end]  + (abs(μ) * dS/dt)
+            abs_μ = abs(μ)
+            
+            # solve for the intensity at every node 'target_i' independently
+            # (Matches serial logic)
+            for target_i in 1:Nnodes
+                # 1. Downward Ray (Top -> target_i)
+                I_down = if target_i == 1
+                    trans_top = exp(-τ_vert[1] / abs_μ)
+                    S_nodes[1] * (1.0 - trans_top) + Irr
+                else
+                    trace_ray(1:(target_i-1), 0.0, τ_vert, S_cell, abs_μ)
+                end
 
-            @inbounds for icell in ncells:-1:1
-                Δ = Δz[icell]
-                κ = k_cell[icell]
-                Δτ = κ * Δ / abs(μ)
-                trans = (Δτ < 1e-32) ? (1.0 - Δτ) : exp(-Δτ)
+                # 2. Upward Ray (Bottom -> target_i)
+                I_bottom_bc = S_nodes[end] + (abs_μ * grad_S)
+                I_up = if target_i == Nnodes
+                    I_bottom_bc
+                else
+                    trace_ray(ncells:-1:target_i, I_bottom_bc, τ_vert, S_cell, abs_μ)
+                end
                 
-                I_in = I_up[icell+1]
-                S_c  = S_cell[icell]
-                I_up[icell] = I_in * trans + S_c * (1 - trans)
-            end
-
-            # Downward ray
-            I_down[1] = Irr # Boundary condition
-
-            @inbounds for icell in 1:ncells
-                Δ = Δz[icell]
-                κ = k_cell[icell]
-                Δτ = κ * Δ / abs(μ)
-                trans = (Δτ < 1e-32) ? (1.0 - Δτ) : exp(-Δτ)
-
-                I_in = I_down[icell]
-                S_c  = S_cell[icell]
-                I_down[icell+1] = I_in * trans + S_c * (1 - trans)
-            end
-
-            @inbounds begin
-                J_nu .+= wμ .* (I_up .+ I_down)
-                H_nu .+= wμ .* μ .* (I_up .- I_down)
+                J_nu[target_i] += wμ * (I_up + I_down)
+                H_nu[target_i] += wμ * μ * (I_up - I_down)
             end
         end
 
         @inbounds for i in eachindex(J_chunk)
             F_bin = bw * (4π * H_nu[i])
-            #F_bin = bw * (H_nu[i])
             J_chunk[i] += bw * J_nu[i]
             F_chunk[i] += F_bin
-            g_chunk[i] += k_rho_nodes[i] * F_bin / c_light 
+            g_chunk[i] += k_rho_nodes[i] / ρ[i] * F_bin / c_light 
         end
     end
 
@@ -507,8 +519,8 @@ end
 Parallelized version of update_radiation_z_longchar! using Dagger.jl.
 """
 function update_radiation_z_longchar_dagger!(J, F, g_rad; T, ρ, z, eos, opa,
-                                  μ_weights=TSO.labatto_4weights[1:4],
-                                  μ_angles=TSO.labatto_4angles[1:4],
+                                  μ_weights=nothing,
+                                  μ_angles=nothing,
                                   λ_weights=nothing, irradiation=nothing) 
     
     Nnodes = length(z)
@@ -518,8 +530,14 @@ function update_radiation_z_longchar_dagger!(J, F, g_rad; T, ρ, z, eos, opa,
     lnrho = log.(ρ)
     lnt = log.(T)
 
-    scale = 0.5 / sum(μ_weights)
-    μ_weights_scaled = μ_weights .* scale
+    use_angles, use_weights = if isnothing(μ_weights) || isnothing(μ_angles)
+        generate_mu_grid(4)
+    else
+        copy(μ_angles), copy(μ_weights)
+    end
+    
+    scale = 0.5 / sum(use_weights)
+    μ_weights_scaled = use_weights .* scale
 
     nbin = length(opa.λ)
     bin_weights = isnothing(λ_weights) ? ones(nbin) : λ_weights
@@ -531,7 +549,7 @@ function update_radiation_z_longchar_dagger!(J, F, g_rad; T, ρ, z, eos, opa,
     tasks = map(chunks) do range
         Dagger.@spawn _radiation_chunk_kernel(
             range, T, ρ, z, eos, opa, 
-            μ_angles, μ_weights_scaled, bin_weights, 
+            use_angles, μ_weights_scaled, bin_weights, 
             lnrho, lnt, Δz, ncells, irradiation
         )
     end
@@ -545,6 +563,13 @@ function update_radiation_z_longchar_dagger!(J, F, g_rad; T, ρ, z, eos, opa,
         J .+= J_part
         F .+= F_part
         g_rad .+= g_part
+    end
+    
+    # Enforce Monotonicity of Radiative Flux (User Requested)
+    for i in 2:Nnodes
+        if F[i] > F[i-1]
+            F[i] = F[i-1]
+        end
     end
 
     return nothing
