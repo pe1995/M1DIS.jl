@@ -95,10 +95,7 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
         end
     end
     
-        if F_conv[i] < 0.0
-            F_conv[i] = 0.0
-        end
-    end
+
     
     # Enforce Monotonicity of Convective Flux (User Requested)
     # The convective flux should generally increase with depth in the envelope until the bottom
@@ -106,20 +103,12 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
     for i in 2:n_depth
         if F_conv[i] < F_conv[i-1]
             F_conv[i] = F_conv[i-1]
+            dFconv_dT[i] = 0.0
         end
-        if F_conv[i] > F_target
-            F_conv[i] = F_target
-        end
+        #if F_conv[i] > F_target
+        #    F_conv[i] = F_target
+        #end
     end
-
-    # Smooth derivative
-    #=if n_depth > 4
-        dF_smooth = copy(dFconv_dT)
-        @inbounds for i in 2:n_depth-1
-            dF_smooth[i] = 0.25 * dFconv_dT[i-1] + 0.5 * dFconv_dT[i] + 0.25 * dFconv_dT[i+1]
-        end
-        dFconv_dT .= dF_smooth
-    end=#
 
     for i in 2:n_depth-1
         grad_P_tau = (P_turb_arr[i+1] - P_turb_arr[i-1]) / (τ_ross[i+1] - τ_ross[i-1])
@@ -428,14 +417,15 @@ function update_temperature_correction_robust!(dT, F_rad, F_conv, dFconv_dT, T, 
     n_depth = length(T)
 
     # 1. Flux Scaling Factor
-    gain = 0.5 
+    #gain = 0.5 
     
-    safe_F_target = max(F_target, 1e-10)
-    ratio_raw = (F_tot ./ safe_F_target)
+    #safe_F_target = max(F_target, 1e-10)
+    #ratio_raw = (F_tot ./ safe_F_target)
     
-    ratio = 1.0 .+ gain .* (ratio_raw .- 1.0)
-    ratio .= clamp.(ratio, 0.5, 2.0)
-
+    #ratio = 1.0 .+ gain .* (ratio_raw .- 1.0)
+    #ratio .= clamp.(ratio, 0.5, 2.0)
+    ratio = F_tot ./ F_target
+    
     # 3. Integrate new optical depth scale
     τ_new = similar(τ_grid)
     τ_new[1] = τ_grid[1] * ratio[1]
@@ -453,7 +443,7 @@ function update_temperature_correction_robust!(dT, F_rad, F_conv, dFconv_dT, T, 
 
     local_ratio = abs.(F_tot ./ F_target)
     corr_factor_local = (1.0 ./ local_ratio) .^ 0.25
-    blend = exp.(-0.8*τ_grid)
+    blend = exp.(-1.0*τ_grid)
     f = (1.0 .+ blend .* (corr_factor_local .- 1.0))
     T_new .= T_new .* f
     dT_mawe = (T_new .- T)

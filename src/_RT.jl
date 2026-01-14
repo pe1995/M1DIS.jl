@@ -424,8 +424,8 @@ function _radiation_chunk_kernel(bin_range, T, ρ, z, eos, opa,
     J_nu = zeros(Float64, size(T))
     H_nu = zeros(Float64, size(T))
     
-    S_nodes = similar(J_nu)
-    k_rho_nodes = similar(J_nu)
+    S_nodes = zeros(Float64, size(J_nu))
+    k_rho_nodes = zeros(Float64, size(J_nu))
     S_cell = zeros(Float64, ncells)
     k_cell = zeros(Float64, ncells)
     
@@ -437,7 +437,7 @@ function _radiation_chunk_kernel(bin_range, T, ρ, z, eos, opa,
     F_chunk = zeros(Float64, size(T))
     g_chunk = zeros(Float64, size(T))
 
-    for bin in bin_range
+    @inbounds for bin in bin_range
         bw = bin_weights[bin]
         Irr = isnothing(irradiation) ? 0.0 : irradiation[bin]
 
@@ -460,7 +460,11 @@ function _radiation_chunk_kernel(bin_range, T, ρ, z, eos, opa,
              dS = S_nodes[end] - S_nodes[end-1]
              dz = z[end] - z[end-1] # Negative
              dtau_dz = k_rho_nodes[end]
+             
+             # grad_S = (dS/dz) / (-κρ)
+             # grad_S = (dS/dz) / (-dtau_dz)
              grad_S = -(dS / dz) / dtau_dz
+             
              if grad_S < 0
                  grad_S = 0.0
              end
@@ -482,7 +486,7 @@ function _radiation_chunk_kernel(bin_range, T, ρ, z, eos, opa,
             for target_i in 1:Nnodes
                 # 1. Downward Ray (Top -> target_i)
                 I_down = if target_i == 1
-                    trans_top = exp(-τ_vert[1] / abs_μ)
+                    trans_top = exp(-(k_cell[1] * Δz[1]) / abs_μ)
                     S_nodes[1] * (1.0 - trans_top) + Irr
                 else
                     trace_ray(1:(target_i-1), 0.0, τ_vert, S_cell, abs_μ)
@@ -566,11 +570,13 @@ function update_radiation_z_longchar_dagger!(J, F, g_rad; T, ρ, z, eos, opa,
     end
     
     # Enforce Monotonicity of Radiative Flux (User Requested)
-    for i in 2:Nnodes
+    #=for i in 2:Nnodes
         if F[i] > F[i-1]
             F[i] = F[i-1]
+            g_rad[i] = g_rad[i-1]
+            J[i] = J[i-1]
         end
-    end
+    end=#
 
     return nothing
 end
