@@ -77,15 +77,15 @@ function atmosphere(; T_eff, logg, eos, opacity,
 	τ=10 .^range(-5.0, 4, length=100), 
 	α_MLT=1.5, 
 	maxiter=500,
-	damping=0.4, 
+	damping=0.1, 
 	λ_weights=nothing, 
 	T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, 
-	use_threads=false, 
-	mafags_mlt=false, 
-	feutrier=false, 
 	T=nothing, ρ=nothing, P=nothing, z=nothing, 
+	feutrier=true,
+	use_threads=false,
 	kwargs...)	
 
+	# input opacities and EoS
 	eos = if typeof(eos) <: TSO.ExtendedEoS
 		@assert !TSO.is_internal_energy(@axed(eos.eos))
 		eos
@@ -109,32 +109,25 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		opacity, ones(length(opacity.λ))
 	end
 
+	# compute dS/dT, which is needed for the Feutrier RT solver
 	opa = TSO.ExtendedOpacity(opa=opa)
 	TSO.gradients!(eos.eos, opa)
 
+	# if no atmosphere is provided, compute an initial gray atmosphere
 	τ = deepcopy(τ)
 	T, ρ, P, z = if isnothing(T) 
 		initial_atmosphere(τ, T_eff=T_eff, logg=logg, eos=eos)
 	else
 		deepcopy(T), deepcopy(ρ), deepcopy(P), deepcopy(z)
 	end
+
 	J, F_rad, g_rad = similar(T), similar(T), similar(T)
-	J_plus, F_rad_plus, g_rad_plus = similar(T), similar(T), similar(T)
-	J_minus, F_rad_minus, g_rad_minus = similar(T), similar(T), similar(T)
-	Jmat = zeros(size(J, 1), size(J, 1))
 	F_conv, v_conv, g_turb = similar(T), similar(T), similar(T)
-	F_conv_plus, F_conv_minus = similar(T), similar(T)
-	Q, dQdT = similar(T), similar(T)
     dFconv_dT = similar(T) 
-    dFrad_dT = similar(T) 
-    dFconv_dT_minus = similar(T) 
 	dT = similar(T)
-	smalldT = similar(T)
-    lambda_diagonal = similar(T)
     F_target = σ_SB * T_eff^4
 
     μ_angles, μ_weights = generate_mu_grid(4)
-    
 
 	# check for irradiation and compute it
 	Irr = isnothing(T_irradiation) ? nothing : irradiate(eos, opa.opa, T_irradiation, R_irradiation, d_irradiation)
@@ -147,103 +140,51 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		@info "Running RT with $(Base.Threads.nthreads()) threads."
 	end
 	for iter in 1:maxiter
-		#=if use_threads
-			update_radiation_z_longchar_dagger!(
-				J, F_rad, g_rad, Q, dQdT, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles
-			)
-		else
-			if !feutrier
+		# compute convective quantities (MLT)
+		update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff)
+
+		if !feutrier
+			# solve the RT using long characteristic method
+			if use_threads
+				update_radiation_z_longchar_dagger!(
+					J, F_rad, g_rad, Q, dQdT, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles
+				)
+			else
 				update_radiation_z_longchar!(
 					J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa.opa, λ_weights=λ_weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles
 				)
-			else
-				update_radiation_z_feutrier!(
-					J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa.opa, λ_weights=λ_weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles,
-                    diagonal_inv_operator=lambda_diagonal
-				)
 			end
-		end=#
 
-		# for gradient
-		smalldT = 1e-6 .* T
-		#update_radiation_z_longchar!(J_plus, F_rad_plus, g_rad_plus, T=T .+ smalldT, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles)
-		#update_radiation_z_longchar!(J_minus, F_rad_minus, g_rad_minus, T=T .- smalldT, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles)
-		#dFrad_dT .= (F_rad_plus .- F_rad_minus) ./ (2 * smalldT)
-		#@show minimum(dFrad_dT) maximum(dFrad_dT) minimum(F_rad) maximum(F_rad)
-		#@show minimum(dFrad_dT ./ (4.0 * σ_SB * T.^3)) maximum(dFrad_dT ./ (4.0 * σ_SB * T.^3))
-		#dFrad_dT[1:end-1] .= diff(F_rad) ./ diff(T)
-		#dFrad_dT[end] = dFrad_dT[end-1]
-		dFrad_dT .= 4.0 * σ_SB * T.^3
+			# compute temperature correction
+			update_temperature_correction_robust!(dT, F_rad, F_conv, dFconv_dT, T, τ, T_eff, J; damping=damping)
+		else
+			# use the Feutrier RT solver
+			chi, chi_ref, S, dSdT = compute_opacities(eos, opa, T, ρ)
+			atm = FeutrierRT.Atmosphere(
+				T_eff=T_eff, z=z, 
+				tau=τ, rho=ρ, Temp=T, 
+				F_conv=F_conv, dFconv_dT=dFconv_dT,
+				mu=μ_angles, w_mu=μ_weights, w_lambda=λ_weights, 
+				chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT
+			)
 
-		#update_mixing_length!(F_conv_plus, v_conv, g_turb, dFconv_dT, T .+ smalldT, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff)
-		#update_mixing_length!(F_conv_minus, v_conv, g_turb, dFconv_dT, T .- smalldT, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff)
-		update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff)
-        #dFconv_dT .= (F_conv_plus .- F_conv_minus) ./ (2 * smalldT)
-        #update_temperature_correction_robust!(dT, F_rad, F_conv, dFconv_dT, T, τ, T_eff, lambda_diagonal, J; damping=damping)
+			# the gustafsson method includes the temperature correction in the solution scheme
+			FeutrierRT.solve_gustafsson!(atm, include_dT=true)
+			J .= atm.J_bol
+			F_rad .= atm.F_bol
+			g_rad .= atm.g_rad
+			dT .= atm.dT
 
-
-		# test new RT
-		#@show "convective quantities"
-		#@show minimum(F_conv) maximum(F_conv)
-		#@show minimum(dFconv_dT) maximum(dFconv_dT)
-		#F_conv_m = fill!(similar(F_conv), 0.0)
-		#dFconv_dT_m = fill!(similar(F_conv), 0.0)
-		chi, chi_ref, S, dSdT = compute_opacities(eos, opa, T, ρ)
-		atm = FeutrierRT.Atmosphere(
-			T_eff=T_eff, z=z, 
-			tau=τ, rho=ρ, Temp=T, 
-			#F_conv=F_conv_m, dFconv_dT=dFconv_dT_m,
-			F_conv=F_conv, dFconv_dT=dFconv_dT,
-			mu=μ_angles, w_mu=μ_weights, w_lambda=λ_weights, 
-			chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT
-		)
-		#@show minimum(atm.dFconv) maximum(atm.dFconv)
-		#FeutrierRT.solve!(atm)
-		#FeutrierRT.compute_dT!(atm)
-		#@show "solve!"
-		#@show minimum(atm.F_bol) maximum(atm.F_bol) 
-		#@show minimum(atm.J_bol) maximum(atm.J_bol) 
-		#@show minimum(atm.g_rad) maximum(atm.g_rad) 
-		#@show minimum(atm.dT) maximum(atm.dT) 
-
-		FeutrierRT.solve_gustafsson!(atm, include_dT=true)
-		#@show "solve gustafsson"
-		#@show minimum(atm.F_bol) maximum(atm.F_bol) 
-		#@show minimum(atm.J_bol) maximum(atm.J_bol) 
-		#@show minimum(atm.g_rad) maximum(atm.g_rad) 
-		#@show minimum(atm.dT) maximum(atm.dT) 
-		J .= atm.J_bol
-		F_rad .= atm.F_bol
-		g_rad .= atm.g_rad
-
-		#m = (atm.dT .* dT) .< 0.0
-		#dT .= atm.dT
-		#dT[m] .*= 0.75
-
-		dT .= clamp.(atm.dT, -0.1.*T, 0.1.*T)
-
-		
-		
-
-
-		#update_temperature_correction_mafags!(dT, F_rad, dFrad_dT, F_conv, dFconv_dT, T, T_eff; max_step_frac=0.05, min_deriv=1e-12)
-		#update_temperature_correction_robust!(dT, F_rad, F_conv, dFconv_dT, T, τ, T_eff, lambda_diagonal, J; damping=damping)
-		#update_temperature_correction_atlas!(dT, F_rad, F_conv, dFconv_dT, T, τ, T_eff; damping=damping)
-		#update_temperature_correction!(
-		#	dT, T, Q, dQdT, F_rad, F_conv, T_eff
-		#)
-		#update_temperature_correction_atlas12!(dT, T, τ, T_eff, F_rad, F_conv)
-		#compute_auer_temperature_correction!(dT; T=T, ρ=ρ, z=z, eos=eos, opa=opa)
-
-		#compute_temperature_corrections_auer_mihalas!(dT, T, ρ, z, eos, opa, T_eff; μ_nodes=μ_angles, μ_weights=μ_weights, λ_weights=λ_weights, J_comp=J)
+			# avoid overly large temperature corrections
+			#m = (atm.dT .* dT) .< 0.0
+			#dT .= atm.dT
+			#dT[m] .*= 0.75
+			dT .= clamp.(dT, -damping.*T, damping.*T)
+		end
 
 		converged = evaluate_iteration!(
 			r, iter, maxiter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, T_eff, logg, eos; 
 			dFconv_dT=dFconv_dT, J=J,
-			J_atm=atm.J_bol, F_atm=atm.F_bol, g_atm=atm.g_rad, dT_atm=atm.dT, S_atm=atm.B[1,:], dSdT_atm=atm.dBdT[1,:], 
-			eta1_atm=atm.eta[1,:], eta2_atm=atm.eta[2,:], eta3_atm=atm.eta[3,:], eta4_atm=atm.eta[4,:], 
-			eta5_atm=atm.eta[5,:], eta6_atm=atm.eta[6,:], eta7_atm=atm.eta[7,:], eta8_atm=atm.eta[8,:], 
-			Q_heat_atm=atm.Q_heat, Q_cool_atm=atm.Q_cool,
 			kwargs...
 		)
 		if converged 
@@ -253,23 +194,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
 		T .+= dT
 		T = clamp.(T, 100, 1e12)
-		# correct for surface flux
-		#F_surface = F_rad[1] # Flux at top node
-		#ratio = T_eff / (F_surface / σ_SB) ^0.25 #abs.(F_rad .+ F_conv)
-		#@show ratio
-		#T .*= ratio
-
-		#force_adiabatic_bottom!(T, P, eos, n_force=20)
-		
-		# (Keep your existing T smoothing and adiabatic checks here...)
-		#=for k in 2:length(T)
-			if T[k] < T[k-1]
-				T[k] = T[k-1] + 1e-4 
-			end
-		end=#
-		
 		update_hydrostatic!(P, ρ, z, T, g_rad, g_turb, τ, eos=eos, logg=logg)
-		
 	end
 
     length(r) == 1 ? r[1] : r

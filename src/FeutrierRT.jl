@@ -3,12 +3,11 @@ module FeutrierRT
 using LinearAlgebra
 using SparseArrays
 
-export Atmosphere, solve!, solve_gustafsson!, compute_dT
+export Atmosphere, solve_gustafsson!
 
 # ==============================================================================
 # 1. DATA STRUCTURES
 # ==============================================================================
-
 mutable struct Atmosphere{T <: AbstractFloat}
     T_eff::T              # Effective Temperature [K]
     z::Vector{T}          # Height (Size: D)
@@ -35,7 +34,6 @@ mutable struct Atmosphere{T <: AbstractFloat}
     Q_heat::Vector{T}     # Heating Rate (Nf x D)
     Q_cool::Vector{T}     # Cooling Rate (Nf x D)
 end
-
 struct Packer{T}
     Nf::Int
     Na::Int
@@ -148,7 +146,7 @@ end
     solve_gustafsson!(atm)
 
 Solves the simultaneous system for Radiation (J) and Temperature Correction (dT).
-Implements the Gustafsson (1971) integral flux constraint:
+Implements the Gustafsson et al. (1970) integral flux constraint:
 F_rad + F_conv = sigma * T_eff^4
 
 Updates atm.J_raw, atm.dT, and derived moments.
@@ -302,8 +300,6 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
     return nothing
 end
 
-
-
 # ==============================================================================
 # 4. POST-PROCESSING
 # ==============================================================================
@@ -365,14 +361,6 @@ end
 # ==============================================================================
 # 5. HELPERS
 # ==============================================================================
-
-function update_solution!(atm, pack, sol)
-    N = pack.N_total; D = length(atm.tau)
-    for d in 1:D; for k in 1:N
-        f = pack.freq_idx[k]; a = pack.ang_idx[k]
-        atm.J_raw[f, a, d] = sol[gid(k, d, N)]
-    end; end
-end
 
 function get_dtau(tau, f, d)
     if d == 1
