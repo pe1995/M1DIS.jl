@@ -255,25 +255,23 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
                     b_sum  += term * atm.B[f, d]
                 end
                 push!(rows, row_flux); push!(cols, idx_T(d)); push!(vals, -db_sum)
-                RHS[row_flux] = b_sum       
+                RHS[row_flux] = b_sum
             else
                 for k in 1:N
                     f = pack.freq_idx[k]
                     a = pack.ang_idx[k]
-
                     dt_local = atm.tau_lambda[f, d] - atm.tau_lambda[f, d-1]
-                    
                     w = 4π * atm.w_lambda[f] * atm.w_mu[a] * pack.mu_sq[k]
-                    coeff = w / dt_local 
-
+                    coeff = w / dt_local
                     push!(rows, row_flux); push!(cols, idx_J(k,d));   push!(vals, coeff)
                     push!(rows, row_flux); push!(cols, idx_J(k,d-1)); push!(vals, -coeff)
                 end
-
-                # convective flux
-                push!(rows, row_flux); push!(cols, idx_T(d)); push!(vals, atm.dFconv_dT[d]/2)
-                push!(rows, row_flux); push!(cols, idx_T(d-1)); push!(vals, atm.dFconv_dT[d-1]/2)
-
+                val_Td = 0.5 * atm.dFconv_dT[d]
+                push!(rows, row_flux); push!(cols, idx_T(d)); push!(vals, val_Td)
+                
+                cross_term = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
+                val_Td_minus_1 = 0.5 * (atm.dFconv_dT[d-1] + cross_term)
+                push!(rows, row_flux); push!(cols, idx_T(d-1)); push!(vals, val_Td_minus_1)
                 RHS[row_flux] = F_target - 0.5*(atm.F_conv[d] + atm.F_conv[d-1])
             end
         end
