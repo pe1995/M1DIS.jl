@@ -159,42 +159,36 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
     # Pre-calculate thermodynamic variables (Assume constant during local linearization)
     lnrho = log.(ρ)
     lnT = log.(T)
-    
-    κ_ross = exp.(TSO.extended_lookup(eos_extended, :lnRoss, lnrho, lnT))
-    Cp_arr = TSO.extended_lookup(eos_extended, :cₚ, lnrho, lnT)
-    Q_arr = TSO.extended_lookup(eos_extended, :Q, lnrho, lnT)
-    ∇ₐ_arr = TSO.extended_lookup(eos_extended, :∇ₐ, lnrho, lnT)
-    χr_arr = TSO.extended_lookup(eos_extended, :χᵨ, lnrho, lnT)
-    χt_arr = TSO.extended_lookup(eos_extended, :χₜ, lnrho, lnT)
 
     P_rad = (4.0 * σ_SB / (3.0 * c_light)) .* (T .^ 4)
     P_tot = P_gas .+ P_rad
     
-    # --- HELPER: Local MLT Calculation ---
-    # Calculates Flux for a specific T and gradient structure
     function calc_mlt_local(n, T_local, P_local, ∇_local)
-        ∇_ad = ∇ₐ_arr[n]
-        super_adi = ∇_local - ∇_ad
+        lnpgas_local = log(P_local - (4.0 * σ_SB / (3.0 * c_light)) * (T_local ^ 4))
+        lnt_local = log(T_local)
+        lnrho_local = TSO.extended_lookup(eos_extended, :lnRho, lnpgas_local, lnt_local)  
+        Hp = P_local / (exp(lnrho_local) * g_surf)
+        
+        κ_ross = exp.(TSO.extended_lookup(eos_extended, :lnRoss, lnrho_local, lnt_local))
+        Cp = TSO.extended_lookup(eos_extended, :cₚ, lnrho_local, lnt_local)
+        Q = TSO.extended_lookup(eos_extended, :Q, lnrho_local, lnt_local)
+        ∇ₐ = TSO.extended_lookup(eos_extended, :∇ₐ, lnrho_local, lnt_local)
+        χr = TSO.extended_lookup(eos_extended, :χᵨ, lnrho_local, lnt_local)
+        χt = TSO.extended_lookup(eos_extended, :χₜ, lnrho_local, lnt_local)
 
+        super_adi = ∇_local - ∇ₐ
         if super_adi < 1e-6
             return 0.0, 0.0
         end
-
-        # Local quantities (Assuming rho/Cp/Q don't change drastically with small dT)
-        Hp = P_local / (ρ[n] * g_surf)
-        Q = Q_arr[n]
-        Cp = Cp_arr[n]
-        κ = κ_ross[n]
         
         # Optically thick limit approximation for Gamma1
-        Γ₁_approx = χr_arr[n] / (1 - χt_arr[n] * ∇_ad)
-        c_sound = sqrt(Γ₁_approx * P_local / ρ[n])
-
+        Γ₁_approx = χr / (1 - χt * ∇ₐ)
+        c_sound = sqrt(Γ₁_approx * P_local / exp(lnrho_local))
         v_scale = sqrt(g_surf * Q * Hp / 8.0)
         
         # U = (24 sqrt(2) sigma T^3) / (kappa rho Hp alpha rho Cp v_scale)
         numerator = 24.0 * sqrt(2.0) * σ_SB * T_local^3
-        denominator = κ * ρ[n] * Hp * alpha_mlt * ρ[n] * Cp * v_scale
+        denominator = κ_ross * exp(lnrho_local) * Hp * alpha_mlt * exp(lnrho_local) * Cp * v_scale
         U = numerator / denominator
 
         # Solve cubic for efficiency factor xi
@@ -211,73 +205,56 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
 
         v_real = v_scale * xi
         # Cap at sound speed
-        if v_real > c_sound
-            v_real = c_sound
-            xi = c_sound / v_scale
-        end
+        #if v_real > c_sound
+        #    v_real = c_sound
+        #    xi = c_sound / v_scale
+        #end
+        ratio = v_real / c_sound
+        soft_factor = (1.0 + ratio^4)^0.25
+        v_real = v_real / soft_factor
+        xi = xi / soft_factor
 
-        Flux = (0.5 * alpha_mlt) * (ρ[n] * Cp * T_local) * v_scale * xi^3
+        Flux = (0.5 * alpha_mlt) * (exp(lnrho_local) * Cp * T_local) * v_scale * xi^3
         return Flux, v_real
     end
 
-    # --- MAIN LOOP ---
-    # We skip the very top and bottom to avoid index errors
     @inbounds for n in 2:n_depth
-        # 1. Calculate Gradient (Backward Difference)
-        # Gustafsson implies coupling between layers. Using T[n] and T[n-1] 
-        # ensures that changing T[n] changes the gradient, providing a derivative.
+        # -- 1. Calculate Gradient (Backward Difference) --
         dlnT = log(T[n] / T[n-1])
         dlnP = log(P_tot[n] / P_tot[n-1])
         ∇_base = dlnT / dlnP
         
-        # 2. Base Flux
+        # -- 2. Base Flux --
         F_base, v_base = calc_mlt_local(n, T[n], P_tot[n], ∇_base)
         F_conv[n] = F_base
         v_conv[n] = v_base
 
-        # 3. Calculate Derivative dF/dT
-        # Implement "Numerical Differentiation" (Eq 15)
-        # We perturb T[n] slightly to see how Flux responds (via T^3 and via Gradient)
-        
-        # Small perturbation (Standard linearization)
+        # -- 3. Calculate Derivative dF/dT --
         delta_T = 0.001 * T[n]
         T_pert = T[n] + delta_T
-        
-        # Recalculate gradient with perturbed T[n] (keeping T[n-1] fixed)
         dlnT_pert = log(T_pert / T[n-1])
         ∇_pert = dlnT_pert / dlnP
-        
         F_pert, _ = calc_mlt_local(n, T_pert, P_tot[n], ∇_pert)
         
-        # 4. Gustafsson "Recipe" for Stability (Eq 20, 21)
-        # "If computed convective flux is zero... we estimate derivatives...
-        #  at (T*, T_k+1*) where T* = T(1+b)"
-        # This handles the boundary where convection is just turning on.
-        
+        # -- 4. Gustafsson Stability (Eq 20, 21) --
         if F_base <= 1e-10
-            b = 0.005 # Recommended value from paper
+            b = 0.005 
             T_recipe = T[n] * (1.0 + b)
             
             dlnT_recipe = log(T_recipe / T[n-1])
             ∇_recipe = dlnT_recipe / dlnP
-            
             F_recipe, _ = calc_mlt_local(n, T_recipe, P_tot[n], ∇_recipe)
             
             if F_recipe > 1e-10
-                # Convection would turn on if we heat this layer!
-                # Use this slope to guide the solver.
                 dFconv_dT[n] = (F_recipe) / (T_recipe - T[n])
             else
-                # Still stable even with perturbation
                 dFconv_dT[n] = 0.0
             end
         else
-            # Convection is active, use standard numerical derivative
             dFconv_dT[n] = (F_pert - F_base) / delta_T
         end
     end
     
-    # Fill edges
     F_conv[1] = F_conv[2]
     dFconv_dT[1] = dFconv_dT[2]
 end

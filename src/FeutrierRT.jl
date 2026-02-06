@@ -192,13 +192,35 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
             scale = pack.mu_sq[i] #/ (eta^2)
             
             if d == 1
-                # Surface BC
-                h = (dt_plus) / sqrt(pack.mu_sq[i])
-                diag = 1.0 + h + 0.5*h^2; off = -1.0; src_fac = 0.5*h^2
+                mu = sqrt(pack.mu_sq[i])
+                tau_slab = dt_plus / mu
+                if tau_slab < 0.1
+                    E_slab = 1.0 - tau_slab * (1.0 - 0.5*tau_slab + 0.16666666666666666*tau_slab^2)
+                else
+                    E_slab = exp(-tau_slab)
+                end
                 
-                push!(rows, row); push!(cols, idx_J(i,d)); push!(vals, diag)
+                tau_top_nu = atm.tau[1] * atm.eta[f, 1]
+                tau_top  = tau_top_nu / mu
+                
+                if tau_top < 0.1
+                    E_top = 1.0 - tau_top * (1.0 - 0.5*tau_top)
+                else
+                    E_top = exp(-tau_top)
+                end
+
+                term_top = 2.0 - E_top * (1.0 + E_slab)
+                diag = 1.0
+                off  = -E_slab
+                src_fac = 0.5 * (1.0 - E_slab) * term_top
+                
+                push!(rows, row); push!(cols, idx_J(i,d));   push!(vals, diag)
                 push!(rows, row); push!(cols, idx_J(i,d+1)); push!(vals, off)
-                if include_dT; push!(rows, row); push!(cols, idx_T(d)); push!(vals, -src_fac * dB); end
+                
+                if include_dT
+                    push!(rows, row); push!(cols, idx_T(d)); push!(vals, -src_fac * dB)
+                end
+                
                 RHS[row] = src_fac * B
             elseif d == D
                 push!(rows, row); push!(cols, idx_J(i,d)); push!(vals, 1.0)
