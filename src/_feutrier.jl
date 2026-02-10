@@ -1,414 +1,600 @@
-function solve_feautrier!(u, A, B, C, RHS, dl, d, du)
-    @inbounds begin
-        dl .= -A[2:end]
-        du .= -C[1:end-1]
-        d  .= B
-    end
-    u .= Tridiagonal(dl, d, du) \ RHS
+# ==============================================================================
+# 1. DATA STRUCTURES
+# ==============================================================================
+mutable struct Atmosphere{T <: AbstractFloat}
+    T_eff::T              # Effective Temperature [K] 
+    z::Vector{T}          # Height (Size: D)
+    tau::Vector{T}        # Reference optical depth (Size: D)
+    tau_lambda::Matrix{T} # Reference optical depth (Size: Nf, D)
+    rho::Vector{T}        # Density [g/cm^3] (Size: D)
+    Temp::Vector{T}       # Temperature (Size: D)
+    mu::Vector{T}         # Angle cosines (Size: Na)
+    w_mu::Vector{T}       # Angle weights (Normalized to sum=1)
+    w_lambda::Vector{T}   # Frequency Bin weights (Size: Nf)
+    chi::Matrix{T}        # Opacity (Nf x D)
+    chi_ref::Vector{T}    # Reference opacity (Size: D)
+    B::Matrix{T}          # Planck function (Nf x D)
+    dBdT::Matrix{T}       # Derivative of B (Nf x D)
+    F_conv::Vector{T}     # Convective Flux (Size: D) 
+    dFconv::Vector{T}     # Spatial Derivative dF_conv/dtau (Size: D) 
+    dFconv_dT::Vector{T}  # Partial derivative dF_conv/dT (Size: D) 
+    eta::Matrix{T}        # Opacity ratio chi / chi_ref
+    J_bol::Vector{T}      # Bolometric Mean Intensity (Size: D)
+    F_bol::Vector{T}      # Bolometric Flux (Size: D)
+    g_rad::Vector{T}      # Radiative Acceleration (Size: D) [cm/s^2] 
+    dT::Vector{T}         # Temperature Correction (Size: D)
+    J_raw                 # Specific Intensity J(mu) (Nf x Na x D)
 end
 
-function build_radiative_jacobian!(
-    Jmat,               # (Ndepth,Ndepth)
-    T, ρ, z,
-    eos, opa_extended;
-    μ_angles, μ_weights,
-    λ_weights = nothing,
-)
-    N = length(T)
-    fill!(Jmat, 0.0)
-    opa = opa_extended.opa
-
-    lnrho = log.(ρ)
-    lnt   = log.(T)
-
-    nbin = length(opa.λ)
-    bwts = isnothing(λ_weights) ? ones(nbin) : λ_weights
-
-    # Workspace
-    τ   = zeros(N)
-    Δτ  = zeros(N-1)
-    A   = zeros(N)
-    B   = zeros(N)
-    C   = zeros(N)
-    RHS = zeros(N)
-    u   = zeros(N)
-    δu  = zeros(N)
-    dl  = zeros(N-1)
-    du  = zeros(N-1)
-    d   = zeros(N)
-
-    for (bin, bw) in enumerate(bwts)
-        S      = lookup(eos, opa, :src, lnrho, lnt, bin)
-        dS_dT = TSO.extended_lookup(eos, opa_extended, :dS_dT, lnrho, lnt, bin)
-        κρ     = lookup(eos, opa, :κ, lnrho, lnt, bin)
-
-        compute_τ_grid!(τ; z=z, ρκ=κρ)
-        Δτ .= diff(τ)
-
-        grad_S = (S[end] - S[end-1]) / Δτ[end]
-
-        for (μ, wμ) in zip(μ_angles, μ_weights)
-            μ2 = μ^2
-            @inbounds for k = 2:N-1
-                dτm = Δτ[k-1]
-                dτp = Δτ[k]
-                fac = 2μ2 / (dτm + dτp)
-                A[k] = fac / dτm
-                C[k] = fac / dτp
-                B[k] = 1 + fac * (1/dτm + 1/dτp)
-            end
-
-            dτ = Δτ[1]
-            B[1] = 1 + 2μ / dτ
-            C[1] = -2μ / dτ
-
-            dτb = Δτ[end]
-            A[end] = -2μ / dτb
-            B[end] = 1 + 2μ / dτb
-            C[end] = 0
-
-            for j = 1:N
-                fill!(RHS, 0.0)
-                RHS[j] = dS_dT[j]
-
-                if j == N
-                    RHS[end] += (2μ/3) * grad_S
-                end
-
-                solve_feautrier!(δu, A, B, C, RHS, dl, d, du)
-
-                @inbounds for i = 2:N-1
-                    δH = μ * (δu[i+1] - δu[i-1]) / (Δτ[i] + Δτ[i-1])
-                    δF = 4π * δH
-                    Jmat[i,j] += bw * wμ * δF
-                end
-            end
-        end
-    end
+struct Packer{T}
+    Nf::Int
+    Na::Int
+    N_total::Int
+    weights::Vector{T}
+    mu_sq::Vector{T}
+    freq_idx::Vector{Int}
+    ang_idx::Vector{Int}
 end
 
-function add_convection_to_jacobian!(
-    Jmat,
-    dFconv_dT,
-    dFconv_dT_minus,
-    conv_start
-)
-    N = size(Jmat,1)
-    for i = conv_start:N
-        Jmat[i,i]     += 0.25 * dFconv_dT[i]
-        Jmat[i,i-1]   += 0.25 * dFconv_dT_minus[i]
-    end
-end
+@inline gid(i, d, N) = (d - 1) * N + i
 
-function update_temperature_fully_linearized!(
-    T, dT,
-    F_rad, F_conv,
-    Jmat,
-    Teff
-)
-    F_target = σ_SB * Teff^4
-    R = F_rad .+ F_conv .- F_target
+# ==============================================================================
+# 2. INITIALIZATION
+# ==============================================================================
 
-    dT .= - (Jmat \ R)
-
-    for i in eachindex(T)
-        if dT[i] * T[i] < 0
-            dT[i] *= 0.75
-        end
-        dTmax = 0.08 * T[i]
-        dT[i] = clamp(dT[i], -dTmax, dTmax)
-        T[i] += dT[i]
-    end
-end
-
-
-
-
-
-function compute_diagonal_inv2!(diag_inv, A, B, C)
-    n = length(B)
+function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Temp::Vector{T}, 
+                    F_conv::Vector{T}, dFconv_dT::Vector{T},
+                    mu::Vector{T}, w_mu::Vector{T}, 
+                    w_lambda::Vector{T},
+                    chi::Matrix{T}, chi_ref::Vector{T}, 
+                    B::Matrix{T}, dBdT::Matrix{T}) where T
+    D = length(tau)
+    Nf = length(w_lambda) 
+    Na = length(mu)
     
-    # 1. Forward Sweep
-    # We use 'diag_inv' to store the D terms temporarily to avoid allocation
-    diag_inv[1] = B[1]
+    # --- 1. Normalize Angle Weights ---
+    total_w_mu = sum(w_mu)
+    w_mu = (total_w_mu > 0) ? w_mu ./ total_w_mu : w_mu
     
-    @inbounds for k in 2:n
-        # D[k] = B[k] - A[k] * C[k-1] / D[k-1]
-        val = A[k] * C[k-1] / diag_inv[k-1]
-        diag_inv[k] = B[k] - val
-    end
-    
-    # 2. Backward Sweep
-    # Overwrite 'diag_inv' with the actual inverse diagonal elements
-    # Z[n] = 1 / D[n]
-    diag_inv[n] = 1.0 / diag_inv[n]
-    
-    @inbounds for k in (n-1):-1:1
-        Z_next = diag_inv[k+1]     # Already computed inverse of next element
-        D_curr = diag_inv[k]       # Current D term (from forward sweep)
-        
-        # Z[k] = (1/D[k]) * (1 + A[k+1] * C[k] * Z[k+1])
-        diag_inv[k] = (1.0 / D_curr) * (1.0 + A[k+1] * C[k] * Z_next)
-    end
-end
-
-
-
-
-function compute_temperature_corrections_auer_mihalas!(dT, T, ρ, z, 
-                                         eos, opa, T_eff;
-                                         μ_nodes, μ_weights, J_comp, 
-                                         λ_weights=nothing)
-    
-    N_d = length(T)
-    N_f = length(opa.opa.λ) 
-    N_a = length(μ_nodes)
-
-    scale = 0.5 / sum(μ_weights)
-    μ_weights_scaled = μ_weights .* scale
-    
-    opacity_ratio = zeros(N_d, N_f)
-    B = zeros(N_d, N_f)
-    dB_dT = zeros(N_d, N_f)
-    χ_std = zeros(N_d)
-    
-    w_ν = isnothing(λ_weights) ? ones(N_f) ./ N_f : λ_weights
-    
-    lnρ = log.(ρ)
-    lnT = log.(T)
-    
-    for d in 1:N_d
-        χ_std[d] = exp(lookup(eos.eos, :lnRoss, lnρ[d], lnT[d])) * ρ[d]
-        
-        for f in 1:N_f
-            χ_ν = lookup(eos.eos, opa.opa, :κ, lnρ[d], lnT[d], f) 
-            B[d, f] = lookup(eos.eos, opa.opa, :src, lnρ[d], lnT[d], f)
-            dB_dT[d, f] = TSO.extended_lookup(eos.eos, opa, :dS_dT, lnρ[d], lnT[d], f)
-            
-            if χ_std[d] > 0
-                opacity_ratio[d, f] = χ_ν / χ_std[d]
-            else
-                opacity_ratio[d, f] = χ_ν 
-            end
+    # --- 2. Eta ---
+    eta = zeros(T, Nf, D)
+    for d in 1:D
+        ref = max(chi_ref[d], 1e-30)
+        for f in 1:Nf
+            eta[f, d] = chi[f, d] / ref
         end
     end
-    
-    τ = zeros(N_d)
-    τ[1] = 0.0 
-    for d in 2:N_d
-        dz = abs(z[d] - z[d-1])
-        avg_χ = 0.5 * (χ_std[d] + χ_std[d-1])
-        τ[d] = τ[d-1] + avg_χ * dz
-    end
-    J = solve_rt_auer_mihalas(τ, μ_nodes, μ_weights_scaled, w_ν, opacity_ratio, B, dB_dT, T_eff)
-    J_mean = similar(J_comp)
-    J_mean .= 0.0
-    #dT = zeros(N_d)
-    
-    for d in 1:N_d
-        numerator = 0.0
-        denominator = 0.0
-        valBsum = 0.0
-        valdBsum = 0.0
-        Jsum = 0.0
-        
-        for f in 1:N_f
-            η = opacity_ratio[d, f]
-            val_B = B[d, f]
-            val_dB = dB_dT[d, f]
-            w_freq = w_ν[f]
-            
-            J_mean_angle = 0.0
-            for a in 1:N_a
-                J_mean_angle += μ_weights_scaled[a] * J[d, a, f]
-            end
 
-            J_mean[d] += w_freq * J_mean_angle
-            
-            weight_factor = w_freq * η
-            numerator += weight_factor * (J_mean_angle - val_B)
-            denominator += weight_factor * val_dB
-            valBsum += weight_factor * val_B
-            valdBsum += weight_factor * val_dB
-            Jsum += weight_factor * J_mean_angle
-        end
-        
-        if (d == 1) || (d == N_d)
-            @show d,numerator, denominator, valBsum, valdBsum, Jsum
-        end
-        if abs(denominator) > 1e-30
-            dT[d] = numerator / denominator
+    # --- 3. Pre-compute Convective Flux Derivative (dF_conv / dtau) ---
+    dFconv = zeros(T, D)
+    for d in 1:D
+        if d == 1
+            dt = tau[2] - tau[1]
+            dFconv[d] = (F_conv[2] - F_conv[1]) / dt
+        elseif d == D
+            dt = tau[D] - tau[D-1]
+            dFconv[d] = (F_conv[D] - F_conv[D-1]) / dt
         else
-            dT[d] = 0.0
+            dt = tau[d+1] - tau[d-1]
+            dFconv[d] = (F_conv[d+1] - F_conv[d-1]) / dt
         end
-        
-        max_correction = 0.1 * T[d] 
-        dT[d] = clamp(dT[d], -max_correction, max_correction)
     end
 
-    @show minimum(dT), maximum(dT)
-    @show minimum(J_comp), maximum(J_comp)
-    @show minimum(J_mean), maximum(J_mean)
+    # --- 4. Compute tau_lambda ---
+    tau_lambda = zeros(T, Nf, D)
+    for f in 1:Nf
+        compute_τ!(view(tau_lambda, f, :); z=z, ρκ=chi[f,:])
+    end
     
-    return dT
+    # --- 5. Allocation ---
+    J_raw_init = nothing #zeros(T, Nf, Na, D)
+    J_bol_init = zeros(T, D)
+    F_bol_init = zeros(T, D)
+    g_rad_init = zeros(T, D)
+    dT_init    = zeros(T, D)
+    return Atmosphere{T}(T_eff, deepcopy(z), deepcopy(tau), tau_lambda, deepcopy(rho), deepcopy(Temp), 
+                         deepcopy(mu), deepcopy(w_mu), deepcopy(w_lambda), 
+                         deepcopy(chi), deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), 
+                         deepcopy(F_conv), dFconv, deepcopy(dFconv_dT), 
+                         eta, J_bol_init, F_bol_init, g_rad_init, dT_init, J_raw_init)
 end
 
-function solve_rt_auer_mihalas(τ, μ, w_μ, w_ν, opacity, B, dB_dT, T_eff)
+function update!(atm::Atmosphere{T}; kwargs...) where T
+    dirty_chi = false
+    dirty_chi_ref = false
+    dirty_F_conv = false
+    dirty_tau = false
+    dirty_w_mu = false
+    for (k, v) in kwargs
+        if hasfield(Atmosphere, k)
+            field_val = getfield(atm, k)
+            
+            if isa(field_val, AbstractArray) && !isnothing(field_val)
+                copyto!(field_val, v)
+            else
+                setfield!(atm, k, v)
+            end
+
+            if k === :chi; dirty_chi = true; end
+            if k === :chi_ref; dirty_chi_ref = true; end
+            if k === :F_conv; dirty_F_conv = true; end
+            if k === :tau; dirty_tau = true; end
+            if k === :w_mu; dirty_w_mu = true; end
+        end
+    end
+
+    D = length(atm.tau)
+    Nf = length(atm.w_lambda)
+
+    if dirty_chi || dirty_chi_ref
+        @inbounds for d in 1:D
+            ref = max(atm.chi_ref[d], 1e-30)
+            for f in 1:Nf
+                atm.eta[f, d] = atm.chi[f, d] / ref
+            end
+        end
+    end
+
+    if dirty_F_conv || dirty_tau
+        @inbounds for d in 1:D
+            if d == 1
+                dt = atm.tau[2] - atm.tau[1]
+                atm.dFconv[d] = (atm.F_conv[2] - atm.F_conv[1]) / dt
+            elseif d == D
+                dt = atm.tau[D] - atm.tau[D-1]
+                atm.dFconv[d] = (atm.F_conv[D] - atm.F_conv[D-1]) / dt
+            else
+                dt = atm.tau[d+1] - atm.tau[d-1]
+                atm.dFconv[d] = (atm.F_conv[d+1] - atm.F_conv[d-1]) / dt
+            end
+        end
+    end
+
+    if dirty_chi || dirty_tau 
+        @inbounds for f in 1:Nf
+             compute_τ!(view(atm.tau_lambda, f, :); z=atm.z, ρκ=view(atm.chi, f, :))
+        end
+    end
     
-    # Ensure this constant matches your B units (CGS)
-    σ_SB = 5.670374419e-5 
-    H_flux = (σ_SB * T_eff^4) / (4.0 * π)
+    if dirty_w_mu
+        total = sum(atm.w_mu)
+        if total > 0
+            atm.w_mu ./= total
+        end
+    end
 
-    N_d, N_f = size(opacity)
-    N_a = length(μ)
-    N_state = N_a * N_f 
+    return nothing
+end
 
-    # Flattened Arrays
-    ω = vec([w_μ[a] * w_ν[f] for a in 1:N_a, f in 1:N_f])
-    μ_flat = repeat(μ, outer=N_f)
+function Packer(atm::Atmosphere{T}) where T
+    Nf = length(atm.w_lambda) 
+    Na = length(atm.mu)
+    N = Nf * Na
     
-    # Use simple permutedims/reshape to ensure correct layout
-    η_flat = reshape(permutedims(repeat(opacity, inner=(1, 1, N_a)), (1, 3, 2)), N_d, N_state)
-    B_flat = reshape(permutedims(repeat(B, inner=(1, 1, N_a)), (1, 3, 2)), N_d, N_state)
-    dB_flat = reshape(permutedims(repeat(dB_dT, inner=(1, 1, N_a)), (1, 3, 2)), N_d, N_state)
+    weights = zeros(T, N)
+    mu_sq = zeros(T, N)
+    freq_idx = zeros(Int, N)
+    ang_idx = zeros(Int, N)
+    
+    idx = 1
+    for f in 1:Nf
+        for a in 1:Na
+            weights[idx]  = atm.w_lambda[f] * atm.w_mu[a]
+            mu_sq[idx]    = atm.mu[a]^2
+            freq_idx[idx] = f
+            ang_idx[idx]  = a
+            idx += 1
+        end
+    end
+    return Packer(Nf, Na, N, weights, mu_sq, freq_idx, ang_idx)
+end
 
-    Blocks_A = [zeros(N_state, N_state) for _ in 1:N_d]
-    Blocks_B = [zeros(N_state, N_state) for _ in 1:N_d]
-    Blocks_C = [zeros(N_state, N_state) for _ in 1:N_d]
-    Vectors_R = [zeros(N_state) for _ in 1:N_d]
+# ==============================================================================
+# 3. DIRECT SOLVER (Original Gustafsson)
+# ==============================================================================
 
-    for d in 1:N_d
-        η_d = η_flat[d, :]
-        B_d = B_flat[d, :]
-        dB_d = dB_flat[d, :]
+function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
+    D = length(atm.tau)
+    pack = Packer(atm)
+    N = pack.N_total
+    M = include_dT ? N + 1 : N 
+
+    # allocate J_raw if not already allocated
+    if isnothing(atm.J_raw)
+        atm.J_raw = zeros(T, pack.Nf, pack.Na, D)
+    end
+    fill!(atm.J_raw, 0.0)
+    
+    sigma_SB = 5.670374419e-5
+    F_target = sigma_SB * atm.T_eff^4
+    
+    rows = Int[]
+    cols = Int[]
+    vals = T[]
+    RHS  = zeros(T, D * M)
+
+    idx_J(i, d) = (d-1)*M + i
+    idx_T(d)    = (d-1)*M + M
+
+    for d in 1:D
+        for i in 1:N
+            f = pack.freq_idx[i]
+            row = idx_J(i, d)
+            
+            B   = atm.B[f, d]
+            dB  = atm.dBdT[f, d]
+            A, B_diag, C, src_fac = feutrier_coeffs(atm, f, d, pack.mu_sq[i])
+            
+            push!(rows, row); push!(cols, idx_J(i,d)); push!(vals, B_diag)
+            if A != 0; push!(rows, row); push!(cols, idx_J(i,d-1)); push!(vals, A); end
+            if C != 0; push!(rows, row); push!(cols, idx_J(i,d+1)); push!(vals, C); end
+            if include_dT != 0; push!(rows, row); push!(cols, idx_T(d)); push!(vals, -src_fac * dB); end
+
+            RHS[row] = src_fac * B
+        end
+
+        # --- Flux Constraint ---
+        if include_dT
+            row_flux = idx_T(d)
+            if d == 1
+                b_sum = 0.0; db_sum = 0.0
+                for k in 1:N
+                    f = pack.freq_idx[k]
+                    term = pack.weights[k] * atm.chi[f, d]
+                    
+                    push!(rows, row_flux); push!(cols, idx_J(k,d)); push!(vals, term)
+                    db_sum += term * atm.dBdT[f, d]
+                    b_sum  += term * atm.B[f, d]
+                end
+                push!(rows, row_flux); push!(cols, idx_T(d)); push!(vals, -db_sum)
+                RHS[row_flux] = b_sum
+            else
+                for k in 1:N
+                    f = pack.freq_idx[k]
+                    a = pack.ang_idx[k]
+                    
+                    dt_local = atm.tau_lambda[f, d] - atm.tau_lambda[f, d-1]
+                    w = 4π * atm.w_lambda[f] * atm.w_mu[a] * pack.mu_sq[k]
+                    coeff = w / dt_local
+                    
+                    push!(rows, row_flux); push!(cols, idx_J(k,d));   push!(vals, coeff)
+                    push!(rows, row_flux); push!(cols, idx_J(k,d-1)); push!(vals, -coeff)
+                end
+                
+                val_Td = 0.5 * atm.dFconv_dT[d]
+                push!(rows, row_flux); push!(cols, idx_T(d)); push!(vals, val_Td)
+                
+                cross_term = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
+                val_Td_minus_1 = 0.5 * (atm.dFconv_dT[d-1] + cross_term)
+                push!(rows, row_flux); push!(cols, idx_T(d-1)); push!(vals, val_Td_minus_1)
+                
+                RHS[row_flux] = F_target - 0.5*(atm.F_conv[d] + atm.F_conv[d-1])
+            end
+        end
+    end
+    
+    A_mat = sparse(rows, cols, vals, D*M, D*M)
+    sol = A_mat \ RHS    
+    
+    for d in 1:D
+        if include_dT
+            atm.dT[d] = sol[idx_T(d)]
+        end
+        for k in 1:N
+            J_new = sol[idx_J(k, d)]
+            if J_new <= 0.0
+                 J_new = 1e-3 * atm.B[pack.freq_idx[k], d] 
+            end
+            atm.J_raw[pack.freq_idx[k], pack.ang_idx[k], d] = J_new
+        end
+    end
+    
+    update_mean_intensity!(atm)
+    compute_flux!(atm)
+    return nothing
+end
+
+# ==============================================================================
+# 4. DAGGER-BASED ALI SOLVER
+# ==============================================================================
+
+"""
+    solve_ALI_step!(atm)
+
+Performs a **single** update of the ALI procedure using Dagger.jl.
+1. Computes formal solution (J_nu) and Lambda_star via parallel Dagger tasks.
+2. Solves flux constraint to update atm.dT.
+3. Updates atm.Temp += atm.dT.
+"""
+function solve_approximate!(atm::Atmosphere{T}) where T
+    D = length(atm.tau)
+    sigma_SB = 5.670374419e-5
+    F_target = sigma_SB * atm.T_eff^4
+    
+    Lambda_star = zeros(T, D)
+    RE_res = zeros(T, D)
+    RE_jac = zeros(T, D)
+    compute_formal_sol_dagger!(atm, Lambda_star, RE_res, RE_jac)
+    solve_T_correction_approximate!(atm, Lambda_star, RE_res, RE_jac, F_target)
+end
+
+"""
+    compute_formal_sol_dagger!(atm, Lambda_star)
+
+Splits frequencies into chunks and spawns Dagger tasks to solve them.
+This avoids race conditions and memory boundary errors.
+"""
+function compute_formal_sol_dagger!(atm::Atmosphere{T}, Lambda_star::Vector{T}, RE_res::Vector{T}, RE_jac::Vector{T}) where T
+    D = length(atm.tau)
+    Nf = length(atm.w_lambda)
+    
+    fill!(atm.J_bol, 0.0); fill!(atm.F_bol, 0.0); fill!(Lambda_star, 0.0)
+    fill!(RE_res, 0.0); fill!(RE_jac, 0.0)
+    
+    n_chunks = max(1, Threads.nthreads() * 4)
+    chunk_size = cld(Nf, n_chunks) 
+    
+    tasks = Vector{Any}(undef, 0) 
+    sizehint!(tasks, n_chunks)
+
+    for i in 1:n_chunks
+        f_start = (i-1)*chunk_size + 1
+        f_end   = min(i*chunk_size, Nf)
         
-        Sum_denom = dot(ω, η_d .* dB_d); Sum_denom = (Sum_denom == 0) ? 1.0 : Sum_denom
-        v_c = dB_d ./ Sum_denom
-        Sum_wnB = dot(ω, η_d .* B_d)
-
-        # Standard geometric Δτ
-        Δτ_minus = (d > 1)   ? (τ[d] - τ[d-1]) : 0.0
-        Δτ_plus  = (d < N_d) ? (τ[d+1] - τ[d]) : 0.0
+        if f_start <= f_end
+            t = Dagger.@spawn process_frequency_chunk(atm, f_start, f_end)
+            push!(tasks, t)
+        end
+    end
+    
+    for t in tasks
+        (J_p, F_p, L_p, RE_r, RE_j) = fetch(t)::NTuple{5, Vector{T}}
         
-        for i in 1:N_state
-            # --- FIX: SCALE Δτ BY OPACITY (Δτ_ν = η * Δτ) ---
-            # We use the average η between the two depth points
-            η_val = η_d[i]
+        atm.J_bol   .+= J_p
+        atm.F_bol   .+= F_p
+        Lambda_star .+= L_p
+        RE_res      .+= RE_r
+        RE_jac      .+= RE_j
+    end
+end
+
+"""
+    process_frequency_chunk(atm, f_start, f_end)
+
+Worker function: Solves Feutrier for a range of frequencies and 
+returns the accumulated moments for that range.
+"""
+function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) where T
+    D, Na = length(atm.tau), length(atm.mu)
+    
+    J_part, F_part, L_part = zeros(T, D), zeros(T, D), zeros(T, D)
+    RE_res, RE_jac = zeros(T, D), zeros(T, D)
+    
+    J_nu = zeros(T, Na, D)
+    L_nu = zeros(T, D) 
+    
+    for f in f_start:f_end
+        fill!(L_nu, 0.0)
+        solve_feutrier_1D!(atm, f, J_nu, L_nu)
+        
+        w_f = atm.w_lambda[f]
+        chi_col = view(atm.chi, f, :)
+        B_col   = view(atm.B, f, :)
+        dB_col  = view(atm.dBdT, f, :)
+        
+        for d in 1:D
+            j_sum = 0.0
+            for a in 1:Na; j_sum += atm.w_mu[a] * J_nu[a, d]; end
+            
+            J_part[d] += w_f * j_sum
+            L_part[d] += L_nu[d]
+            
+            term = w_f * chi_col[d]
+            RE_res[d] += term * (j_sum - B_col[d])
+            RE_jac[d] += term * (L_nu[d] - 1.0) * dB_col[d]
+            
+            # --- Flux ---
+            flux_sum = 0.0
+            for a in 1:Na
+                ang = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
+                dJ, dt = 0.0, 1.0
+                if d == 1
+                    dJ = J_nu[a, 2] - J_nu[a, 1]
+                    dt = atm.tau_lambda[f, 2] - atm.tau_lambda[f, 1]
+                elseif d == D
+                    dJ = J_nu[a, D] - J_nu[a, D-1]
+                    dt = atm.tau_lambda[f, D] - atm.tau_lambda[f, D-1]
+                else
+                    dJ = J_nu[a, d+1] - J_nu[a, d-1]
+                    dt = atm.tau_lambda[f, d+1] - atm.tau_lambda[f, d-1]
+                end
+                flux_sum += ang * (dJ / max(dt, 1e-20))
+            end
+            F_part[d] += flux_sum
+        end
+    end
+    return (J_part, F_part, L_part, RE_res, RE_jac)
+end
+
+function solve_T_correction_approximate!(atm::Atmosphere{T}, Lambda_star::Vector{T}, RE_res::Vector{T}, RE_jac::Vector{T}, F_target::T) where T
+    D = length(atm.tau)
+    rows, cols, vals = Int[], Int[], T[]
+    RHS = zeros(T, D)
+    
+    dBdT_flux = vec(sum(atm.w_lambda .* atm.dBdT, dims=1))
+    
+    for d in 1:D
+        if log10(atm.tau[d]) < -1.0
+            diag_val = -RE_jac[d]
+            diag_val = max(diag_val, 1e-20) # Safety
+            push!(rows, d); push!(cols, d); push!(vals, diag_val)
+            RHS[d] = RE_res[d]
+        else
+            F_curr = atm.F_bol[d] + atm.F_conv[d]
+            RHS[d] = F_target - F_curr
+            
+            L_star_safe = max(Lambda_star[d], 1e-12)
+            ali_diag = 4.0 * dBdT_flux[d] * L_star_safe
+            push!(rows, d); push!(cols, d); push!(vals, ali_diag)
             
             if d > 1
-                Δτ_nu_minus = Δτ_minus * 0.5 * (η_val + η_flat[d-1, i])
-            else
-                Δτ_nu_minus = 0.0
-            end
-            
-            if d < N_d
-                Δτ_nu_plus = Δτ_plus * 0.5 * (η_val + η_flat[d+1, i])
-            else
-                Δτ_nu_plus = 0.0
-            end
-
-            # Average for 2nd derivative denominator
-            if d == 1
-                Δτ_nu_avg = Δτ_nu_plus
-            elseif d == N_d
-                Δτ_nu_avg = Δτ_nu_minus
-            else
-                Δτ_nu_avg = 0.5 * (Δτ_nu_minus + Δτ_nu_plus)
-            end
-            
-            # Use SCALED steps for coefficients
-            val_u = (μ_flat[i]^2) / Δτ_nu_avg
-            u_minus = (d > 1)   ? val_u / Δτ_nu_minus : 0.0
-            u_plus  = (d < N_d) ? val_u / Δτ_nu_plus  : 0.0
-            
-            if d > 1;     Blocks_A[d][i, i] = u_minus; end
-            if d < N_d;   Blocks_C[d][i, i] = u_plus;  end
-            
-            Blocks_B[d][i, i] = (u_minus + u_plus) + 1.0
-            Vectors_R[d][i] = B_d[i] - v_c[i] * Sum_wnB
-        end
-        
-        Blocks_B[d] .-= v_c * (ω .* η_d)'
-    end
-
-    # Surface BC (τ=0)
-    d = 1
-    Δτ_1 = τ[2] - τ[1]
-    for i in 1:N_state
-        # Scale Δτ_1 by η
-        Δτ_nu_1 = Δτ_1 * 0.5 * (η_flat[1, i] + η_flat[2, i])
-        
-        Blocks_A[d][i, :] .= 0; Blocks_B[d][i, :] .= 0; Blocks_C[d][i, :] .= 0; Vectors_R[d][i] = 0
-        
-        term = μ_flat[i] / Δτ_nu_1
-        Blocks_B[d][i, i] = 1.0 + term
-        Blocks_C[d][i, i] = term
-    end
-
-    # Lower BC (τ=τ_max)
-    d = N_d
-    Δτ_N = τ[N_d] - τ[N_d-1]
-    η_N = η_flat[N_d, :]
-    B_N = B_flat[N_d, :]; dB_N = dB_flat[N_d, :]
-    
-    Sum_wn_dB = dot(ω, η_N .* dB_N)
-    Sum_wmu_eta_dB = dot(ω, (μ_flat ./ η_N) .* dB_N)
-    Sum_wmu_B = dot(ω, μ_flat .* B_N)
-    Sum_wmu_dB = dot(ω, μ_flat .* dB_N)
-    Sum_wn_B = dot(ω, η_N .* B_N)
-
-    H_term = H_flux - Sum_wmu_B + (Sum_wmu_dB * Sum_wn_B / Sum_wn_dB)
-
-    for i in 1:N_state
-        Blocks_A[d][i, :] .= 0; Blocks_B[d][i, :] .= 0; Blocks_C[d][i, :] .= 0; Vectors_R[d][i] = 0
-        
-        # Scale Δτ_N by η
-        Δτ_nu_N = Δτ_N * 0.5 * (η_N[i] + η_flat[d-1, i])
-        
-        mu_dt = μ_flat[i] / Δτ_nu_N
-        Blocks_A[d][i, i] = mu_dt 
-        Blocks_B[d][i, i] = mu_dt + 1.0 
-        
-        factor1 = dB_N[i] / Sum_wn_dB
-        Blocks_B[d][i, :] .-= factor1 .* (ω .* η_N)
-        Vectors_R[d][i] += B_N[i] - factor1 * Sum_wn_B
-        
-        C_flux = (μ_flat[i] / η_N[i]) * dB_N[i] / Sum_wmu_eta_dB
-        
-        Vectors_R[d][i] += C_flux * H_term
-        Blocks_B[d][i, :] .-= C_flux .* (ω .* μ_flat)
-        Blocks_B[d][i, :] .+= (C_flux * Sum_wmu_dB / Sum_wn_dB) .* (ω .* η_N)
-    end
-
-    Es = Vector{Matrix{Float64}}(undef, N_d)
-    Fs = Vector{Vector{Float64}}(undef, N_d)
-    
-    Es[1] = Blocks_B[1] \ Blocks_C[1]
-    Fs[1] = Blocks_B[1] \ Vectors_R[1]
-    
-    for d in 2:N_d
-        M_temp = Blocks_B[d] - Blocks_A[d] * Es[d-1]
-        if d < N_d; Es[d] = M_temp \ Blocks_C[d]; end
-        Fs[d] = M_temp \ (Vectors_R[d] + Blocks_A[d] * Fs[d-1])
-    end
-    
-    J_flat = Vector{Vector{Float64}}(undef, N_d)
-    J_flat[N_d] = Fs[N_d]
-    for d in (N_d-1):-1:1
-        J_flat[d] = Es[d] * J_flat[d+1] + Fs[d]
-    end
-
-    # Reshape back to (Depth, Angle, Freq)
-    J_out = zeros(N_d, N_a, N_f)
-    idx(ia, ifreq) = (ifreq - 1) * N_a + ia
-    for d in 1:N_d
-        for ifreq in 1:N_f
-            for ia in 1:N_a
-                J_out[d, ia, ifreq] = J_flat[d][idx(ia, ifreq)]
+                val_Td = atm.dFconv_dT[d]
+                push!(rows, d); push!(cols, d);   push!(vals, val_Td)
+                val_Td_m1 = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
+                push!(rows, d); push!(cols, d-1); push!(vals, val_Td_m1)
             end
         end
     end
-
-    return J_out
+    
+    J_mat = sparse(rows, cols, vals, D, D)
+    atm.dT .= J_mat \ RHS
 end
 
+# ==============================================================================
+# 5. CORE FEUTRIER KERNELS
+# ==============================================================================
+
+"""
+    solve_feutrier_1D!(atm, f, J_out, L_acc)
+
+Solves the Feutrier system for a single frequency `f`. 
+Writes J to `J_out` and accumulates ALI diagonal to `L_acc`.
+"""
+function solve_feutrier_1D!(atm::Atmosphere{T}, f::Int, J_out::Matrix{T}, L_acc::AbstractVector{T}) where T
+    D, Na = length(atm.tau), length(atm.mu)
+    
+    for a in 1:Na
+        rows, cols, vals = Int[], Int[], T[]
+        RHS = zeros(T, D)
+        mu_sq = atm.mu[a]^2
+        
+        for d in 1:D
+            # Get coeffs
+            (A, B_diag, C, src_fac) = feutrier_coeffs(atm, f, d, mu_sq)
+            
+            if A != 0; push!(rows, d); push!(cols, d-1); push!(vals, A); end
+            push!(rows, d); push!(cols, d); push!(vals, B_diag)
+            if C != 0; push!(rows, d); push!(cols, d+1); push!(vals, C); end
+            
+            RHS[d] = src_fac * atm.B[f, d]
+            
+            # ALI Accumulation: dJ/dS ~ 1/Diagonal
+            inv_diag = 1.0 / B_diag
+            weight   = atm.w_lambda[f] * atm.w_mu[a]
+            L_acc[d] += weight * (src_fac * inv_diag) 
+        end
+        
+        # Solve tridiagonal for this angle
+        M = sparse(rows, cols, vals, D, D)
+        J_ray = M \ RHS
+        
+        for d in 1:D
+            J_out[a, d] = J_ray[d]
+        end
+    end
+end
+
+"""
+    feutrier_coeffs(atm, f, d, mu_sq)
+
+Returns (Previous, Self, Next, Src_Factor) coefficients for the Feutrier matrix row.
+"""
+function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
+    dt_minus, dt_plus = get_dtau(atm.tau_lambda, f, d)
+    D = length(atm.tau)
+    if d == 1
+        mu = sqrt(mu_sq)
+        tau_slab = dt_plus / mu
+        tau_top  = (atm.tau[1] * atm.eta[f, 1]) / mu
+        
+        E_slab = (tau_slab < 0.1) ? 1.0 - tau_slab*(1.0 - 0.5*tau_slab) : exp(-tau_slab)
+        E_top  = (tau_top < 0.1)  ? 1.0 - tau_top *(1.0 - 0.5*tau_top)  : exp(-tau_top)
+        
+        term_top = 2.0 - E_top * (1.0 + E_slab)
+        
+        diag = 1.0
+        off  = -E_slab
+        src  = 0.5 * (1.0 - E_slab) * term_top
+        (0.0, diag, off, src)
+    elseif d == D
+        (0.0, 1.0, 0.0, 1.0) # Diffusion BC B_d
+    else
+        denom = 0.5 * dt_minus * dt_plus * (dt_minus + dt_plus)
+        A = -(mu_sq / denom) * dt_plus
+        C = -(mu_sq / denom) * dt_minus
+        diag = 1.0 - A - C 
+        (A, diag, C, 1.0)
+    end
+end
+
+# ==============================================================================
+# 6. HELPERS (Cleaned)
+# ==============================================================================
+
+function update_mean_intensity!(atm::Atmosphere{T}) where T
+    D = length(atm.tau); Nf = length(atm.w_lambda); Na = length(atm.mu)
+    fill!(atm.J_bol, 0.0)
+    for d in 1:D; bol_sum = zero(T)
+        for f in 1:Nf; sum_J = zero(T)
+            for a in 1:Na; sum_J += atm.w_mu[a] * atm.J_raw[f, a, d]; end
+            bol_sum += atm.w_lambda[f] * sum_J
+        end
+        atm.J_bol[d] = bol_sum
+    end
+end
+
+function compute_flux!(atm::Atmosphere{T}) where T
+    D = length(atm.tau); Nf = length(atm.w_lambda); Na = length(atm.mu)
+    c_light = 2.99792458e10
+    
+    fill!(atm.F_bol, 0.0); fill!(atm.g_rad, 0.0)
+    
+    for f in 1:Nf
+        w_f = atm.w_lambda[f]
+        for a in 1:Na
+            ang_f = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
+            for d in 1:D
+                if d==1
+                    dt = atm.tau_lambda[f, 2] - atm.tau_lambda[f, 1]
+                    dJ = atm.J_raw[f,a,2] - atm.J_raw[f,a,1]
+                elseif d==D
+                    dt = atm.tau_lambda[f, D] - atm.tau_lambda[f, D-1]
+                    dJ = atm.J_raw[f,a,D] - atm.J_raw[f,a,D-1]
+                else
+                    dt = atm.tau_lambda[f, d+1] - atm.tau_lambda[f, d-1]
+                    dJ = atm.J_raw[f,a,d+1] - atm.J_raw[f,a,d-1]
+                end
+                
+                flux = ang_f * (dJ / dt)
+                atm.F_bol[d] += flux
+                atm.g_rad[d] += flux * atm.chi[f, d]
+            end
+        end
+    end
+    
+    for d in 1:D
+        if atm.rho[d] > 0
+            atm.g_rad[d] /= (c_light * atm.rho[d])
+        end
+    end
+end
+
+function get_dtau(tau, f, d)
+    if d == 1
+        return (tau[f, 2]-tau[f, 1]), (tau[f, 2]-tau[f, 1])
+    elseif d == size(tau, 2)
+        return (tau[f, d]-tau[f, d-1]), (tau[f, d]-tau[f, d-1])
+    else
+        return (tau[f, d]-tau[f, d-1]), (tau[f, d+1]-tau[f, d])
+    end
+end
+
+function compute_τ!(τ; z, ρκ)
+    @inbounds for j in eachindex(τ)
+        if j==1 
+            τ[1] = 0 + abs(z[2] - z[1]) * 0.5 * (ρκ[j])
+        else
+            τ[j] = τ[j-1] + abs(z[j] - z[j-1]) * 0.5 * (ρκ[j] + ρκ[j-1])
+        end
+    end
+end
