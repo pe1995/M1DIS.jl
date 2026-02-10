@@ -2,8 +2,9 @@ module FeutrierRT
 
 using LinearAlgebra
 using SparseArrays
+using Dagger
 
-export Atmosphere, solve_gustafsson!
+export Atmosphere, solve_gustafsson!, solve_approximate!
 
 # ==============================================================================
 # 1. DATA STRUCTURES
@@ -29,11 +30,10 @@ mutable struct Atmosphere{T <: AbstractFloat}
     J_bol::Vector{T}      # Bolometric Mean Intensity (Size: D)
     F_bol::Vector{T}      # Bolometric Flux (Size: D)
     g_rad::Vector{T}      # Radiative Acceleration (Size: D) [cm/s^2] 
-    dT::Vector{T}         # Temperature Correction (Size: D) <--- NEW
+    dT::Vector{T}         # Temperature Correction (Size: D)
     J_raw::Array{T, 3}    # Specific Intensity J(mu) (Nf x Na x D)
-    Q_heat::Vector{T}     # Heating Rate (Nf x D)
-    Q_cool::Vector{T}     # Cooling Rate (Nf x D)
 end
+
 struct Packer{T}
     Nf::Int
     Na::Int
@@ -50,11 +50,6 @@ end
 # 2. INITIALIZATION
 # ==============================================================================
 
-"""
-    Atmosphere(; T_eff, tau, ...)
-
-Constructor. 
-"""
 function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Temp::Vector{T}, 
                     F_conv::Vector{T}, dFconv_dT::Vector{T},
                     mu::Vector{T}, w_mu::Vector{T}, 
@@ -99,19 +94,18 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
         compute_τ!(view(tau_lambda, f, :); z=z, ρκ=chi[f,:])
     end
     
-    # --- 4. Allocation ---
+    # --- 5. Allocation ---
     J_raw_init = zeros(T, Nf, Na, D)
     J_bol_init = zeros(T, D)
     F_bol_init = zeros(T, D)
     g_rad_init = zeros(T, D)
     dT_init    = zeros(T, D)
-    Q_heat_init = zeros(T, D)
-    Q_cool_init = zeros(T, D)
-
-    return Atmosphere{T}(T_eff, deepcopy(z), deepcopy(tau), tau_lambda, deepcopy(rho), deepcopy(Temp), deepcopy(mu), deepcopy(w_mu), deepcopy(w_lambda), 
+    return Atmosphere{T}(T_eff, deepcopy(z), deepcopy(tau), tau_lambda, deepcopy(rho), deepcopy(Temp), 
+                         deepcopy(mu), deepcopy(w_mu), deepcopy(w_lambda), 
                          deepcopy(chi), deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), 
                          deepcopy(F_conv), deepcopy(dFconv), deepcopy(dFconv_dT), 
-                         deepcopy(eta), deepcopy(J_bol_init), deepcopy(F_bol_init), deepcopy(g_rad_init), deepcopy(dT_init), deepcopy(J_raw_init), deepcopy(Q_heat_init), deepcopy(Q_cool_init))
+                         deepcopy(eta), deepcopy(J_bol_init), deepcopy(F_bol_init), 
+                         deepcopy(g_rad_init), deepcopy(dT_init), deepcopy(J_raw_init))
 end
 
 function Packer(atm::Atmosphere{T}) where T
@@ -138,19 +132,9 @@ function Packer(atm::Atmosphere{T}) where T
 end
 
 # ==============================================================================
-# 3. SOLVERS
+# 3. DIRECT SOLVER (Original Gustafsson)
 # ==============================================================================
 
-# --- B. GUSTAFSSON (1971) SOLVER ---
-"""
-    solve_gustafsson!(atm)
-
-Solves the simultaneous system for Radiation (J) and Temperature Correction (dT).
-Implements the Gustafsson et al. (1970) integral flux constraint:
-F_rad + F_conv = sigma * T_eff^4
-
-Updates atm.J_raw, atm.dT, and derived moments.
-"""
 function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
     D = length(atm.tau)
     pack = Packer(atm)
@@ -165,90 +149,37 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
     vals = T[]
     RHS  = zeros(T, D * M)
 
-    #=b_sum = zeros(T, D)
-    db_sum = zeros(T, D)
-    for f in 1:size(atm.B, 1)
-        db_sum += atm.dBdT[f, :] .*atm.w_lambda[f] .*atm.chi[f,:]
-        b_sum += atm.B[f, :] .*atm.w_lambda[f] .*atm.chi[f,:]
-    end=#
-
-    
     idx_J(i, d) = (d-1)*M + i
     idx_T(d)    = (d-1)*M + M
 
     for d in 1:D
         for i in 1:N
             f = pack.freq_idx[i]
-            a = pack.ang_idx[i]
             row = idx_J(i, d)
-
-            dt_minus, dt_plus = get_dtau(atm.tau_lambda, f, d)
             
-            #eta = atm.eta[f, d]
             B   = atm.B[f, d]
             dB  = atm.dBdT[f, d]
-            scale = pack.mu_sq[i] #/ (eta^2)
             
-            if d == 1
-                mu = sqrt(pack.mu_sq[i])
-                tau_slab = dt_plus / mu
-                if tau_slab < 0.1
-                    E_slab = 1.0 - tau_slab * (1.0 - 0.5*tau_slab + 0.16666666666666666*tau_slab^2)
-                else
-                    E_slab = exp(-tau_slab)
-                end
-                
-                tau_top_nu = atm.tau[1] * atm.eta[f, 1]
-                tau_top  = tau_top_nu / mu
-                
-                if tau_top < 0.1
-                    E_top = 1.0 - tau_top * (1.0 - 0.5*tau_top)
-                else
-                    E_top = exp(-tau_top)
-                end
+            A, B_diag, C, src_fac = feutrier_coeffs(atm, f, d, pack.mu_sq[i])
+            
+            push!(rows, row); push!(cols, idx_J(i,d)); push!(vals, B_diag)
+            if A != 0; push!(rows, row); push!(cols, idx_J(i,d-1)); push!(vals, A); end
+            if C != 0; push!(rows, row); push!(cols, idx_J(i,d+1)); push!(vals, C); end
+            if include_dT != 0; push!(rows, row); push!(cols, idx_T(d)); push!(vals, -src_fac * dB); end
 
-                term_top = 2.0 - E_top * (1.0 + E_slab)
-                diag = 1.0
-                off  = -E_slab
-                src_fac = 0.5 * (1.0 - E_slab) * term_top
-                
-                push!(rows, row); push!(cols, idx_J(i,d));   push!(vals, diag)
-                push!(rows, row); push!(cols, idx_J(i,d+1)); push!(vals, off)
-                
-                if include_dT
-                    push!(rows, row); push!(cols, idx_T(d)); push!(vals, -src_fac * dB)
-                end
-                
-                RHS[row] = src_fac * B
-            elseif d == D
-                push!(rows, row); push!(cols, idx_J(i,d)); push!(vals, 1.0)
-                if include_dT; push!(rows, row); push!(cols, idx_T(d)); push!(vals, -dB); end
-                RHS[row] = B 
-            else
-                denom = dt_minus * dt_plus * (dt_minus + dt_plus) / 2.0
-                A = scale / denom * dt_plus
-                C = scale / denom * dt_minus
-                diag = 1.0 + A + C; src_fac = 1.0
-                
-                push!(rows, row); push!(cols, idx_J(i,d-1)); push!(vals, -A)
-                push!(rows, row); push!(cols, idx_J(i,d)); push!(vals, diag)
-                push!(rows, row); push!(cols, idx_J(i,d+1)); push!(vals, -C)
-                if include_dT; push!(rows, row); push!(cols, idx_T(d)); push!(vals, -src_fac * dB); end
-                RHS[row] = src_fac * B
-            end
+            RHS[row] = src_fac * B
         end
 
+        # --- Flux Constraint ---
         if include_dT
             row_flux = idx_T(d)
             if d == 1
                 b_sum = 0.0; db_sum = 0.0
                 for k in 1:N
                     f = pack.freq_idx[k]
-                    a = pack.ang_idx[k]
                     term = pack.weights[k] * atm.chi[f, d]
                     
                     push!(rows, row_flux); push!(cols, idx_J(k,d)); push!(vals, term)
-                    
                     db_sum += term * atm.dBdT[f, d]
                     b_sum  += term * atm.B[f, d]
                 end
@@ -258,18 +189,22 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
                 for k in 1:N
                     f = pack.freq_idx[k]
                     a = pack.ang_idx[k]
+                    
                     dt_local = atm.tau_lambda[f, d] - atm.tau_lambda[f, d-1]
                     w = 4π * atm.w_lambda[f] * atm.w_mu[a] * pack.mu_sq[k]
                     coeff = w / dt_local
+                    
                     push!(rows, row_flux); push!(cols, idx_J(k,d));   push!(vals, coeff)
                     push!(rows, row_flux); push!(cols, idx_J(k,d-1)); push!(vals, -coeff)
                 end
+                
                 val_Td = 0.5 * atm.dFconv_dT[d]
                 push!(rows, row_flux); push!(cols, idx_T(d)); push!(vals, val_Td)
                 
                 cross_term = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
                 val_Td_minus_1 = 0.5 * (atm.dFconv_dT[d-1] + cross_term)
                 push!(rows, row_flux); push!(cols, idx_T(d-1)); push!(vals, val_Td_minus_1)
+                
                 RHS[row_flux] = F_target - 0.5*(atm.F_conv[d] + atm.F_conv[d-1])
             end
         end
@@ -280,17 +215,13 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
     
     for d in 1:D
         if include_dT
-            dT_raw = sol[idx_T(d)]
-            atm.dT[d] = dT_raw
+            atm.dT[d] = sol[idx_T(d)]
         end
-        
         for k in 1:N
             J_new = sol[idx_J(k, d)]
-            
             if J_new <= 0.0
-                J_new = 1e-3 * atm.B[pack.freq_idx[k], d] 
+                 J_new = 1e-3 * atm.B[pack.freq_idx[k], d] 
             end
-            
             atm.J_raw[pack.freq_idx[k], pack.ang_idx[k], d] = J_new
         end
     end
@@ -301,7 +232,244 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
 end
 
 # ==============================================================================
-# 4. POST-PROCESSING
+# 4. DAGGER-BASED ALI SOLVER
+# ==============================================================================
+
+"""
+    solve_ALI_step!(atm)
+
+Performs a **single** update of the ALI procedure using Dagger.jl.
+1. Computes formal solution (J_nu) and Lambda_star via parallel Dagger tasks.
+2. Solves flux constraint to update atm.dT.
+3. Updates atm.Temp += atm.dT.
+"""
+function solve_approximate!(atm::Atmosphere{T}) where T
+    D = length(atm.tau)
+    sigma_SB = 5.670374419e-5
+    F_target = sigma_SB * atm.T_eff^4
+    
+    # 1. Formal Solution (Parallel via Dagger)
+    Lambda_star = zeros(T, D)
+    compute_formal_sol_dagger!(atm, Lambda_star)
+    
+    # 2. Temperature Correction
+    solve_T_correction_ALI!(atm, Lambda_star, F_target)
+end
+
+"""
+    compute_formal_sol_dagger!(atm, Lambda_star)
+
+Splits frequencies into chunks and spawns Dagger tasks to solve them.
+This avoids race conditions and memory boundary errors.
+"""
+function compute_formal_sol_dagger!(atm::Atmosphere{T}, Lambda_star::Vector{T}) where T
+    D = length(atm.tau)
+    Nf = length(atm.w_lambda)
+    
+    # Reset Global Moments
+    fill!(atm.J_bol, 0.0)
+    fill!(atm.F_bol, 0.0)
+    fill!(Lambda_star, 0.0)
+    
+    # --- Chunking Strategy ---
+    # Split work into ~4 chunks per thread for good load balancing
+    n_chunks = max(1, Threads.nthreads() * 4)
+    chunk_size = ceil(Int, Nf / n_chunks)
+    
+    tasks = []
+    
+    for i in 1:n_chunks
+        f_start = (i-1)*chunk_size + 1
+        f_end   = min(i*chunk_size, Nf)
+        
+        if f_start <= f_end
+            # Spawn task: returns partial sums (J_part, F_part, L_part)
+            t = Dagger.@spawn process_frequency_chunk(atm, f_start, f_end)
+            push!(tasks, t)
+        end
+    end
+    
+    # --- Reduce ---
+    # Fetch results from workers and sum them up
+    for t in tasks
+        (J_part, F_part, L_part) = fetch(t)
+        atm.J_bol   .+= J_part
+        atm.F_bol   .+= F_part
+        Lambda_star .+= L_part
+    end
+end
+
+"""
+    process_frequency_chunk(atm, f_start, f_end)
+
+Worker function: Solves Feutrier for a range of frequencies and 
+returns the accumulated moments for that range.
+"""
+function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) where T
+    D  = length(atm.tau)
+    Na = length(atm.mu)
+    
+    # Local Accumulators (Thread-safe by definition)
+    J_part = zeros(T, D)
+    F_part = zeros(T, D)
+    L_part = zeros(T, D)
+    
+    # Pre-allocate scratch arrays for inner loop
+    J_nu = zeros(T, Na, D)
+    L_nu = zeros(T, D) 
+    
+    for f in f_start:f_end
+        fill!(L_nu, 0.0)
+        
+        # 1. Solve Feutrier Kernel
+        solve_feutrier_1D!(atm, f, J_nu, L_nu)
+        
+        # 2. Accumulate contributions
+        w_f = atm.w_lambda[f]
+        
+        for d in 1:D
+            # Mean Intensity
+            j_sum = 0.0
+            for a in 1:Na; j_sum += atm.w_mu[a] * J_nu[a, d]; end
+            J_part[d] += w_f * j_sum
+            
+            # Flux (Trapezoidal derivative)
+            flux_sum = 0.0
+            for a in 1:Na
+                ang = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
+                dJ, dt = 0.0, 1.0
+                if d == 1
+                    dJ = J_nu[a, 2] - J_nu[a, 1]
+                    dt = atm.tau_lambda[f, 2] - atm.tau_lambda[f, 1]
+                elseif d == D
+                    dJ = J_nu[a, D] - J_nu[a, D-1]
+                    dt = atm.tau_lambda[f, D] - atm.tau_lambda[f, D-1]
+                else
+                    dJ = J_nu[a, d+1] - J_nu[a, d-1]
+                    dt = atm.tau_lambda[f, d+1] - atm.tau_lambda[f, d-1]
+                end
+                flux_sum += ang * (dJ/dt)
+            end
+            F_part[d] += flux_sum
+            
+            # Lambda Star
+            L_part[d] += L_nu[d]
+        end
+    end
+    
+    return (J_part, F_part, L_part)
+end
+
+function solve_T_correction_ALI!(atm::Atmosphere{T}, Lambda_star::Vector{T}, F_target::T) where T
+    D = length(atm.tau)
+    rows, cols, vals = Int[], Int[], T[]
+    RHS = zeros(T, D)
+    
+    # Pre-compute Bolometric Flux sensitivity (dF_rad / dT)
+    dBdT_flux = vec(sum(atm.w_lambda .* atm.dBdT, dims=1))
+    
+    for d in 1:D
+        F_curr = atm.F_bol[d] + atm.F_conv[d]
+        RHS[d] = F_target - F_curr
+        
+        L_star_safe = max(Lambda_star[d], 1e-12)
+        ali_diag = 4.0 * dBdT_flux[d] * L_star_safe
+        
+        push!(rows, d); push!(cols, d); push!(vals, ali_diag)
+        
+        if d > 1
+             val_Td = atm.dFconv_dT[d]
+             push!(rows, d); push!(cols, d);   push!(vals, val_Td)
+             val_Td_m1 = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
+             
+             push!(rows, d); push!(cols, d-1); push!(vals, val_Td_m1)
+        end
+    end
+    
+    # Solve
+    J_mat = sparse(rows, cols, vals, D, D)
+    atm.dT .= J_mat \ RHS
+end
+
+# ==============================================================================
+# 5. CORE FEUTRIER KERNELS
+# ==============================================================================
+
+"""
+    solve_feutrier_1D!(atm, f, J_out, L_acc)
+
+Solves the Feutrier system for a single frequency `f`. 
+Writes J to `J_out` and accumulates ALI diagonal to `L_acc`.
+"""
+function solve_feutrier_1D!(atm::Atmosphere{T}, f::Int, J_out::Matrix{T}, L_acc::AbstractVector{T}) where T
+    D, Na = length(atm.tau), length(atm.mu)
+    
+    for a in 1:Na
+        rows, cols, vals = Int[], Int[], T[]
+        RHS = zeros(T, D)
+        mu_sq = atm.mu[a]^2
+        
+        for d in 1:D
+            # Get coeffs
+            (A, B_diag, C, src_fac) = feutrier_coeffs(atm, f, d, mu_sq)
+            
+            if A != 0; push!(rows, d); push!(cols, d-1); push!(vals, A); end
+            push!(rows, d); push!(cols, d); push!(vals, B_diag)
+            if C != 0; push!(rows, d); push!(cols, d+1); push!(vals, C); end
+            
+            RHS[d] = src_fac * atm.B[f, d]
+            
+            # ALI Accumulation: dJ/dS ~ 1/Diagonal
+            inv_diag = 1.0 / B_diag
+            weight   = atm.w_lambda[f] * atm.w_mu[a]
+            L_acc[d] += weight * (src_fac * inv_diag) 
+        end
+        
+        # Solve tridiagonal for this angle
+        M = sparse(rows, cols, vals, D, D)
+        J_ray = M \ RHS
+        
+        for d in 1:D
+            J_out[a, d] = J_ray[d]
+        end
+    end
+end
+
+"""
+    feutrier_coeffs(atm, f, d, mu_sq)
+
+Returns (Previous, Self, Next, Src_Factor) coefficients for the Feutrier matrix row.
+"""
+function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
+    dt_minus, dt_plus = get_dtau(atm.tau_lambda, f, d)
+    D = length(atm.tau)
+    if d == 1
+        mu = sqrt(mu_sq)
+        tau_slab = dt_plus / mu
+        tau_top  = (atm.tau[1] * atm.eta[f, 1]) / mu
+        
+        E_slab = (tau_slab < 0.1) ? 1.0 - tau_slab*(1.0 - 0.5*tau_slab) : exp(-tau_slab)
+        E_top  = (tau_top < 0.1)  ? 1.0 - tau_top *(1.0 - 0.5*tau_top)  : exp(-tau_top)
+        
+        term_top = 2.0 - E_top * (1.0 + E_slab)
+        
+        diag = 1.0
+        off  = -E_slab
+        src  = 0.5 * (1.0 - E_slab) * term_top
+        (0.0, diag, off, src)
+    elseif d == D
+        (0.0, 1.0, 0.0, 1.0) # Diffusion BC B_d
+    else
+        denom = 0.5 * dt_minus * dt_plus * (dt_minus + dt_plus)
+        A = -(mu_sq / denom) * dt_plus
+        C = -(mu_sq / denom) * dt_minus
+        diag = 1.0 - A - C 
+        (A, diag, C, 1.0)
+    end
+end
+
+# ==============================================================================
+# 6. HELPERS (Cleaned)
 # ==============================================================================
 
 function update_mean_intensity!(atm::Atmosphere{T}) where T
@@ -320,15 +488,12 @@ function compute_flux!(atm::Atmosphere{T}) where T
     D = length(atm.tau); Nf = length(atm.w_lambda); Na = length(atm.mu)
     c_light = 2.99792458e10
     
-    fill!(atm.F_bol, 0.0)
-    fill!(atm.g_rad, 0.0)
-    fill!(atm.Q_heat, 0.0)
-    fill!(atm.Q_cool, 0.0)
+    fill!(atm.F_bol, 0.0); fill!(atm.g_rad, 0.0)
     
     for f in 1:Nf
-        w_lambda_f = atm.w_lambda[f] 
+        w_f = atm.w_lambda[f]
         for a in 1:Na
-            ang_factor = 4.0 * pi * atm.w_mu[a] * (atm.mu[a]^2) * w_lambda_f
+            ang_f = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
             for d in 1:D
                 if d==1
                     dt = atm.tau_lambda[f, 2] - atm.tau_lambda[f, 1]
@@ -341,14 +506,11 @@ function compute_flux!(atm::Atmosphere{T}) where T
                     dJ = atm.J_raw[f,a,d+1] - atm.J_raw[f,a,d-1]
                 end
                 
-                flux_term = ang_factor * (dJ / dt)
-                
-                atm.F_bol[d] += flux_term
-                atm.g_rad[d] += flux_term * atm.chi[f, d]
+                flux = ang_f * (dJ / dt)
+                atm.F_bol[d] += flux
+                atm.g_rad[d] += flux * atm.chi[f, d]
             end
         end
-        atm.Q_heat .+= atm.w_lambda[f].*atm.chi[f,:].*atm.J_bol[:]
-        atm.Q_cool .+= atm.w_lambda[f].*atm.chi[f,:].*atm.B[f,:]
     end
     
     for d in 1:D
@@ -357,10 +519,6 @@ function compute_flux!(atm::Atmosphere{T}) where T
         end
     end
 end
-
-# ==============================================================================
-# 5. HELPERS
-# ==============================================================================
 
 function get_dtau(tau, f, d)
     if d == 1
@@ -373,7 +531,6 @@ function get_dtau(tau, f, d)
 end
 
 function compute_τ!(τ; z, ρκ)
-    # Integrate: τ(z) = [ ∫ ρκ dz ]_z0 ^z
     @inbounds for j in eachindex(τ)
         if j==1 
             τ[1] = 0 + abs(z[2] - z[1]) * 0.5 * (ρκ[j])
