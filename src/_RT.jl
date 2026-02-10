@@ -344,22 +344,26 @@ end
 
 
 function compute_opacities(eos, opa, T, ρ)
-    lnrho = log.(ρ)
-    lnt = log.(T)
-    
     chi = zeros(Float64, length(opa.opa.λ), length(T))
     chi_ref = zeros(Float64, length(T))
     B = zeros(Float64, length(opa.opa.λ), length(T))
     dBdT = zeros(Float64, length(opa.opa.λ), length(T))
 
-    @inbounds for j in eachindex(T)
-        @inbounds for i in eachindex(opa.opa.λ)
-            chi[i, j] = lookup(eos.eos, opa.opa, :κ, lnrho[j], lnt[j], i)
-            B[i, j] = lookup(eos.eos, opa.opa, :src, lnrho[j], lnt[j], i)
-            dBdT[i, j] = TSO.extended_lookup(eos.eos, opa, :dS_dT, lnrho[j], lnt[j], i)
-        end
+    compute_opacities!(chi, chi_ref, B, dBdT, eos, opa, T, ρ)
+
+    return chi, chi_ref, B, dBdT
+end
+
+function compute_opacities!(chi, chi_ref, B, dBdT, eos, opa, T, ρ)
+    lnrho = log.(ρ)
+    lnt = log.(T)
+    
+    @inbounds for i in eachindex(opa.opa.λ)
+        chi[i, :] .= lookup(eos.eos, opa.opa, :κ, lnrho, lnt, i)
+        B[i, :] .= lookup(eos.eos, opa.opa, :src, lnrho, lnt, i)
+        dBdT[i, :] .= TSO.extended_lookup(eos.eos, opa, :dS_dT, lnrho, lnt, i)
     end
     chi_ref .= exp.(lookup(eos.eos, :lnRoss, lnrho, lnt)) .* ρ
 
-    return chi, chi_ref, B, dBdT
+    return nothing
 end

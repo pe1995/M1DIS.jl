@@ -1,6 +1,6 @@
 name = "M1DIS"
 uuid = "7c40254d-53b2-4e6c-8b18-b05db208bd5f"
-version = "1.2.0"
+version = "1.3.0"
 authors = ["Philipp Eitner <eitner@mpia.de> and contributors"]
 
 [deps]
@@ -13,10 +13,8 @@ LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 MUST = "78ff202f-d08f-4a78-aa4d-c8e96fa3dcb9"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 TSO = "65303bd6-8358-47a4-91b9-056454446fac"
+TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 
 [sources]
 MUST = {rev = "main", url = "https://github.com/pe1995/MUST.jl"}
 TSO = {rev = "main", url = "https://github.com/pe1995/TSO.jl"}
-
-[compat]
-SparseArrays = "1.12.0"

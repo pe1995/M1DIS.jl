@@ -85,65 +85,86 @@ function atmosphere(; T_eff, logg, eos, opacity,
 	use_threads=false,
 	kwargs...)	
 
-	# input opacities and EoS
-	eos = if typeof(eos) <: TSO.ExtendedEoS
-		@assert !TSO.is_internal_energy(@axed(eos.eos))
-		eos
-	else
-		@assert !TSO.is_internal_energy(@axed(eos))
-		eos = TSO.ExtendedEoS(eos=eos)
-		TSO.add_thermodynamics!(eos)
+	@optionalTiming initialization_time begin
+		# input opacities and EoS
+		eos = if typeof(eos) <: TSO.ExtendedEoS
+			@assert !TSO.is_internal_energy(@axed(eos.eos))
+			eos
+		else
+			@assert !TSO.is_internal_energy(@axed(eos))
+			eos = TSO.ExtendedEoS(eos=eos)
+			TSO.add_thermodynamics!(eos)
 
-		eos
-	end
-	
-	opa, λ_weights = if typeof(opacity) <: TSO.BinnedOpacities
-		w = if isnothing(λ_weights)
-			@warn "You passed a binned opacity object. If you are doing this because the table you are using is not actually binned, remember to pass λ_weights! Assuming midpoint from table."
-			TSO.ω_midpoint(opacity.opacities)
+			eos
+		end
+		
+		@warn "Computing dS/dT..."
+		opa = if !(typeof(opacity) <: TSO.ExtendedOpacity)
+			# compute dS/dT, which is needed for the Feutrier RT solver
+			opa = TSO.ExtendedOpacity(opa=opa)
+			TSO.gradients!(eos.eos, opa)
+
+			opa
+		else
+			opacity
+		end
+
+		λ_weights = if isnothing(λ_weights)
+			ones(size(opa.opa, 2))
 		else
 			λ_weights
 		end
-		opacity.opacities, w
-	else
-		opacity, ones(length(opacity.λ))
+
+		# if no atmosphere is provided, compute an initial gray atmosphere
+		τ = deepcopy(τ)
+		T, ρ, P, z = if isnothing(T) 
+			initial_atmosphere(τ, T_eff=T_eff, logg=logg, eos=eos)
+		else
+			deepcopy(T), deepcopy(ρ), deepcopy(P), deepcopy(z)
+		end
+
+		J, F_rad, g_rad = similar(T), similar(T), similar(T)
+		F_conv, v_conv, g_turb = similar(T), similar(T), similar(T)
+    	dFconv_dT = similar(T) 
+		dT = similar(T)
+    	F_target = σ_SB * T_eff^4
+		μ_angles, μ_weights = generate_mu_grid(4)
+
+		# check for irradiation and compute it
+		Irr = isnothing(T_irradiation) ? nothing : irradiate(eos, opa.opa, T_irradiation, R_irradiation, d_irradiation)
+
+		@warn "Initializing RT solver..."
+		# initialize the Feutrier RT solver storage arrays
+		chi, chi_ref, S, dSdT, atm = if feutrier
+			chi, chi_ref, S, dSdT = compute_opacities(eos, opa, T, ρ)
+			atm = Atmosphere(
+				T_eff=T_eff, z=z, 
+				tau=τ, rho=ρ, Temp=T, 
+				F_conv=F_conv, dFconv_dT=dFconv_dT,
+				mu=μ_angles, w_mu=μ_weights, w_lambda=λ_weights, 
+				chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT
+			)
+			chi, chi_ref, S, dSdT, atm
+		else
+			nothing, nothing, nothing, nothing, nothing
+		end
+		
+		@info "============================== M1DIS ===================================="
+		@info "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
+		
+		r = []
+		if use_threads
+			@info "Running RT with $(Base.Threads.nthreads()) threads."
+			if feutrier
+				@warn "Multithreaded Feutrier RT solver is using approximate Λ iteration. If you are doing computations on binned opacities, consider using `use_threads=false` for a better result that converges more quickly."
+			end
+		end
 	end
-
-	# compute dS/dT, which is needed for the Feutrier RT solver
-	opa = TSO.ExtendedOpacity(opa=opa)
-	TSO.gradients!(eos.eos, opa)
-
-	# if no atmosphere is provided, compute an initial gray atmosphere
-	τ = deepcopy(τ)
-	T, ρ, P, z = if isnothing(T) 
-		initial_atmosphere(τ, T_eff=T_eff, logg=logg, eos=eos)
-	else
-		deepcopy(T), deepcopy(ρ), deepcopy(P), deepcopy(z)
-	end
-
-	J, F_rad, g_rad = similar(T), similar(T), similar(T)
-	F_conv, v_conv, g_turb = similar(T), similar(T), similar(T)
-    dFconv_dT = similar(T) 
-	dT = similar(T)
-    F_target = σ_SB * T_eff^4
-
-    μ_angles, μ_weights = generate_mu_grid(4)
-
-	# check for irradiation and compute it
-	Irr = isnothing(T_irradiation) ? nothing : irradiate(eos, opa.opa, T_irradiation, R_irradiation, d_irradiation)
-
-    @info "============================== M1DIS ===================================="
-	@info "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
-	
-	r = []
-	if use_threads
-		@info "Running RT with $(Base.Threads.nthreads()) threads."
-	end
-	for iter in 1:maxiter
+	@optionalTiming relaxation_time for iter in 1:maxiter
 		# compute convective quantities (MLT)
-		update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff)
+		@optionalTiming mixing_length_time update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff)
 
-		if !feutrier
+		@optionalTiming radiation_transfer_time if !feutrier
 			# solve the RT using long characteristic method
 			if use_threads
 				update_radiation_z_longchar_dagger!(
@@ -158,18 +179,13 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			# compute temperature correction
 			update_temperature_correction_robust!(dT, F_rad, F_conv, dFconv_dT, T, τ, T_eff, J; damping=damping)
 		else
-			# use the Feutrier RT solver
-			chi, chi_ref, S, dSdT = compute_opacities(eos, opa, T, ρ)
-			atm = FeutrierRT.Atmosphere(
-				T_eff=T_eff, z=z, 
-				tau=τ, rho=ρ, Temp=T, 
-				F_conv=F_conv, dFconv_dT=dFconv_dT,
-				mu=μ_angles, w_mu=μ_weights, w_lambda=λ_weights, 
-				chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT
-			)
-
-			# the gustafsson method includes the temperature correction in the solution scheme
-			FeutrierRT.solve_gustafsson!(atm, include_dT=true)
+ 			@optionalTiming compute_opacities_time compute_opacities!(chi, chi_ref, S, dSdT,eos, opa, T, ρ)
+			@optionalTiming update_atmosphere_time update!(atm; tau=τ, rho=ρ, Temp=T, F_conv=F_conv, dFconv_dT=dFconv_dT, chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT)
+			@optionalTiming solve_RT_time if !use_threads
+				solve_gustafsson!(atm, include_dT=true)
+			else
+				solve_approximate!(atm)
+			end
 			J .= atm.J_bol
 			F_rad .= atm.F_bol
 			g_rad .= atm.g_rad
@@ -194,7 +210,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
 		T .+= dT
 		T = clamp.(T, 100, 1e12)
-		update_hydrostatic!(P, ρ, z, T, g_rad, g_turb, τ, eos=eos, logg=logg)
+		@optionalTiming hydrostatic_time update_hydrostatic!(P, ρ, z, T, g_rad, g_turb, τ, eos=eos, logg=logg)
 	end
 
     length(r) == 1 ? r[1] : r
