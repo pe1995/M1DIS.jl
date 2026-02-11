@@ -146,17 +146,30 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		else
 			nothing, nothing, nothing, nothing, nothing
 		end
+
+		chi2, chi_ref2, S2, dSdT2 = compute_opacities(eos, opa, T, ρ)
+			
 		
-		@info "============================== M1DIS ===================================="
-		@info "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
+		@info "================================= M1DIS ================================="
 		
 		r = []
 		if use_threads
 			@info "Running RT with $(Base.Threads.nthreads()) threads."
 			if feutrier
-				@warn "Multithreaded Feutrier RT solver is using approximate Λ iteration. If you are doing computations on binned opacities, consider using `use_threads=false` for a better result that converges more quickly."
+				@info """
+				Parallel Feutrier solver is using approximate Λ-iterations. 
+				Consider using `use_threads=false` for better convergence.
+				Note that the parallel version is required for large opacity tables.
+				"""
 			end
 		end
+
+		if (size(chi, 1) > 1000) & (use_threads == false)
+			@warn "Single-threaded Feutrier RT solver with a large opacity table may be slow and RAM intensive."
+		end
+
+		@info "========================================================================="
+		@info "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
 	end
 	@optionalTiming relaxation_time for iter in 1:maxiter
 		# compute convective quantities (MLT)
@@ -176,7 +189,11 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			# compute temperature correction
 			update_temperature_correction_robust!(dT, F_rad, F_conv, dFconv_dT, T, τ, T_eff, J; damping=damping)
 		else
- 			@optionalTiming compute_opacities_time compute_opacities!(chi, chi_ref, S, dSdT,eos, opa, T, ρ)
+			if size(chi, 1) < 1000
+ 				@optionalTiming compute_opacities_time compute_opacities!(chi, chi_ref, S, dSdT,eos, opa, T, ρ)
+			else
+ 				@optionalTiming compute_opacities_time _compute_opacities_chunked!(chi2, chi_ref2, S2, dSdT2,eos, opa, T, ρ)
+			end
 			@optionalTiming update_atmosphere_time update!(atm; tau=τ, rho=ρ, Temp=T, F_conv=F_conv, dFconv_dT=dFconv_dT, chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT)
 			@optionalTiming solve_RT_time if !use_threads
 				solve_gustafsson!(atm, include_dT=true)

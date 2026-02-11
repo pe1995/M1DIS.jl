@@ -367,3 +367,98 @@ function compute_opacities!(chi, chi_ref, B, dBdT, eos, opa, T, ρ)
 
     return nothing
 end
+
+# ==============================================================================
+# Bilinear Interpolation for large frequency grids
+# ==============================================================================
+struct InterpCoefs
+    idx::Int        
+    w_low::Float64  
+    w_high::Float64 
+end
+
+function get_interp_coefs(grid_nodes, val)
+    if val <= first(grid_nodes)
+        return InterpCoefs(1, 1.0, 0.0)
+    elseif val >= last(grid_nodes)
+        return InterpCoefs(length(grid_nodes)-1, 0.0, 1.0)
+    end
+    
+    i = searchsortedlast(grid_nodes, val)
+    
+    x0 = grid_nodes[i]
+    x1 = grid_nodes[i+1]
+    w_high = (val - x0) / (x1 - x0)
+    w_low  = 1.0 - w_high
+    
+    return InterpCoefs(i, w_low, w_high)
+end
+
+function _compute_opacities_chunk!(range, chi, B, dBdT, opa, coefs_T, coefs_Rho)
+    kappa_data = opa.opa.κ
+    src_data   = opa.opa.src
+    dSdT_data  = opa.extensions[:dS_dT]
+
+    n_shells = length(coefs_T)
+
+    @inbounds for i in range
+        for j in 1:n_shells
+            ct = coefs_T[j]
+            cr = coefs_Rho[j]
+            
+            it, ir = ct.idx, cr.idx
+            
+            w00 = ct.w_low  * cr.w_low
+            w10 = ct.w_high * cr.w_low
+            w01 = ct.w_low  * cr.w_high
+            w11 = ct.w_high * cr.w_high
+            
+            val_k = w00 * log(kappa_data[it,   ir,   i]) +
+                    w10 * log(kappa_data[it+1, ir,   i]) +
+                    w01 * log(kappa_data[it,   ir+1, i]) +
+                    w11 * log(kappa_data[it+1, ir+1, i])
+            chi[i, j] = exp(val_k)
+
+            val_s = w00 * log(src_data[it,   ir,   i]) +
+                    w10 * log(src_data[it+1, ir,   i]) +
+                    w01 * log(src_data[it,   ir+1, i]) +
+                    w11 * log(src_data[it+1, ir+1, i])
+            B[i, j] = exp(val_s)
+
+            val_d = w00 * dSdT_data[it,   ir,   i] +
+                    w10 * dSdT_data[it+1, ir,   i] +
+                    w01 * dSdT_data[it,   ir+1, i] +
+                    w11 * dSdT_data[it+1, ir+1, i]
+            dBdT[i, j] = val_d
+        end
+    end
+end
+
+function _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ)
+    lnrho = log.(ρ)
+    lnt = log.(T)
+    
+    grid_T = eos.eos.lnT
+    grid_Rho = eos.eos.lnRho
+    n_shells = length(lnrho)
+    
+    coefs_T   = Vector{InterpCoefs}(undef, n_shells)
+    coefs_Rho = Vector{InterpCoefs}(undef, n_shells)
+    
+    for j in 1:n_shells
+        coefs_T[j]   = get_interp_coefs(grid_T, lnt[j])
+        coefs_Rho[j] = get_interp_coefs(grid_Rho, lnrho[j])
+    end
+
+    λ_indices = eachindex(opa.opa.λ)
+    chunk_size = cld(length(λ_indices), Threads.nthreads())
+    
+    tasks = map(Iterators.partition(λ_indices, chunk_size)) do range
+        Threads.@spawn _compute_opacities_chunk!(range, chi, B, dBdT, opa, coefs_T, coefs_Rho)
+    end
+    
+    chi_ref .= exp.(lookup(eos.eos, :lnRoss, lnrho, lnt)) .* ρ
+    
+    wait.(tasks)
+    return nothing
+end

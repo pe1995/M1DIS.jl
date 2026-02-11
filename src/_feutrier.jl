@@ -381,7 +381,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     J_nu = zeros(T, Na, D)
     L_nu = zeros(T, D) 
     
-    for f in f_start:f_end
+    @inbounds for f in f_start:f_end
         fill!(L_nu, 0.0)
         solve_feutrier_1D!(atm, f, J_nu, L_nu)
         
@@ -390,9 +390,9 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
         B_col   .= atm.B[f, :]
         dB_col  .= atm.dBdT[f, :]
         
-        for d in 1:D
+        @inbounds for d in 1:D
             j_sum = 0.0
-            for a in 1:Na; j_sum += atm.w_mu[a] * J_nu[a, d]; end
+            @inbounds for a in 1:Na; j_sum += atm.w_mu[a] * J_nu[a, d]; end
             
             J_part[d] += w_f * j_sum
             L_part[d] += w_f * dB_col[d] * L_nu[d]
@@ -405,7 +405,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
             flux_sum = 0.0
             k_d_sum  = 0.0
             k_p_sum  = 0.0
-            for a in 1:Na
+            @inbounds for a in 1:Na
                 ang = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
                 dJ, dt = 0.0, 1.0
                 if d > 1
@@ -439,7 +439,7 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, Lambda_star::Vector
     rows, cols, vals = Int[], Int[], T[]
     RHS = zeros(T, D)
         
-    for d in 1:D
+    @inbounds for d in 1:D
         if log10(atm.tau[d]) < 0.0
             diag_val = -RE_jac[d]
             diag_val = max(diag_val, 1e-20)
@@ -484,12 +484,12 @@ Writes J to `J_out` and accumulates ALI diagonal to `L_acc`.
 function solve_feutrier_1D!(atm::Atmosphere{T}, f::Int, J_out::Matrix{T}, L_acc::AbstractVector{T}) where T
     D, Na = length(atm.tau), length(atm.mu)
     
-    for a in 1:Na
+    @inbounds for a in 1:Na
         rows, cols, vals = Int[], Int[], T[]
         RHS = zeros(T, D)
         mu_sq = atm.mu[a]^2
         
-        for d in 1:D
+        @inbounds for d in 1:D
             # Get coeffs
             (A, B_diag, C, src_fac) = feutrier_coeffs(atm, f, d, mu_sq)
             
@@ -506,7 +506,7 @@ function solve_feutrier_1D!(atm::Atmosphere{T}, f::Int, J_out::Matrix{T}, L_acc:
         M = sparse(rows, cols, vals, D, D)
         J_ray = M \ RHS
         
-        for d in 1:D
+        @inbounds for d in 1:D
             J_out[a, d] = J_ray[d]
         end
     end
