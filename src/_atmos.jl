@@ -98,10 +98,9 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			eos
 		end
 		
-		@warn "Computing dS/dT..."
 		opa = if !(typeof(opacity) <: TSO.ExtendedOpacity)
 			# compute dS/dT, which is needed for the Feutrier RT solver
-			opa = TSO.ExtendedOpacity(opa=opa)
+			opa = TSO.ExtendedOpacity(opa=opacity)
 			TSO.gradients!(eos.eos, opa)
 
 			opa
@@ -110,7 +109,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		end
 
 		λ_weights = if isnothing(λ_weights)
-			ones(size(opa.opa, 2))
+			ones(length(opa.opa.λ))
 		else
 			λ_weights
 		end
@@ -133,7 +132,6 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		# check for irradiation and compute it
 		Irr = isnothing(T_irradiation) ? nothing : irradiate(eos, opa.opa, T_irradiation, R_irradiation, d_irradiation)
 
-		@warn "Initializing RT solver..."
 		# initialize the Feutrier RT solver storage arrays
 		chi, chi_ref, S, dSdT, atm = if feutrier
 			chi, chi_ref, S, dSdT = compute_opacities(eos, opa, T, ρ)
@@ -163,7 +161,6 @@ function atmosphere(; T_eff, logg, eos, opacity,
 	@optionalTiming relaxation_time for iter in 1:maxiter
 		# compute convective quantities (MLT)
 		@optionalTiming mixing_length_time update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff)
-
 		@optionalTiming radiation_transfer_time if !feutrier
 			# solve the RT using long characteristic method
 			if use_threads
