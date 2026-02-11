@@ -434,7 +434,7 @@ function _compute_opacities_chunk!(range, chi, B, dBdT, opa, coefs_T, coefs_Rho)
     end
 end
 
-function _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ)
+function compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ)
     lnrho = log.(ρ)
     lnt = log.(T)
     

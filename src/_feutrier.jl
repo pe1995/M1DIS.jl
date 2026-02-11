@@ -296,39 +296,25 @@ end
 # 4. DAGGER-BASED ALI SOLVER
 # ==============================================================================
 
-"""
-    solve_ALI_step!(atm)
-
-Performs a **single** update of the ALI procedure using Dagger.jl.
-1. Computes formal solution (J_nu) and Lambda_star via parallel Dagger tasks.
-2. Solves flux constraint to update atm.dT.
-3. Updates atm.Temp += atm.dT.
-"""
 function solve_approximate!(atm::Atmosphere{T}) where T
     D = length(atm.tau)
     sigma_SB = 5.670374419e-5
     F_target = sigma_SB * atm.T_eff^4
     
-    Lambda_star = zeros(T, D)
+    #Lambda_star = zeros(T, D)
     RE_res = zeros(T, D)
     RE_jac = zeros(T, D)
     K_rad_diag = zeros(T, D)
     K_rad_prev = zeros(T, D)
-    compute_formal_sol_dagger!(atm, Lambda_star, RE_res, RE_jac, K_rad_diag, K_rad_prev)
-    solve_T_correction_approximate!(atm, Lambda_star, RE_res, RE_jac, K_rad_diag, K_rad_prev, F_target)
+    compute_formal_sol_dagger!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev)
+    solve_T_correction_approximate!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev, F_target)
 end
 
-"""
-    compute_formal_sol_dagger!(atm, Lambda_star)
-
-Splits frequencies into chunks and spawns Dagger tasks to solve them.
-This avoids race conditions and memory boundary errors.
-"""
-function compute_formal_sol_dagger!(atm::Atmosphere{T}, Lambda_star::Vector{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}) where T
+function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}) where T
     D = length(atm.tau)
     Nf = length(atm.w_lambda)
     
-    fill!(atm.J_bol, 0.0); fill!(atm.F_bol, 0.0); fill!(Lambda_star, 0.0)
+    fill!(atm.J_bol, 0.0); fill!(atm.F_bol, 0.0); 
     fill!(RE_res, 0.0); fill!(RE_jac, 0.0)
     fill!(K_rad_diag, 0.0); fill!(K_rad_prev, 0.0)
     
@@ -349,11 +335,10 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, Lambda_star::Vector{T}, 
     end
     
     for t in tasks
-        (J_p, F_p, L_p, RE_r, RE_j, K_d, K_p) = fetch(t)::NTuple{7, Vector{T}}
+        (J_p, F_p, RE_r, RE_j, K_d, K_p) = fetch(t)::NTuple{6, Vector{T}}
         
         atm.J_bol   .+= J_p
         atm.F_bol   .+= F_p
-        Lambda_star .+= L_p
         RE_res      .+= RE_r
         RE_jac      .+= RE_j
         K_rad_diag  .+= K_d
@@ -361,17 +346,44 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, Lambda_star::Vector{T}, 
     end
 end
 
-"""
-    process_frequency_chunk(atm, f_start, f_end)
+function solve_tridiagonal!(x::Vector{T}, dl::Vector{T}, d::Vector{T}, du::Vector{T}, r::Vector{T}) where T
+    N = length(d)
+    
+    @inbounds begin
+        # Forward Elimination
+        inv_d1 = 1.0 / d[1]
+        du[1] *= inv_d1
+        r[1]  *= inv_d1
+        
+        for i in 2:N
+            pivot_inv = 1.0 / (d[i] - dl[i] * du[i-1])
+            
+            if i < N
+                du[i] *= pivot_inv
+            end
+            
+            r[i] = (r[i] - dl[i] * r[i-1]) * pivot_inv
+        end
+        
+        # Back Substitution
+        x[N] = r[N]
+        for i in N-1:-1:1
+            x[i] = r[i] - du[i] * x[i+1]
+        end
+    end
+end
 
-Worker function: Solves Feutrier for a range of frequencies and 
-returns the accumulated moments for that range.
-"""
 function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) where T
     D, Na = length(atm.tau), length(atm.mu)
     
-    J_part, F_part, L_part = zeros(T, D), zeros(T, D), zeros(T, D)
-    RE_res, RE_jac = zeros(T, D), zeros(T, D)
+    tri_dl  = zeros(T, D)
+    tri_d   = zeros(T, D)
+    tri_du  = zeros(T, D)
+    tri_rhs = zeros(T, D)
+    tri_sol = zeros(T, D)
+    
+    J_part, F_part = zeros(T, D), zeros(T, D)
+    RE_res, RE_jac         = zeros(T, D), zeros(T, D)
     K_rad_diag, K_rad_prev = zeros(T, D), zeros(T, D)
 
     chi_col = zeros(T, D)
@@ -379,41 +391,80 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     dB_col  = zeros(T, D)
     
     J_nu = zeros(T, Na, D)
-    L_nu = zeros(T, D) 
+    L_nu = zeros(T, D)
     
     @inbounds for f in f_start:f_end
+        
+        chi_col .= view(atm.chi, f, :)
+        B_col   .= view(atm.B, f, :)
+        dB_col  .= view(atm.dBdT, f, :)
+        
         fill!(L_nu, 0.0)
-        solve_feutrier_1D!(atm, f, J_nu, L_nu)
+        
+        for a in 1:Na
+            mu_sq  = atm.mu[a]^2
+            weight = atm.w_mu[a]
+            
+            (A, B, C, src_fac) = feutrier_coeffs(atm, f, 1, mu_sq)
+            tri_d[1]   = B
+            tri_du[1]  = C
+            tri_rhs[1] = src_fac * B_col[1]
+            
+            L_nu[1] += weight * (src_fac / B)
+
+            for d in 2:D-1
+                (A, B, C, src_fac) = feutrier_coeffs(atm, f, d, mu_sq)
+                tri_dl[d]  = A
+                tri_d[d]   = B
+                tri_du[d]  = C
+                tri_rhs[d] = src_fac * B_col[d]
+                
+                L_nu[d] += weight * (src_fac / B)
+            end
+            
+            (A, B, C, src_fac) = feutrier_coeffs(atm, f, D, mu_sq)
+            tri_dl[D]  = A
+            tri_d[D]   = B
+            tri_rhs[D] = src_fac * B_col[D]
+            
+            L_nu[D] += weight * (src_fac / B)
+            
+            solve_tridiagonal!(tri_sol, tri_dl, tri_d, tri_du, tri_rhs)
+            
+            for d in 1:D
+                J_nu[a, d] = tri_sol[d]
+            end
+        end
         
         w_f = atm.w_lambda[f]
-        chi_col .= atm.chi[f, :]
-        B_col   .= atm.B[f, :]
-        dB_col  .= atm.dBdT[f, :]
         
-        @inbounds for d in 1:D
+        for d in 1:D
             j_sum = 0.0
-            @inbounds for a in 1:Na; j_sum += atm.w_mu[a] * J_nu[a, d]; end
+            for a in 1:Na
+                j_sum += atm.w_mu[a] * J_nu[a, d]
+            end
             
             J_part[d] += w_f * j_sum
-            L_part[d] += w_f * dB_col[d] * L_nu[d]
             
             term = w_f * chi_col[d]
             RE_res[d] += term * (j_sum - B_col[d])
             RE_jac[d] += term * (L_nu[d] - 1.0) * dB_col[d]
             
-            # --- Flux ---
             flux_sum = 0.0
             k_d_sum  = 0.0
             k_p_sum  = 0.0
-            @inbounds for a in 1:Na
+            
+            for a in 1:Na
                 ang = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
-                dJ, dt = 0.0, 1.0
+                
                 if d > 1
                     dt_local = atm.tau_lambda[f, d] - atm.tau_lambda[f, d-1]
                     diff_coeff = ang / max(dt_local, 1e-20)
                     k_d_sum +=  diff_coeff * dB_col[d]
                     k_p_sum += -diff_coeff * dB_col[d-1]
                 end
+                
+                dJ, dt = 0.0, 1.0
                 if d == 1
                     dJ = J_nu[a, 2] - J_nu[a, 1]
                     dt = atm.tau_lambda[f, 2] - atm.tau_lambda[f, 1]
@@ -424,17 +475,20 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
                     dJ = J_nu[a, d+1] - J_nu[a, d-1]
                     dt = atm.tau_lambda[f, d+1] - atm.tau_lambda[f, d-1]
                 end
+                
                 flux_sum += ang * (dJ / max(dt, 1e-20))
             end
-            F_part[d] += flux_sum
+            
+            F_part[d]     += flux_sum
             K_rad_diag[d] += k_d_sum
             K_rad_prev[d] += k_p_sum
         end
     end
-    return (J_part, F_part, L_part, RE_res, RE_jac, K_rad_diag, K_rad_prev)
+    
+    return (J_part, F_part, RE_res, RE_jac, K_rad_diag, K_rad_prev)
 end
 
-function solve_T_correction_approximate!(atm::Atmosphere{T}, Lambda_star::Vector{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}, F_target::T) where T
+function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}, F_target::T) where T
     D = length(atm.tau)
     rows, cols, vals = Int[], Int[], T[]
     RHS = zeros(T, D)
@@ -475,12 +529,6 @@ end
 # 5. CORE FEUTRIER KERNELS
 # ==============================================================================
 
-"""
-    solve_feutrier_1D!(atm, f, J_out, L_acc)
-
-Solves the Feutrier system for a single frequency `f`. 
-Writes J to `J_out` and accumulates ALI diagonal to `L_acc`.
-"""
 function solve_feutrier_1D!(atm::Atmosphere{T}, f::Int, J_out::Matrix{T}, L_acc::AbstractVector{T}) where T
     D, Na = length(atm.tau), length(atm.mu)
     
@@ -512,11 +560,6 @@ function solve_feutrier_1D!(atm::Atmosphere{T}, f::Int, J_out::Matrix{T}, L_acc:
     end
 end
 
-"""
-    feutrier_coeffs(atm, f, d, mu_sq)
-
-Returns (Previous, Self, Next, Src_Factor) coefficients for the Feutrier matrix row.
-"""
 function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
     dt_minus, dt_plus = get_dtau(atm.tau_lambda, f, d)
     D = length(atm.tau)

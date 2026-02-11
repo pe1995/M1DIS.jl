@@ -74,9 +74,9 @@ end
 Compute a M1DIS atmosphere iteratively based on the given binned opacity table, effective temperature and surface gravity.
 """
 function atmosphere(; T_eff, logg, eos, opacity, 
-	τ=10 .^range(-5.0, 4, length=100), 
+	τ=10 .^range(-6.0, 2.0, length=100), 
 	α_MLT=1.5, 
-	maxiter=500,
+	maxiter=20,
 	damping=0.1, 
 	λ_weights=nothing, 
 	T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, 
@@ -147,8 +147,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			nothing, nothing, nothing, nothing, nothing
 		end
 
-		chi2, chi_ref2, S2, dSdT2 = compute_opacities(eos, opa, T, ρ)
-			
+		#chi2, chi_ref2, S2, dSdT2 = compute_opacities(eos, opa, T, ρ)
 		
 		@info "================================= M1DIS ================================="
 		
@@ -190,9 +189,9 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			update_temperature_correction_robust!(dT, F_rad, F_conv, dFconv_dT, T, τ, T_eff, J; damping=damping)
 		else
 			if size(chi, 1) < 1000
- 				@optionalTiming compute_opacities_time compute_opacities!(chi, chi_ref, S, dSdT,eos, opa, T, ρ)
+ 				@optionalTiming compute_opacities_time compute_opacities!(chi, chi_ref, S, dSdT, eos, opa, T, ρ)
 			else
- 				@optionalTiming compute_opacities_time _compute_opacities_chunked!(chi2, chi_ref2, S2, dSdT2,eos, opa, T, ρ)
+ 				@optionalTiming compute_opacities_time compute_opacities_chunked!(chi, chi_ref, S, dSdT, eos, opa, T, ρ)
 			end
 			@optionalTiming update_atmosphere_time update!(atm; tau=τ, rho=ρ, Temp=T, F_conv=F_conv, dFconv_dT=dFconv_dT, chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT)
 			@optionalTiming solve_RT_time if !use_threads
