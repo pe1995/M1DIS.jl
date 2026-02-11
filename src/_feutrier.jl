@@ -82,7 +82,7 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
 
     # --- 4. Compute tau_lambda ---
     tau_lambda = zeros(T, Nf, D)
-    for f in 1:Nf
+    Threads.@threads for f in 1:Nf
         compute_τ!(view(tau_lambda, f, :); z=z, ρκ=chi[f,:])
     end
     
@@ -129,9 +129,7 @@ function update!(atm::Atmosphere{T}; kwargs...) where T
     if dirty_chi || dirty_chi_ref
         @inbounds for d in 1:D
             ref = max(atm.chi_ref[d], 1e-30)
-            for f in 1:Nf
-                atm.eta[f, d] = atm.chi[f, d] / ref
-            end
+            atm.eta[:, d] = atm.chi[:, d] ./ ref
         end
     end
 
@@ -151,7 +149,7 @@ function update!(atm::Atmosphere{T}; kwargs...) where T
     end
 
     if dirty_chi || dirty_tau 
-        @inbounds for f in 1:Nf
+        Threads.@threads for f in 1:Nf
              compute_τ!(view(atm.tau_lambda, f, :); z=atm.z, ρκ=view(atm.chi, f, :))
         end
     end
@@ -369,6 +367,9 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     
     J_part, F_part, L_part = zeros(T, D), zeros(T, D), zeros(T, D)
     RE_res, RE_jac = zeros(T, D), zeros(T, D)
+    chi_col = zeros(T, D)
+    B_col   = zeros(T, D)
+    dB_col  = zeros(T, D)
     
     J_nu = zeros(T, Na, D)
     L_nu = zeros(T, D) 
@@ -378,16 +379,16 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
         solve_feutrier_1D!(atm, f, J_nu, L_nu)
         
         w_f = atm.w_lambda[f]
-        chi_col = view(atm.chi, f, :)
-        B_col   = view(atm.B, f, :)
-        dB_col  = view(atm.dBdT, f, :)
+        chi_col .= atm.chi[f, :]
+        B_col   .= atm.B[f, :]
+        dB_col  .= atm.dBdT[f, :]
         
         for d in 1:D
             j_sum = 0.0
             for a in 1:Na; j_sum += atm.w_mu[a] * J_nu[a, d]; end
             
             J_part[d] += w_f * j_sum
-            L_part[d] += L_nu[d]
+            L_part[d] += (w_f * dB_col[d]) * L_nu[d]
             
             term = w_f * chi_col[d]
             RE_res[d] += term * (j_sum - B_col[d])
@@ -424,16 +425,17 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, Lambda_star::Vector
     dBdT_flux = vec(sum(atm.w_lambda .* atm.dBdT, dims=1))
     
     for d in 1:D
-        if log10(atm.tau[d]) < -1.0
+        if log10(atm.tau[d]) < 0.0
             diag_val = -RE_jac[d]
-            diag_val = max(diag_val, 1e-20) # Safety
+            diag_val = max(diag_val, 1e-20)
             push!(rows, d); push!(cols, d); push!(vals, diag_val)
             RHS[d] = RE_res[d]
         else
             F_curr = atm.F_bol[d] + atm.F_conv[d]
             RHS[d] = F_target - F_curr
             
-            L_star_safe = max(Lambda_star[d], 1e-12)
+            L_mean = (dBdT_flux[d] > 0) ? (Lambda_star[d] / dBdT_flux[d]) : 0.0
+            L_star_safe = max(L_mean, 1e-12)
             ali_diag = 4.0 * dBdT_flux[d] * L_star_safe
             push!(rows, d); push!(cols, d); push!(vals, ali_diag)
             
@@ -477,14 +479,11 @@ function solve_feutrier_1D!(atm::Atmosphere{T}, f::Int, J_out::Matrix{T}, L_acc:
             if C != 0; push!(rows, d); push!(cols, d+1); push!(vals, C); end
             
             RHS[d] = src_fac * atm.B[f, d]
-            
-            # ALI Accumulation: dJ/dS ~ 1/Diagonal
             inv_diag = 1.0 / B_diag
-            weight   = atm.w_lambda[f] * atm.w_mu[a]
+            weight   =  atm.w_mu[a]
             L_acc[d] += weight * (src_fac * inv_diag) 
         end
         
-        # Solve tridiagonal for this angle
         M = sparse(rows, cols, vals, D, D)
         J_ray = M \ RHS
         
@@ -502,7 +501,7 @@ Returns (Previous, Self, Next, Src_Factor) coefficients for the Feutrier matrix 
 function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
     dt_minus, dt_plus = get_dtau(atm.tau_lambda, f, d)
     D = length(atm.tau)
-    if d == 1
+    if d == 1 # Estimate infalling radiation
         mu = sqrt(mu_sq)
         tau_slab = dt_plus / mu
         tau_top  = (atm.tau[1] * atm.eta[f, 1]) / mu
@@ -516,8 +515,8 @@ function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
         off  = -E_slab
         src  = 0.5 * (1.0 - E_slab) * term_top
         (0.0, diag, off, src)
-    elseif d == D
-        (0.0, 1.0, 0.0, 1.0) # Diffusion BC B_d
+    elseif d == D # Diffusion BC 
+        (0.0, 1.0, 0.0, 1.0) 
     else
         denom = 0.5 * dt_minus * dt_plus * (dt_minus + dt_plus)
         A = -(mu_sq / denom) * dt_plus

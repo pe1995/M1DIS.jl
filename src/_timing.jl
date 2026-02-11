@@ -42,6 +42,8 @@ end_timing!(t=generalTimer) = begin
     t
 end
 
+timer() = generalTimer
+
 # --- Optional Timing Macro to add to function calls ---
 macro optionalTiming(name, exp)
     name_e = esc(name)

@@ -358,7 +358,7 @@ function compute_opacities!(chi, chi_ref, B, dBdT, eos, opa, T, ρ)
     lnrho = log.(ρ)
     lnt = log.(T)
     
-    @inbounds for i in eachindex(opa.opa.λ)
+    Threads.@threads for i in eachindex(opa.opa.λ)
         chi[i, :] .= lookup(eos.eos, opa.opa, :κ, lnrho, lnt, i)
         B[i, :] .= lookup(eos.eos, opa.opa, :src, lnrho, lnt, i)
         dBdT[i, :] .= TSO.extended_lookup(eos.eos, opa, :dS_dT, lnrho, lnt, i)
