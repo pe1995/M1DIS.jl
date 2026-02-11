@@ -312,8 +312,10 @@ function solve_approximate!(atm::Atmosphere{T}) where T
     Lambda_star = zeros(T, D)
     RE_res = zeros(T, D)
     RE_jac = zeros(T, D)
-    compute_formal_sol_dagger!(atm, Lambda_star, RE_res, RE_jac)
-    solve_T_correction_approximate!(atm, Lambda_star, RE_res, RE_jac, F_target)
+    K_rad_diag = zeros(T, D)
+    K_rad_prev = zeros(T, D)
+    compute_formal_sol_dagger!(atm, Lambda_star, RE_res, RE_jac, K_rad_diag, K_rad_prev)
+    solve_T_correction_approximate!(atm, Lambda_star, RE_res, RE_jac, K_rad_diag, K_rad_prev, F_target)
 end
 
 """
@@ -322,12 +324,13 @@ end
 Splits frequencies into chunks and spawns Dagger tasks to solve them.
 This avoids race conditions and memory boundary errors.
 """
-function compute_formal_sol_dagger!(atm::Atmosphere{T}, Lambda_star::Vector{T}, RE_res::Vector{T}, RE_jac::Vector{T}) where T
+function compute_formal_sol_dagger!(atm::Atmosphere{T}, Lambda_star::Vector{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}) where T
     D = length(atm.tau)
     Nf = length(atm.w_lambda)
     
     fill!(atm.J_bol, 0.0); fill!(atm.F_bol, 0.0); fill!(Lambda_star, 0.0)
     fill!(RE_res, 0.0); fill!(RE_jac, 0.0)
+    fill!(K_rad_diag, 0.0); fill!(K_rad_prev, 0.0)
     
     n_chunks = max(1, Threads.nthreads() * 4)
     chunk_size = cld(Nf, n_chunks) 
@@ -346,13 +349,15 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, Lambda_star::Vector{T}, 
     end
     
     for t in tasks
-        (J_p, F_p, L_p, RE_r, RE_j) = fetch(t)::NTuple{5, Vector{T}}
+        (J_p, F_p, L_p, RE_r, RE_j, K_d, K_p) = fetch(t)::NTuple{7, Vector{T}}
         
         atm.J_bol   .+= J_p
         atm.F_bol   .+= F_p
         Lambda_star .+= L_p
         RE_res      .+= RE_r
         RE_jac      .+= RE_j
+        K_rad_diag  .+= K_d
+        K_rad_prev  .+= K_p
     end
 end
 
@@ -367,6 +372,8 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     
     J_part, F_part, L_part = zeros(T, D), zeros(T, D), zeros(T, D)
     RE_res, RE_jac = zeros(T, D), zeros(T, D)
+    K_rad_diag, K_rad_prev = zeros(T, D), zeros(T, D)
+
     chi_col = zeros(T, D)
     B_col   = zeros(T, D)
     dB_col  = zeros(T, D)
@@ -388,7 +395,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
             for a in 1:Na; j_sum += atm.w_mu[a] * J_nu[a, d]; end
             
             J_part[d] += w_f * j_sum
-            L_part[d] += (w_f * dB_col[d]) * L_nu[d]
+            L_part[d] += w_f * dB_col[d] * L_nu[d]
             
             term = w_f * chi_col[d]
             RE_res[d] += term * (j_sum - B_col[d])
@@ -396,9 +403,17 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
             
             # --- Flux ---
             flux_sum = 0.0
+            k_d_sum  = 0.0
+            k_p_sum  = 0.0
             for a in 1:Na
                 ang = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
                 dJ, dt = 0.0, 1.0
+                if d > 1
+                    dt_local = atm.tau_lambda[f, d] - atm.tau_lambda[f, d-1]
+                    diff_coeff = ang / max(dt_local, 1e-20)
+                    k_d_sum +=  diff_coeff * dB_col[d]
+                    k_p_sum += -diff_coeff * dB_col[d-1]
+                end
                 if d == 1
                     dJ = J_nu[a, 2] - J_nu[a, 1]
                     dt = atm.tau_lambda[f, 2] - atm.tau_lambda[f, 1]
@@ -412,18 +427,18 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
                 flux_sum += ang * (dJ / max(dt, 1e-20))
             end
             F_part[d] += flux_sum
+            K_rad_diag[d] += k_d_sum
+            K_rad_prev[d] += k_p_sum
         end
     end
-    return (J_part, F_part, L_part, RE_res, RE_jac)
+    return (J_part, F_part, L_part, RE_res, RE_jac, K_rad_diag, K_rad_prev)
 end
 
-function solve_T_correction_approximate!(atm::Atmosphere{T}, Lambda_star::Vector{T}, RE_res::Vector{T}, RE_jac::Vector{T}, F_target::T) where T
+function solve_T_correction_approximate!(atm::Atmosphere{T}, Lambda_star::Vector{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}, F_target::T) where T
     D = length(atm.tau)
     rows, cols, vals = Int[], Int[], T[]
     RHS = zeros(T, D)
-    
-    dBdT_flux = vec(sum(atm.w_lambda .* atm.dBdT, dims=1))
-    
+        
     for d in 1:D
         if log10(atm.tau[d]) < 0.0
             diag_val = -RE_jac[d]
@@ -431,19 +446,23 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, Lambda_star::Vector
             push!(rows, d); push!(cols, d); push!(vals, diag_val)
             RHS[d] = RE_res[d]
         else
+            # --- Flux Conservation ---
             F_curr = atm.F_bol[d] + atm.F_conv[d]
             RHS[d] = F_target - F_curr
             
-            L_mean = (dBdT_flux[d] > 0) ? (Lambda_star[d] / dBdT_flux[d]) : 0.0
-            L_star_safe = max(L_mean, 1e-12)
-            ali_diag = 4.0 * dBdT_flux[d] * L_star_safe
-            push!(rows, d); push!(cols, d); push!(vals, ali_diag)
+            # 1. Convection Terms
+            val_Conv_d  = atm.dFconv_dT[d]
+            val_Conv_p  = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
+
+            # 2. Radiative Terms (Using the new diffusion derivatives)
+            val_Rad_d = K_rad_diag[d]
+            val_Rad_p = K_rad_prev[d]
+
+            # 3. Fill Matrix (Rad + Conv)
+            push!(rows, d); push!(cols, d);   push!(vals, val_Rad_d + val_Conv_d)
             
             if d > 1
-                val_Td = atm.dFconv_dT[d]
-                push!(rows, d); push!(cols, d);   push!(vals, val_Td)
-                val_Td_m1 = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
-                push!(rows, d); push!(cols, d-1); push!(vals, val_Td_m1)
+                 push!(rows, d); push!(cols, d-1); push!(vals, val_Rad_p + val_Conv_p)
             end
         end
     end
