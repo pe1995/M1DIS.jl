@@ -69,8 +69,20 @@ function evaluate_iteration!(result, iter, maxiter, F_target, dT, τ, z, T, ρ, 
 end
 
 """
-    atmosphere(; T_eff, logg, eospath, τ=10 .^range(-5.0, 4, length=100), α_MLT=1.5, maxiter=200)	
-
+    atmosphere(
+		; T_eff, logg, eos, opacity, 
+		τ=10 .^range(-6.0, 2.0, length=100), 
+		α_MLT=1.5, 
+		maxiter=20,
+		damping=0.1, 
+		λ_weights=nothing, 
+		T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, 
+		T=nothing, ρ=nothing, P=nothing, z=nothing, 
+		feutrier=true,
+		use_threads=false,
+		dt_tolerance_rel=0.001, flux_tolerance_rel=0.001, save_every=-1,
+		kwargs...	
+	)
 Compute a M1DIS atmosphere iteratively based on the given binned opacity table, effective temperature and surface gravity.
 """
 function atmosphere(; T_eff, logg, eos, opacity, 
