@@ -19,6 +19,7 @@ mutable struct Atmosphere{T <: AbstractFloat}
     dFconv::Vector{T}     # Spatial Derivative dF_conv/dtau (Size: D) 
     dFconv_dT::Vector{T}  # Partial derivative dF_conv/dT (Size: D) 
     eta::Matrix{T}        # Opacity ratio chi / chi_ref
+    I_top::Vector{T}      # External Irradiation (Size: Nf)
     J_bol::Vector{T}      # Bolometric Mean Intensity (Size: D)
     F_bol::Vector{T}      # Bolometric Flux (Size: D)
     g_rad::Vector{T}      # Radiative Acceleration (Size: D) [cm/s^2] 
@@ -47,7 +48,8 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
                     mu::Vector{T}, w_mu::Vector{T}, 
                     w_lambda::Vector{T},
                     chi::Matrix{T}, chi_ref::Vector{T}, 
-                    B::Matrix{T}, dBdT::Matrix{T}) where T
+                    B::Matrix{T}, dBdT::Matrix{T}, 
+                    I_top::Union{Vector{T}, Nothing}=nothing) where T
     D = length(tau)
     Nf = length(w_lambda) 
     Na = length(mu)
@@ -86,6 +88,8 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
         compute_τ!(view(tau_lambda, f, :); z=z, ρκ=chi[f,:])
     end
     
+    I_top_val = isnothing(I_top) ? zeros(T, Nf) : I_top
+    
     # --- 5. Allocation ---
     J_raw_init = nothing #zeros(T, Nf, Na, D)
     J_bol_init = zeros(T, D)
@@ -96,7 +100,7 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
                          deepcopy(mu), deepcopy(w_mu), deepcopy(w_lambda), 
                          deepcopy(chi), deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), 
                          deepcopy(F_conv), dFconv, deepcopy(dFconv_dT), 
-                         eta, J_bol_init, F_bol_init, g_rad_init, dT_init, J_raw_init)
+                         eta, I_top_val, J_bol_init, F_bol_init, g_rad_init, dT_init, J_raw_init)
 end
 
 function update!(atm::Atmosphere{T}; kwargs...) where T
@@ -120,6 +124,9 @@ function update!(atm::Atmosphere{T}; kwargs...) where T
             if k === :F_conv; dirty_F_conv = true; end
             if k === :tau; dirty_tau = true; end
             if k === :w_mu; dirty_w_mu = true; end
+            if k === :I_top && !isnothing(v)
+                 copyto!(atm.I_top, v)
+            end
         end
     end
 
@@ -221,14 +228,14 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
             
             B   = atm.B[f, d]
             dB  = atm.dBdT[f, d]
-            A, B_diag, C, src_fac = feutrier_coeffs(atm, f, d, pack.mu_sq[i])
+            A, B_diag, C, src_fac, ext_fac = feutrier_coeffs(atm, f, d, pack.mu_sq[i])
             
             push!(rows, row); push!(cols, idx_J(i,d)); push!(vals, B_diag)
             if A != 0; push!(rows, row); push!(cols, idx_J(i,d-1)); push!(vals, A); end
             if C != 0; push!(rows, row); push!(cols, idx_J(i,d+1)); push!(vals, C); end
             if include_dT != 0; push!(rows, row); push!(cols, idx_T(d)); push!(vals, -src_fac * dB); end
 
-            RHS[row] = src_fac * B
+            RHS[row] = src_fac * B + ext_fac * atm.I_top[f]
         end
 
         # --- Flux Constraint ---
@@ -314,7 +321,7 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_ja
     D = length(atm.tau)
     Nf = length(atm.w_lambda)
     
-    fill!(atm.J_bol, 0.0); fill!(atm.F_bol, 0.0); 
+    fill!(atm.J_bol, 0.0); fill!(atm.F_bol, 0.0); fill!(atm.g_rad, 0.0)
     fill!(RE_res, 0.0); fill!(RE_jac, 0.0)
     fill!(K_rad_diag, 0.0); fill!(K_rad_prev, 0.0)
     
@@ -335,7 +342,7 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_ja
     end
     
     for t in tasks
-        (J_p, F_p, RE_r, RE_j, K_d, K_p) = fetch(t)::NTuple{6, Vector{T}}
+        (J_p, F_p, RE_r, RE_j, K_d, K_p, g_p) = fetch(t)::NTuple{7, Vector{T}}
         
         atm.J_bol   .+= J_p
         atm.F_bol   .+= F_p
@@ -343,6 +350,14 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_ja
         RE_jac      .+= RE_j
         K_rad_diag  .+= K_d
         K_rad_prev  .+= K_p
+        atm.g_rad   .+= g_p
+    end
+
+    c_light = 2.99792458e10
+    for d in 1:D
+        if atm.rho[d] > 0
+            atm.g_rad[d] /= (c_light * atm.rho[d])
+        end
     end
 end
 
@@ -383,6 +398,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     tri_sol = zeros(T, D)
     
     J_part, F_part = zeros(T, D), zeros(T, D)
+    g_rad_part     = zeros(T, D)
     RE_res, RE_jac         = zeros(T, D), zeros(T, D)
     K_rad_diag, K_rad_prev = zeros(T, D), zeros(T, D)
 
@@ -405,15 +421,15 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
             mu_sq  = atm.mu[a]^2
             weight = atm.w_mu[a]
             
-            (A, B, C, src_fac) = feutrier_coeffs(atm, f, 1, mu_sq)
+            (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, 1, mu_sq)
             tri_d[1]   = B
             tri_du[1]  = C
-            tri_rhs[1] = src_fac * B_col[1]
+            tri_rhs[1] = src_fac * B_col[1] + ext_fac * atm.I_top[f]
             
             L_nu[1] += weight * (src_fac / B)
 
             for d in 2:D-1
-                (A, B, C, src_fac) = feutrier_coeffs(atm, f, d, mu_sq)
+                (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, d, mu_sq)
                 tri_dl[d]  = A
                 tri_d[d]   = B
                 tri_du[d]  = C
@@ -422,7 +438,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
                 L_nu[d] += weight * (src_fac / B)
             end
             
-            (A, B, C, src_fac) = feutrier_coeffs(atm, f, D, mu_sq)
+            (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, D, mu_sq)
             tri_dl[D]  = A
             tri_d[D]   = B
             tri_rhs[D] = src_fac * B_col[D]
@@ -480,12 +496,13 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
             end
             
             F_part[d]     += flux_sum
+            g_rad_part[d] += flux_sum * chi_col[d]
             K_rad_diag[d] += k_d_sum
             K_rad_prev[d] += k_p_sum
         end
     end
     
-    return (J_part, F_part, RE_res, RE_jac, K_rad_diag, K_rad_prev)
+    return (J_part, F_part, RE_res, RE_jac, K_rad_diag, K_rad_prev, g_rad_part)
 end
 
 function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}, F_target::T) where T
@@ -539,13 +556,13 @@ function solve_feutrier_1D!(atm::Atmosphere{T}, f::Int, J_out::Matrix{T}, L_acc:
         
         @inbounds for d in 1:D
             # Get coeffs
-            (A, B_diag, C, src_fac) = feutrier_coeffs(atm, f, d, mu_sq)
+            (A, B_diag, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, d, mu_sq)
             
             if A != 0; push!(rows, d); push!(cols, d-1); push!(vals, A); end
             push!(rows, d); push!(cols, d); push!(vals, B_diag)
             if C != 0; push!(rows, d); push!(cols, d+1); push!(vals, C); end
             
-            RHS[d] = src_fac * atm.B[f, d]
+            RHS[d] = src_fac * atm.B[f, d] + ext_fac * atm.I_top[f]
             inv_diag = 1.0 / B_diag
             weight   =  atm.w_mu[a]
             L_acc[d] += weight * (src_fac * inv_diag) 
@@ -576,15 +593,16 @@ function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
         diag = 1.0
         off  = -E_slab
         src  = 0.5 * (1.0 - E_slab) * term_top
-        (0.0, diag, off, src)
+        ext  = 0.5 * E_top * (1.0 - E_slab^2)
+        (0.0, diag, off, src, ext)
     elseif d == D # Diffusion BC 
-        (0.0, 1.0, 0.0, 1.0) 
+        (0.0, 1.0, 0.0, 1.0, 0.0) 
     else
         denom = 0.5 * dt_minus * dt_plus * (dt_minus + dt_plus)
         A = -(mu_sq / denom) * dt_plus
         C = -(mu_sq / denom) * dt_minus
         diag = 1.0 - A - C 
-        (A, diag, C, 1.0)
+        (A, diag, C, 1.0, 0.0)
     end
 end
 

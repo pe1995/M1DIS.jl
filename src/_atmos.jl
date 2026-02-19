@@ -90,6 +90,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 	α_MLT=1.5, 
 	maxiter=20,
 	damping=0.1, 
+	v_mic=0.0,
 	λ_weights=nothing, 
 	T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, 
 	T=nothing, ρ=nothing, P=nothing, z=nothing, 
@@ -152,7 +153,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 				tau=τ, rho=ρ, Temp=T, 
 				F_conv=F_conv, dFconv_dT=dFconv_dT,
 				mu=μ_angles, w_mu=μ_weights, w_lambda=λ_weights, 
-				chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT
+				chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT, I_top=Irr
 			)
 			chi, chi_ref, S, dSdT, atm
 		else
@@ -184,7 +185,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 	end
 	@optionalTiming relaxation_time for iter in 1:maxiter
 		# compute convective quantities (MLT)
-		@optionalTiming mixing_length_time update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff)
+		@optionalTiming mixing_length_time update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mic=v_mic*1e5)
 		@optionalTiming radiation_transfer_time if !feutrier
 			# solve the RT using long characteristic method
 			if use_threads
@@ -225,7 +226,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
 		converged = evaluate_iteration!(
 			r, iter, maxiter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, T_eff, logg, eos; 
-			dFconv_dT=dFconv_dT, J=J,
+			dFconv_dT=dFconv_dT, J=J, g_turb=g_turb, g_rad=g_rad,
 			kwargs...
 		)
 		if converged 

@@ -3,12 +3,12 @@
 
 Compute MLT parameters F_conv and g_turb based on Gustafsson et al. (1970).
 """
-function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, τ_ross, eos_extended, g_surf; alpha_mlt=1.5, Teff=5777.0)
+function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, τ_ross, eos_extended, g_surf; alpha_mlt=1.5, Teff=5777.0, v_mic=0.0)
     n_depth = length(T)
     # Reset outputs
     F_conv .= 0.0
     v_conv .= 0.0
-    g_turb .= 0.0
+    #g_turb .= 0.0
     dFconv_dT .= 0.0
     
     # Pre-calculate thermodynamic variables (Assume constant during local linearization)
@@ -112,7 +112,76 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
     
     F_conv[1] = F_conv[2]
     dFconv_dT[1] = dFconv_dT[2]
+    # -- 5. Turbulent Pressure and Gravity --
+    P_turb = zeros(n_depth)
+    kappa = zeros(n_depth)
+    
+    @inbounds for i in 1:n_depth
+        P_turb[i] = 0.5 * ρ[i] * (v_conv[i]^2 + v_mic^2)
+        
+        lnrho_val = log(ρ[i])
+        lnt_val = log(T[i])
+        kappa[i] = exp(TSO.extended_lookup(eos_extended, :lnRoss, lnrho_val, lnt_val))
+    end
+
+    # Calculate gradient dP_turb/dtau and g_turb
+    @inbounds for i in 1:n_depth
+        if i == 1
+            dP_dtau = (P_turb[2] - P_turb[1]) / (τ_ross[2] - τ_ross[1])
+        elseif i == n_depth
+            dP_dtau = (P_turb[end] - P_turb[end-1]) / (τ_ross[end] - τ_ross[end-1])
+        else
+            h1 = τ_ross[i] - τ_ross[i-1]
+            h2 = τ_ross[i+1] - τ_ross[i]
+            dP_dtau = - (h2 / (h1 * (h1 + h2))) * P_turb[i-1] +
+                      ((h2 - h1) / (h1 * h2)) * P_turb[i] +
+                      (h1 / (h2 * (h1 + h2))) * P_turb[i+1]
+        end
+        
+        g_turb[i] = kappa[i] * dP_dtau
+    end
+
+    gturb_stabilizer!(g_turb, g_surf)
+
+    #g_turb .= 0.0
 end
+
+"""
+    gturb_stabilizer!(g_turb, g_surf; max_fraction=0.1, passes=5, relax=0.2)
+
+Stabilisiert g_turb in-place. Nutzt den aktuellen Inhalt von g_turb als 
+Zielwert und relaxiert ihn gegen den vorherigen Zustand.
+"""
+function gturb_stabilizer!(g_turb, g_surf; max_fraction=0.1, passes=5, relax=0.2)
+    n = length(g_turb)
+    if n < 3 return end
+
+    g_old = copy(g_turb) 
+    
+    g_tmp = zeros(n)
+    for _ in 1:passes
+        g_tmp[1] = 0.75 * g_turb[1] + 0.25 * g_turb[2]
+        g_tmp[n] = 0.75 * g_turb[n] + 0.25 * g_turb[n-1]
+        @inbounds for i in 2:n-1
+            g_tmp[i] = 0.25 * g_turb[i-1] + 0.5 * g_turb[i] + 0.25 * g_turb[i+1]
+        end
+        g_turb .= g_tmp
+    end
+
+    m = g_turb .* g_old .< 0.0
+    g_turb[m] .= g_turb[m] .* 0.5
+    #=@inbounds for i in 1:n
+        g_turb[i] = (1.0 - relax) * g_old[i] + relax * g_turb[i]
+    end=#
+
+    limit = abs(g_surf * max_fraction)
+    @inbounds for i in 1:n
+        g_turb[i] = limit * tanh(g_turb[i] / limit)
+    end
+end
+
+
+
 
 
 
