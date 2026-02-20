@@ -20,6 +20,6 @@ include("_RT.jl")
 include("_MLT.jl")
 include("_atmos.jl")
 
-export atmosphere
+export atmosphere, save!, activate_timing!, deactivate_timing!, start_timing!, end_timing!
 
 end

@@ -8,6 +8,7 @@ const compute_opacities_time = Ref(false)
 const update_atmosphere_time = Ref(false)
 const solve_RT_time = Ref(false)
 const relaxation_time = Ref(false)
+
 const timers = [
     initialization_time,
     mixing_length_time,

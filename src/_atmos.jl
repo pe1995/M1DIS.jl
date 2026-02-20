@@ -25,6 +25,51 @@ m1disBox(τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, dT, teff, logg, eos; kwargs.
     MUST.Box(xx, yy, zz, d, p)
 end
 
+function save!(model_data::MUST.Box, model_name; eos500=nothing, folder="./", vmic=0.0, logg=4.5)
+    base_path = abspath(folder)
+    
+    if !isdir(base_path)
+        mkpath(base_path)
+    end
+    
+    run_i = joinpath(base_path, model_name)
+    if !isdir(run_i)
+        mkdir(run_i)
+    end
+
+	# properly orient the z-scale
+    model_data.z .= model_data.z .- TSO.optical_surface(model_data.data[:τ_ross][1,1,:], model_data.z[1,1,:])
+    MUST.flip!(model_data)
+
+    b = model_data
+    z = b[:z][1,1,:]
+    rho = b[:d][1,1,:]
+    T = b[:T][1,1,:]
+    vmic_arr = fill(vmic, length(z))
+    
+    # 1. M3D format
+    f_new = joinpath(run_i, "$(model_name)_m3d.txt")
+    MUST.save_text_m3d(f_new, z, rho, T; header=model_name, vmic=vmic_arr)
+    
+    # 2. M1D format
+	if !isnothing(eos500)
+		model_data.data[:Ne] = reshape(TSO.lookup(eos500, :lnNe, log.(model_data[:d]), log.(model_data[:T])) .|> exp, 1, 1, :)
+		model_data.data[:κ500] = reshape(TSO.lookup(eos500, :lnRoss, log.(model_data[:d]), log.(model_data[:T])) .|> exp, 1, 1, :)
+    	model_data.data[:τ500] = MUST.optical_depth(model_data, opacity=:κ500, density=:d)
+
+		tau500 = b[:τ500][1,1,:]
+    	Ne = b[:Ne][1,1,:]
+
+		f_new_m1d = joinpath(run_i, "atmos.$(model_name)")
+		MUST.save_text_m1d(f_new_m1d, tau500, T, Ne; logg=logg, header=model_name, vmic=vmic_arr)
+		
+		f_new_dscale = joinpath(run_i, "dscale.$(model_name)")
+		MUST.save_text_m1d_dscale(f_new_dscale, tau500; header=model_name)
+	end
+
+    return run_i
+end
+
 function initial_atmosphere(τ_grid; T_eff, logg, eos)
     # Gray atmosphere
 	T_initial = T_eff .* (0.75 * (τ_grid .+ 2/3)) .^ 0.25
@@ -91,7 +136,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 	maxiter=20,
 	damping=0.1, 
 	v_mic=0.0,
-	λ_weights=nothing, 
+	#λ_weights=nothing, 
 	T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, 
 	T=nothing, ρ=nothing, P=nothing, z=nothing, 
 	feutrier=true,
@@ -111,20 +156,16 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			eos
 		end
 		
-		opa = if !(typeof(opacity) <: TSO.ExtendedOpacity)
+		λ_weights, opa = if (typeof(opacity) <: TSO.MiniOpacityTable)
+			ones(length(opacity.opacity.λ)), opacity
+		elseif (typeof(opacity) <: TSO.ExtendedOpacity)
+			ones(length(opacity.opa.λ)), opacity
+		else
 			# compute dS/dT, which is needed for the Feutrier RT solver
 			opa = TSO.ExtendedOpacity(opa=opacity)
 			TSO.gradients!(eos.eos, opa)
 
-			opa
-		else
-			opacity
-		end
-
-		λ_weights = if isnothing(λ_weights)
-			ones(length(opa.opa.λ))
-		else
-			λ_weights
+			ones(length(opa.opa.λ)), opa
 		end
 
 		# if no atmosphere is provided, compute an initial gray atmosphere
@@ -143,7 +184,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		μ_angles, μ_weights = generate_mu_grid(4)
 
 		# check for irradiation and compute it
-		Irr = isnothing(T_irradiation) ? nothing : irradiate(eos, opa.opa, T_irradiation, R_irradiation, d_irradiation)
+		Irr = isnothing(T_irradiation) ? nothing : irradiate(eos, opa, T_irradiation, R_irradiation, d_irradiation)
 
 		# initialize the Feutrier RT solver storage arrays
 		chi, chi_ref, S, dSdT, atm = if feutrier
@@ -165,15 +206,17 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		@info "================================= M1DIS ================================="
 		
 		r = []
+		if (typeof(opacity) <: TSO.MiniOpacityTable)
+			@info """
+			Running M1DIS with MiniOpacityTable. 
+			This causes the source function and its derivative to be 
+			computed on the fly to save memory.
+			This means the source function is always assumed to be the Planck function.
+			"""
+			use_threads = true
+		end
 		if use_threads
 			@info "Running RT with $(Base.Threads.nthreads()) threads."
-			if feutrier
-				@info """
-				Parallel Feutrier solver is using approximate Λ-iterations. 
-				Consider using `use_threads=false` for better convergence.
-				Note that the parallel version is required for large opacity tables.
-				"""
-			end
 		end
 
 		if (size(chi, 1) > 1000) & (use_threads == false)
@@ -206,21 +249,21 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			else
  				@optionalTiming compute_opacities_time compute_opacities_chunked!(chi, chi_ref, S, dSdT, eos, opa, T, ρ)
 			end
+
 			@optionalTiming update_atmosphere_time update!(atm; tau=τ, rho=ρ, Temp=T, F_conv=F_conv, dFconv_dT=dFconv_dT, chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT)
+			
 			@optionalTiming solve_RT_time if !use_threads
 				solve_gustafsson!(atm, include_dT=true)
 			else
 				solve_approximate!(atm)
 			end
+
 			J .= atm.J_bol
 			F_rad .= atm.F_bol
 			g_rad .= atm.g_rad
 			dT .= atm.dT
 
 			# avoid overly large temperature corrections
-			#m = (atm.dT .* dT) .< 0.0
-			#dT .= atm.dT
-			#dT[m] .*= 0.75
 			dT .= clamp.(dT, -damping.*T, damping.*T)
 		end
 

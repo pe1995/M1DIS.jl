@@ -1,22 +1,15 @@
-
-#=function generate_mu_grid(n_points::Integer)
-    μ_grid, μ_weights = gausslegendre(n_points)
-    μ_grid = @. μ_grid / 2 + 0.5
-    μ_weights ./= 2
-    μ_grid, μ_weights
-end=#
+# ============================================================================
+# RT components
+# ============================================================================
 
 function generate_mu_grid(n_points::Integer)
     x, w = gausslegendre(n_points)
     return @. x / 2 + 0.5, @. w / 2
 end
 
-
-
-
-
-
-
+# ============================================================================
+# Long characteristic solver
+# ============================================================================
 
 function compute_diagonal_inv!(diag_inv, A, B, C)
     n = length(B)
@@ -163,14 +156,7 @@ function update_radiation_z_longchar!(J, F, g_rad; T, ρ, z, eos, opa, μ_weight
     end=#
 end
 
-
-
-
-
-
-
 #= Parallel version ---> Needs update! =#
-
 function _radiation_chunk_kernel(bin_range, T, ρ, z, eos, opa, 
                                 μ_angles, μ_weights_scaled, bin_weights, 
                                 lnrho, lnt, Δz, ncells, irradiation)
@@ -340,10 +326,11 @@ function update_radiation_z_longchar_dagger!(J, F, g_rad, Q, dQdT; T, ρ, z, eos
     return nothing
 end
 
+# ============================================================================
+# Opacity computations for Feutrier solvers
+# ============================================================================
 
-
-
-function compute_opacities(eos, opa, T, ρ)
+function compute_opacities(eos, opa::TSO.ExtendedOpacity, T, ρ)
     chi = zeros(Float64, length(opa.opa.λ), length(T))
     chi_ref = zeros(Float64, length(T))
     B = zeros(Float64, length(opa.opa.λ), length(T))
@@ -354,7 +341,8 @@ function compute_opacities(eos, opa, T, ρ)
     return chi, chi_ref, B, dBdT
 end
 
-function compute_opacities!(chi, chi_ref, B, dBdT, eos, opa, T, ρ)
+
+function compute_opacities!(chi, chi_ref, B, dBdT, eos, opa::TSO.ExtendedOpacity, T, ρ)
     lnrho = log.(ρ)
     lnt = log.(T)
     
@@ -368,10 +356,13 @@ function compute_opacities!(chi, chi_ref, B, dBdT, eos, opa, T, ρ)
     return nothing
 end
 
-#=============================================================================#
-# Bilinear Interpolation for large frequency grids
-#=============================================================================#
+# mini opacity tables require to be called with the chunked version
+compute_opacities(eos, opa::TSO.MiniOpacityTable, T, ρ) = compute_opacities_chunked(eos, opa, T, ρ)
+compute_opacities!(chi, chi_ref, B, dBdT, eos, opa::TSO.MiniOpacityTable, T, ρ) = _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, opa.opacity.λ)
 
+# ============================================================================
+# Bilinear Interpolation for large frequency grids
+# ============================================================================
 struct InterpCoefs
     idx::Int        
     w_low::Float64  
@@ -395,7 +386,64 @@ function get_interp_coefs(grid_nodes, val)
     return InterpCoefs(i, w_low, w_high)
 end
 
-function _compute_opacities_chunk!(range, chi, B, dBdT, opa, coefs_T, coefs_Rho)
+# ============================================================================
+# Chunked opacity computation for large tables
+# ============================================================================
+
+compute_opacities_chunked(eos, opa::TSO.ExtendedOpacity, T, ρ) = compute_opacities_chunked(eos, opa, T, ρ, opa.opa.λ)
+compute_opacities_chunked(eos, opa::TSO.MiniOpacityTable, T, ρ) = compute_opacities_chunked(eos, opa, T, ρ, opa.opacity.λ)
+
+function compute_opacities_chunked(eos, opa, T, ρ, λ)
+    chi = zeros(Float64, length(λ), length(T))
+    chi_ref = zeros(Float64, length(T))
+    B = zeros(Float64, length(λ), length(T))
+    dBdT = zeros(Float64, length(λ), length(T))
+
+    _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, λ) 
+
+    return chi, chi_ref, B, dBdT
+end
+
+compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa::TSO.ExtendedOpacity, T, ρ) = _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, opa.opa.λ)
+compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa::TSO.MiniOpacityTable, T, ρ) = _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, opa.opacity.λ)
+
+# ============================================================================
+# Chunked core computations
+# ============================================================================
+
+function _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, λ)
+    lnrho = log.(ρ)
+    lnt = log.(T)
+    
+    grid_T = eos.eos.lnT
+    grid_Rho = eos.eos.lnRho
+    n_shells = length(lnrho)
+    
+    coefs_T   = Vector{InterpCoefs}(undef, n_shells)
+    coefs_Rho = Vector{InterpCoefs}(undef, n_shells)
+    for j in 1:n_shells
+        coefs_T[j]   = get_interp_coefs(grid_T, lnt[j])
+        coefs_Rho[j] = get_interp_coefs(grid_Rho, lnrho[j])
+    end
+    
+    λ_indices = eachindex(λ)
+    chunk_size = cld(length(λ_indices), Threads.nthreads())
+    
+    tasks = map(Iterators.partition(λ_indices, chunk_size)) do range
+        Threads.@spawn _compute_opacities_chunk!(range, chi, B, dBdT, opa, coefs_T, coefs_Rho, ρ, T)
+    end
+    wait.(tasks)
+    
+    chi_ref .= exp.(lookup(eos.eos, :lnRoss, lnrho, lnt)) .* ρ
+    
+    return nothing
+end
+
+@inline _compute_opacities_chunk!(range, chi, B, dBdT, opa::TSO.MiniOpacityTable, coefs_T, coefs_Rho, ρ, T) = begin
+    _inner_compute_chunk!(range, chi, B, dBdT, opa.opacity.κ, opa.opacity.λ, opa.weights, coefs_T, coefs_Rho, ρ, T)
+end
+
+function _compute_opacities_chunk!(range, chi, B, dBdT, opa::TSO.ExtendedOpacity, coefs_T, coefs_Rho, ρ, T)
     kappa_data = opa.opa.κ
     src_data   = opa.opa.src
     dSdT_data  = opa.extensions[:dS_dT]
@@ -435,31 +483,34 @@ function _compute_opacities_chunk!(range, chi, B, dBdT, opa, coefs_T, coefs_Rho)
     end
 end
 
-function compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ)
-    lnrho = log.(ρ)
-    lnt = log.(T)
-    
-    grid_T = eos.eos.lnT
-    grid_Rho = eos.eos.lnRho
-    n_shells = length(lnrho)
-    
-    coefs_T   = Vector{InterpCoefs}(undef, n_shells)
-    coefs_Rho = Vector{InterpCoefs}(undef, n_shells)
-    
-    for j in 1:n_shells
-        coefs_T[j]   = get_interp_coefs(grid_T, lnt[j])
-        coefs_Rho[j] = get_interp_coefs(grid_Rho, lnrho[j])
+function _inner_compute_chunk!(range, chi, B, dBdT, kappa_data, λ, weights, coefs_T, coefs_Rho, ρ, T)
+    n_shells = length(coefs_T)
+
+    @inbounds for i in range
+        λ_i = λ[i]
+        w_i = weights[i]
+        for j in 1:n_shells
+            ct = coefs_T[j]
+            cr = coefs_Rho[j]
+            
+            it = ct.idx
+            ir = cr.idx
+            
+            w00 = ct.w_low  * cr.w_low
+            w10 = ct.w_high * cr.w_low
+            w01 = ct.w_low  * cr.w_high
+            w11 = ct.w_high * cr.w_high
+            
+            val_k = w00 * log(kappa_data[it,  ir,  i]) +
+                    w10 * log(kappa_data[it+1,ir,  i]) +
+                    w01 * log(kappa_data[it,  ir+1,i]) +
+                    w11 * log(kappa_data[it+1,ir+1,i])
+
+            chi[i, j] = exp(val_k) * ρ[j]
+            B[i, j] = TSO.Bλ_fast(λ_i, T[j]) * w_i
+            dBdT[i, j] = TSO.dBdTλ_fast(λ_i, T[j]) * w_i
+        end
     end
 
-    λ_indices = eachindex(opa.opa.λ)
-    chunk_size = cld(length(λ_indices), Threads.nthreads())
-    
-    tasks = map(Iterators.partition(λ_indices, chunk_size)) do range
-        Threads.@spawn _compute_opacities_chunk!(range, chi, B, dBdT, opa, coefs_T, coefs_Rho)
-    end
-    
-    chi_ref .= exp.(lookup(eos.eos, :lnRoss, lnrho, lnt)) .* ρ
-    
-    wait.(tasks)
-    return nothing
+    nothing
 end
