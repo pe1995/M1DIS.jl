@@ -411,6 +411,9 @@ compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa::TSO.MiniOpacityTable
 # Chunked core computations
 # ============================================================================
 
+_is_binned(opa::TSO.ExtendedOpacity) = opa.binned
+_is_binned(opa::TSO.MiniOpacityTable) = false
+
 function _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, λ)
     lnrho = log.(ρ)
     lnt = log.(T)
@@ -429,8 +432,10 @@ function _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, λ)
     λ_indices = eachindex(λ)
     chunk_size = cld(length(λ_indices), Threads.nthreads())
     
+    ρ_eff = _is_binned(opa) ? ones(eltype(ρ), length(ρ)) : ρ
+    
     tasks = map(Iterators.partition(λ_indices, chunk_size)) do range
-        Threads.@spawn _compute_opacities_chunk!(range, chi, B, dBdT, opa, coefs_T, coefs_Rho, ρ, T)
+        Threads.@spawn _compute_opacities_chunk!(range, chi, B, dBdT, opa, coefs_T, coefs_Rho, ρ_eff, T, grid_T)
     end
     wait.(tasks)
     
@@ -439,18 +444,24 @@ function _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, λ)
     return nothing
 end
 
-@inline _compute_opacities_chunk!(range, chi, B, dBdT, opa::TSO.MiniOpacityTable, coefs_T, coefs_Rho, ρ, T) = begin
+@inline _compute_opacities_chunk!(range, chi, B, dBdT, opa::TSO.MiniOpacityTable, coefs_T, coefs_Rho, ρ, T, grid_T) = begin
     _inner_compute_chunk!(range, chi, B, dBdT, opa.opacity.κ, opa.opacity.λ, opa.weights, coefs_T, coefs_Rho, ρ, T)
 end
 
-function _compute_opacities_chunk!(range, chi, B, dBdT, opa::TSO.ExtendedOpacity, coefs_T, coefs_Rho, ρ, T)
-    kappa_data = opa.opa.κ
-    src_data   = opa.opa.src
-    dSdT_data  = opa.extensions[:dS_dT]
+@inline _compute_opacities_chunk!(range, chi, B, dBdT, opa::TSO.ExtendedOpacity, coefs_T, coefs_Rho, ρ_eff, T, grid_T) = begin
+    _inner_compute_chunk_extended!(range, chi, B, dBdT, opa.opa.κ, opa.opa.src, opa.weights, coefs_T, coefs_Rho, ρ_eff, T, grid_T)
+end
 
+# ExtendedOpacity tables can be either binned or unbinned.
+# If unbinned, weights are set according to midpoint integration. Rho is multiplied to the opacity.
+# If binned, weights are set to 1. Rho is not multiplied to the opacity, as this happened during the binning. In this case rho is set to 1.
+function _inner_compute_chunk_extended!(range, chi, B, dBdT, kappa_data, src_data, weights, coefs_T, coefs_Rho, ρ, T, grid_T)
     n_shells = length(coefs_T)
+    nT = length(grid_T)
 
     @inbounds for i in range
+        # w_i is 1 if the table is binned
+        w_i = weights[i]
         for j in 1:n_shells
             ct = coefs_T[j]
             cr = coefs_Rho[j]
@@ -466,23 +477,32 @@ function _compute_opacities_chunk!(range, chi, B, dBdT, opa::TSO.ExtendedOpacity
                     w10 * log(kappa_data[it+1, ir,   i]) +
                     w01 * log(kappa_data[it,   ir+1, i]) +
                     w11 * log(kappa_data[it+1, ir+1, i])
-            chi[i, j] = exp(val_k)
+            chi[i, j] = exp(val_k) * ρ[j]
 
             val_s = w00 * log(src_data[it,   ir,   i]) +
                     w10 * log(src_data[it+1, ir,   i]) +
                     w01 * log(src_data[it,   ir+1, i]) +
                     w11 * log(src_data[it+1, ir+1, i])
-            B[i, j] = exp(val_s)
+            B[i, j] = exp(val_s) * w_i
 
-            val_d = w00 * dSdT_data[it,   ir,   i] +
-                    w10 * dSdT_data[it+1, ir,   i] +
-                    w01 * dSdT_data[it,   ir+1, i] +
-                    w11 * dSdT_data[it+1, ir+1, i]
-            dBdT[i, j] = val_d
+            dS, dT_diff = if (it > 1) && (it < nT)
+                log(src_data[it+1, ir, i]) - log(src_data[it-1, ir, i]), 
+                grid_T[it+1] - grid_T[it-1]
+            elseif it == 1
+                log(src_data[it+1, ir, i]) - log(src_data[it, ir, i]), 
+                grid_T[it+1] - grid_T[it]
+            else
+                log(src_data[it, ir, i]) - log(src_data[it-1, ir, i]), 
+                grid_T[it] - grid_T[it-1]
+            end
+            
+            dBdT[i, j] = exp(val_s - grid_T[it]) * (dS / dT_diff) * w_i
         end
     end
 end
 
+# MiniOpacityTable always are unbinned, as they dont have the source function stored
+# On-thy-fly Planck function only works for monochromatic opacities. This means that weights are always multiplied.
 function _inner_compute_chunk!(range, chi, B, dBdT, kappa_data, λ, weights, coefs_T, coefs_Rho, ρ, T)
     n_shells = length(coefs_T)
 

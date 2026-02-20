@@ -156,16 +156,31 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			eos
 		end
 		
-		λ_weights, opa = if (typeof(opacity) <: TSO.MiniOpacityTable)
-			ones(length(opacity.opacity.λ)), opacity
-		elseif (typeof(opacity) <: TSO.ExtendedOpacity)
-			ones(length(opacity.opa.λ)), opacity
+		opacity = if typeof(opacity) <: TSO.SqOpacity
+			o = TSO.ExtendedOpacity(opa=opacity)
+			@warn "Opacity was passed without wrapping it into an ExtendedOpacity. This is not recommended, as it will be guessed if the table is binned or not."
+			@warn "The guess is: $(o.binned ? "binned" : "not binned")"
+			@warn "If this is not true, please pass the opacity as: `TSO.ExtendedOpacity(opa=opaccity, binned=binned)`"
+			o
 		else
-			# compute dS/dT, which is needed for the Feutrier RT solver
-			opa = TSO.ExtendedOpacity(opa=opacity)
-			TSO.gradients!(eos.eos, opa)
+			opacity
+		end
 
-			ones(length(opa.opa.λ)), opa
+		@assert typeof(opacity) <: Union{TSO.ExtendedOpacity, TSO.MiniOpacityTable} "Opacity must be an ExtendedOpacity or MiniOpacityTable."
+		
+		# Binned opacities require the source function to come from the table
+		if opacity.binned
+			@assert typeof(opacity) <: TSO.ExtendedOpacity "Binned opacities must use ExtendedOpacity to provide the source function. MiniOpacityTable cannot be binned."
+		end
+		
+		if !opacity.binned
+			use_threads = true
+		end
+
+		if opacity.binned && (typeof(opacity) <: TSO.ExtendedOpacity)
+			if !haskey(opacity.extensions, :dS_dT)
+				TSO.gradients!(eos.eos, opacity)
+			end
 		end
 
 		# if no atmosphere is provided, compute an initial gray atmosphere
@@ -184,16 +199,20 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		μ_angles, μ_weights = generate_mu_grid(4)
 
 		# check for irradiation and compute it
-		Irr = isnothing(T_irradiation) ? nothing : irradiate(eos, opa, T_irradiation, R_irradiation, d_irradiation)
+		Irr = isnothing(T_irradiation) ? nothing : irradiate(eos, opacity, T_irradiation, R_irradiation, d_irradiation)
 
 		# initialize the Feutrier RT solver storage arrays
 		chi, chi_ref, S, dSdT, atm = if feutrier
-			chi, chi_ref, S, dSdT = compute_opacities(eos, opa, T, ρ)
+			chi, chi_ref, S, dSdT = if opacity.binned
+				compute_opacities(eos, opacity, T, ρ)
+			else
+				compute_opacities_chunked(eos, opacity, T, ρ)
+			end
 			atm = Atmosphere(
 				T_eff=T_eff, z=z, 
 				tau=τ, rho=ρ, Temp=T, 
 				F_conv=F_conv, dFconv_dT=dFconv_dT,
-				mu=μ_angles, w_mu=μ_weights, w_lambda=λ_weights, 
+				mu=μ_angles, w_mu=μ_weights, 
 				chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT, I_top=Irr
 			)
 			chi, chi_ref, S, dSdT, atm
@@ -201,7 +220,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			nothing, nothing, nothing, nothing, nothing
 		end
 
-		#chi2, chi_ref2, S2, dSdT2 = compute_opacities(eos, opa, T, ρ)
+		#chi2, chi_ref2, S2, dSdT2 = compute_opacities(eos, opacity, T, ρ)
 		
 		@info "================================= M1DIS ================================="
 		
@@ -213,8 +232,15 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			computed on the fly to save memory.
 			This means the source function is always assumed to be the Planck function.
 			"""
-			use_threads = true
 		end
+		
+		if !opacity.binned
+			@info """
+			Running M1DIS with unbinned opacity table.
+			Forcing `use_threads=true` to handle the large number of frequency points.
+			"""
+		end
+
 		if use_threads
 			@info "Running RT with $(Base.Threads.nthreads()) threads."
 		end
@@ -233,21 +259,21 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			# solve the RT using long characteristic method
 			if use_threads
 				update_radiation_z_longchar_dagger!(
-					J, F_rad, g_rad, Q, dQdT, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa, λ_weights=λ_weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles
+					J, F_rad, g_rad, Q, dQdT, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opacity, λ_weights=opacity.weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles
 				)
 			else
 				update_radiation_z_longchar!(
-					J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opa.opa, λ_weights=λ_weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles
+					J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opacity.opa, λ_weights=opacity.weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles
 				)
 			end
 
 			# compute temperature correction
 			update_temperature_correction_robust!(dT, F_rad, F_conv, dFconv_dT, T, τ, T_eff, J; damping=damping)
 		else
-			if size(chi, 1) < 1000
- 				@optionalTiming compute_opacities_time compute_opacities!(chi, chi_ref, S, dSdT, eos, opa, T, ρ)
+			if opacity.binned
+ 				@optionalTiming compute_opacities_time compute_opacities!(chi, chi_ref, S, dSdT, eos, opacity, T, ρ)
 			else
- 				@optionalTiming compute_opacities_time compute_opacities_chunked!(chi, chi_ref, S, dSdT, eos, opa, T, ρ)
+ 				@optionalTiming compute_opacities_time compute_opacities_chunked!(chi, chi_ref, S, dSdT, eos, opacity, T, ρ)
 			end
 
 			@optionalTiming update_atmosphere_time update!(atm; tau=τ, rho=ρ, Temp=T, F_conv=F_conv, dFconv_dT=dFconv_dT, chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT)

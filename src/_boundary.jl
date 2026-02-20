@@ -51,11 +51,11 @@ function irradiate(eos, opa::TSO.ExtendedOpacity, T_irradiation, R_irradiation, 
     rho_min, rho_max = TSO.limits(eos.eos, 2)
     rho_irr = exp((rho_max + rho_min) / 2)
     S = lookup(eos.eos, opa.opa, :src, Float64(log(rho_irr)), Float64(log(T_irradiation)))
-    S .* (R_irradiation ./ d_irradiation) .^2 #.* π
+    S .* (R_irradiation ./ d_irradiation) .^2 .* opa.weights
 end
 
 function irradiate(eos, opa::TSO.MiniOpacityTable, T_irradiation, R_irradiation, d_irradiation)
     lf = TSO.lookup_variable(opa, :src)
-    S = lf.(Float64(log(T_irradiation)), eachindex(opa.opacity.λ))
-    S .* (R_irradiation ./ d_irradiation) .^2 
+    S = lf.(Float64(T_irradiation), eachindex(opa.opacity.λ))
+    S .* (R_irradiation ./ d_irradiation) .^2 .* opa.weights
 end

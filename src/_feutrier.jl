@@ -10,7 +10,7 @@ mutable struct Atmosphere{T <: AbstractFloat}
     Temp::Vector{T}       # Temperature (Size: D)
     mu::Vector{T}         # Angle cosines (Size: Na)
     w_mu::Vector{T}       # Angle weights (Normalized to sum=1)
-    w_lambda::Vector{T}   # Frequency Bin weights (Size: Nf)
+    #w_lambda::Vector{T}   # Frequency Bin weights (Size: Nf)
     chi::Matrix{T}        # Opacity (Nf x D)
     chi_ref::Vector{T}    # Reference opacity (Size: D)
     B::Matrix{T}          # Planck function (Nf x D)
@@ -46,12 +46,12 @@ end
 function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Temp::Vector{T}, 
                     F_conv::Vector{T}, dFconv_dT::Vector{T},
                     mu::Vector{T}, w_mu::Vector{T}, 
-                    w_lambda::Vector{T},
+                    #w_lambda::Vector{T},
                     chi::Matrix{T}, chi_ref::Vector{T}, 
                     B::Matrix{T}, dBdT::Matrix{T}, 
                     I_top::Union{Vector{T}, Nothing}=nothing) where T
     D = length(tau)
-    Nf = length(w_lambda) 
+    Nf = size(chi, 1) 
     Na = length(mu)
     
     # --- 1. Normalize Angle Weights ---
@@ -97,7 +97,7 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
     g_rad_init = zeros(T, D)
     dT_init    = zeros(T, D)
     return Atmosphere{T}(T_eff, deepcopy(z), deepcopy(tau), tau_lambda, deepcopy(rho), deepcopy(Temp), 
-                         deepcopy(mu), deepcopy(w_mu), deepcopy(w_lambda), 
+                         deepcopy(mu), deepcopy(w_mu), 
                          deepcopy(chi), deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), 
                          deepcopy(F_conv), dFconv, deepcopy(dFconv_dT), 
                          eta, I_top_val, J_bol_init, F_bol_init, g_rad_init, dT_init, J_raw_init)
@@ -131,7 +131,7 @@ function update!(atm::Atmosphere{T}; kwargs...) where T
     end
 
     D = length(atm.tau)
-    Nf = length(atm.w_lambda)
+    Nf = size(atm.chi, 1)
 
     if dirty_chi || dirty_chi_ref
         @inbounds for d in 1:D
@@ -172,7 +172,7 @@ function update!(atm::Atmosphere{T}; kwargs...) where T
 end
 
 function Packer(atm::Atmosphere{T}) where T
-    Nf = length(atm.w_lambda) 
+    Nf = size(atm.chi, 1) 
     Na = length(atm.mu)
     N = Nf * Na
     
@@ -184,7 +184,7 @@ function Packer(atm::Atmosphere{T}) where T
     idx = 1
     for f in 1:Nf
         for a in 1:Na
-            weights[idx]  = atm.w_lambda[f] * atm.w_mu[a]
+            weights[idx]  = atm.w_mu[a]
             mu_sq[idx]    = atm.mu[a]^2
             freq_idx[idx] = f
             ang_idx[idx]  = a
@@ -259,7 +259,7 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
                     a = pack.ang_idx[k]
                     
                     dt_local = atm.tau_lambda[f, d] - atm.tau_lambda[f, d-1]
-                    w = 4π * atm.w_lambda[f] * atm.w_mu[a] * pack.mu_sq[k]
+                    w = 4π * atm.w_mu[a] * pack.mu_sq[k]
                     coeff = w / dt_local
                     
                     push!(rows, row_flux); push!(cols, idx_J(k,d));   push!(vals, coeff)
@@ -319,7 +319,7 @@ end
 
 function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}) where T
     D = length(atm.tau)
-    Nf = length(atm.w_lambda)
+    Nf = size(atm.chi, 1)
     
     fill!(atm.J_bol, 0.0); fill!(atm.F_bol, 0.0); fill!(atm.g_rad, 0.0)
     fill!(RE_res, 0.0); fill!(RE_jac, 0.0)
@@ -452,7 +452,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
             end
         end
         
-        w_f = atm.w_lambda[f]
+        w_f = 1 #atm.w_lambda[f]
         
         for d in 1:D
             j_sum = 0.0
@@ -611,25 +611,25 @@ end
 # ==============================================================================
 
 function update_mean_intensity!(atm::Atmosphere{T}) where T
-    D = length(atm.tau); Nf = length(atm.w_lambda); Na = length(atm.mu)
+    D = length(atm.tau); Nf = size(atm.chi, 1); Na = length(atm.mu)
     fill!(atm.J_bol, 0.0)
     for d in 1:D; bol_sum = zero(T)
         for f in 1:Nf; sum_J = zero(T)
             for a in 1:Na; sum_J += atm.w_mu[a] * atm.J_raw[f, a, d]; end
-            bol_sum += atm.w_lambda[f] * sum_J
+            bol_sum += sum_J
         end
         atm.J_bol[d] = bol_sum
     end
 end
 
 function compute_flux!(atm::Atmosphere{T}) where T
-    D = length(atm.tau); Nf = length(atm.w_lambda); Na = length(atm.mu)
+    D = length(atm.tau); Nf = size(atm.chi, 1); Na = length(atm.mu)
     c_light = 2.99792458e10
     
     fill!(atm.F_bol, 0.0); fill!(atm.g_rad, 0.0)
     
     for f in 1:Nf
-        w_f = atm.w_lambda[f]
+        w_f = 1 #atm.w_lambda[f]
         for a in 1:Na
             ang_f = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
             for d in 1:D
