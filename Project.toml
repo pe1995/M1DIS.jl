@@ -4,6 +4,7 @@ version = "1.4.0"
 authors = ["Philipp Eitner <eitner@mpia.de> and contributors"]
 
 [deps]
+ArgParse = "c7e460c6-2fb9-53a9-8c5b-16f535851c63"
 Dagger = "d58978e5-989f-55fb-8d15-ea34adc7bf54"
 DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
 DifferentialEquations = "0c46a032-eb83-5123-abaf-570d42b7fbaa"
@@ -18,3 +19,6 @@ TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 [sources]
 MUST = {rev = "main", url = "https://github.com/pe1995/MUST.jl"}
 TSO = {rev = "main", url = "https://github.com/pe1995/TSO.jl"}
+
+[compat]
+ArgParse = "1.2.0"

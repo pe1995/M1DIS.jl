@@ -137,7 +137,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 	damping=0.1, 
 	v_mic=0.0,
 	#λ_weights=nothing, 
-	T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, 
+	T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, F_irradiation=nothing,
 	T=nothing, ρ=nothing, P=nothing, z=nothing, 
 	feutrier=true,
 	use_threads=false,
@@ -199,7 +199,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		μ_angles, μ_weights = generate_mu_grid(4)
 
 		# check for irradiation and compute it
-		Irr = isnothing(T_irradiation) ? nothing : irradiate(eos, opacity, T_irradiation, R_irradiation, d_irradiation)
+		Irr = isnothing(d_irradiation) ? nothing : irradiate(eos, opacity, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
 
 		# initialize the Feutrier RT solver storage arrays
 		chi, chi_ref, S, dSdT, atm = if feutrier
