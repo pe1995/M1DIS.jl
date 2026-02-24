@@ -108,6 +108,7 @@ function main()
     println("===================== M1DIS.jl Atmosphere Solver ===============================")
     println("================================================================================")
     println("Computing atmosphere...")
+    M1DIS.activate_timing!()
     M1DIS.start_timing!()
     result = atmosphere(
         T_eff = args["teff"],

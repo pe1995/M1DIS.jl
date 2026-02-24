@@ -179,6 +179,7 @@ function main()
     println("Orbital Distance (cm):  ", d_orbit_cm, " (", args["a_au"], " AU)")
     println("")
     println("Computing atmosphere...")
+    M1DIS.activate_timing!()
     M1DIS.start_timing!()
     result = atmosphere(
         T_eff = t_internal_planet,
