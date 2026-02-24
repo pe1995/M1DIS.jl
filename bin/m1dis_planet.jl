@@ -31,7 +31,7 @@ function parse_commandline()
             arg_type = Float64
             default = 0.047
         "--r_pl"
-            help = "Planetary Radius [R_Jup] (required for planet gravity)"
+            help = "Planetary Radius [R_Jup]"
             arg_type = Float64
             default = 1.4
         "--m_pl"
@@ -67,7 +67,7 @@ function parse_commandline()
             required = true
         "--out_dir"
             help = "Output directory for the saved models"
-            default = "./models"
+            default = ""
         "--model_name"
             help = "Name of the model to save"
             default = "m1dis_planet_model"
@@ -132,13 +132,6 @@ function main()
     t_internal_planet = args["t_int"]
     T_star_eff = args["t_star"]
 
-    println("--- Derived Planet Parameters ---")
-    println("Planet Gravity (log g): ", round(logg_planet, digits=3))
-    println("Star Temperature (K):   ", T_star_eff)
-    println("Star Radius (cm):       ", R_star_cm, " (", round(R_star_cm/R_SUN_CM, digits=2), " R_sun)")
-    println("Orbital Distance (cm):  ", d_orbit_cm, " (", args["a_au"], " AU)")
-    println("Dilution Factor (W):    ", dilution_factor)
-
     if args["binned"]
         eos_file = joinpath(args["eos_dir"], "eos_T.hdf5")
         eos500_file = joinpath(args["eos_dir"], "eos_T500.hdf5")
@@ -159,7 +152,7 @@ function main()
     opa_complete = if args["mini"]
         TSO.reload(TSO.MiniOpacityTable, opa_file)
     else
-        TSO.ExtendedOpacity(TSO.reload(opa_file, mmap=!args["binned"]), binned=args["binned"])
+        TSO.ExtendedOpacity(opa=TSO.reload(opa_file, mmap=!args["binned"]), binned=args["binned"])
     end
 
     F_irr = if args["F_irradiation"] == ""
@@ -173,9 +166,18 @@ function main()
         ip.(TSO.wavelength(opa_complete))
     end
 
+    use_threads = (!args["binned"]) || (args["use_threads"])
+    @show use_threads
+
     println("================================================================================")
     println("================ M1DIS.jl Planet Atmosphere Solver =============================")
     println("================================================================================")
+    println("--- Star & Planet Parameters ---")
+    println("Planet Gravity (log g): ", round(logg_planet, digits=3))
+    println("Star Temperature (K):   ", T_star_eff)
+    println("Star Radius (cm):       ", R_star_cm, " (", round(R_star_cm/R_SUN_CM, digits=2), " R_sun)")
+    println("Orbital Distance (cm):  ", d_orbit_cm, " (", args["a_au"], " AU)")
+    println("")
     println("Computing atmosphere...")
     M1DIS.start_timing!()
     result = atmosphere(
@@ -188,7 +190,7 @@ function main()
         opacity = opa_complete,
         damping = args["damping"],
         τ = 10.0 .^ range(args["tau_min"], args["tau_max"], length=args["n_tau"]),
-        use_threads = (!args["binned"]) || (args["use_threads"]),
+        use_threads = use_threads,
         feutrier = true,
         T_irradiation = T_star_eff,
         d_irradiation = d_orbit_cm,
@@ -197,7 +199,11 @@ function main()
     )
     M1DIS.end_timing!()
     
-    out_dir = args["out_dir"]
+    out_dir = if args["out_dir"] == ""
+        joinpath(@__DIR__, "../models")
+    else
+        args["out_dir"]
+    end
     if !isdir(out_dir)
         println("Creating output directory: $out_dir")
         mkpath(out_dir)

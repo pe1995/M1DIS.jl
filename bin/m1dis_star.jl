@@ -67,25 +67,6 @@ function parse_commandline()
         "--use_threads"
             help = "Use multi-threading for the RT."
             action = :store_true
-        #"--T_irradiation"
-        #    help = "Temperature of the irradiation source."
-        #    arg_type = Float64
-        #    default = -1.0
-        #"--d_irradiation"
-        #    help = "Distance to the irradiation source."
-        #    arg_type = Float64
-        #    default = -1.0
-        #"--R_irradiation"
-        #    help = "Radius of the irradiation source."
-        #    arg_type = Float64
-        #    default = -1.0
-        #"--F_irradiation"
-        #    help = """
-        #    File with irradiation flux as a function of wavelength (in Å, first column wavelength, second column flux). 
-        #    Will be interpolated to the internal grid of the opacity table.
-        #    """
-        #    arg_type = String
-        #    default = ""
     end
 
     return parse_args(s)
@@ -117,22 +98,11 @@ function main()
     opa_complete = if args["mini"]
         TSO.reload(TSO.MiniOpacityTable, opa_file)
     else
-        TSO.ExtendedOpacity(TSO.reload(opa_file, mmap=!args["binned"]), binned=args["binned"])
+        TSO.ExtendedOpacity(opa=TSO.reload(opa_file, mmap=!args["binned"]), binned=args["binned"])
     end
 
-    #T_irr = args["T_irradiation"] < 0.0 ? nothing : args["T_irradiation"]
-    #d_irr = args["d_irradiation"] < 0.0 ? nothing : args["d_irradiation"]
-    #R_irr = args["R_irradiation"] < 0.0 ? nothing : args["R_irradiation"]
-    #F_irr = if args["F_irradiation"] == ""
-    #    nothing
-    #else
-    #    d = M1DIS.readdlm(args["F_irradiation"])
-    #    l = d[:, 1]
-    #    F = d[:, 2]
-    #    m = sortperm(l)
-    #    ip = M1DIS.linear_interpolation(l[m], F[m])
-    #    ip.(TSO.wavelength(opa_complete))
-    #end
+    use_threads = (!args["binned"]) || (args["use_threads"])
+    @show use_threads
 
     println("================================================================================")
     println("===================== M1DIS.jl Atmosphere Solver ===============================")
@@ -149,12 +119,8 @@ function main()
         opacity = opa_complete,
         damping = args["damping"],
         τ = 10.0 .^ range(args["tau_min"], args["tau_max"], length=args["n_tau"]),
-        use_threads = (!args["binned"]) || (args["use_threads"]),
+        use_threads = use_threads,
         feutrier = true,
-        #T_irradiation = T_irr,
-        #d_irradiation = d_irr,
-        #R_irradiation = R_irr,
-        #F_irradiation = F_irr
     )
     M1DIS.end_timing!()
     
