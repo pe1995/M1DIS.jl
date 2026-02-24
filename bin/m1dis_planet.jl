@@ -167,7 +167,6 @@ function main()
     end
 
     use_threads = (!args["binned"]) || (args["use_threads"])
-    @show use_threads
 
     println("================================================================================")
     println("================ M1DIS.jl Planet Atmosphere Solver =============================")
