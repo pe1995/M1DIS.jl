@@ -62,9 +62,9 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		
 		opacity = if typeof(opacity) <: TSO.SqOpacity
 			o = TSO.ExtendedOpacity(opa=opacity)
-			@warn "Opacity was passed without wrapping it into an ExtendedOpacity. This is not recommended, as it will be guessed if the table is binned or not."
-			@warn "The guess is: $(o.binned ? "binned" : "not binned")"
-			@warn "If this is not true, please pass the opacity as: `TSO.ExtendedOpacity(opa=opaccity, binned=binned)`"
+			@verbose_warn 2 "Opacity was passed without wrapping it into an ExtendedOpacity. This is not recommended, as it will be guessed if the table is binned or not."
+			@verbose_warn 2 "The guess is: $(o.binned ? "binned" : "not binned")"
+			@verbose_warn 2 "If this is not true, please pass the opacity as: `TSO.ExtendedOpacity(opa=opaccity, binned=binned)`"
 			o
 		else
 			opacity
@@ -124,11 +124,11 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			nothing, nothing, nothing, nothing, nothing
 		end
 		
-		@info "================================= M1DIS ================================="
+		@verbose_info 2 "================================= M1DIS ================================="
 		
 		r = []
 		if (typeof(opacity) <: TSO.MiniOpacityTable)
-			@info """
+			@verbose_info 2 """
 			Running M1DIS with MiniOpacityTable. 
 			This causes the source function and its derivative to be 
 			computed on the fly to save memory.
@@ -137,22 +137,22 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		end
 		
 		if !opacity.binned
-			@info """
+			@verbose_info 2 """
 			Running M1DIS with unbinned opacity table.
 			Forcing `use_threads=true` to handle the large number of frequency points.
 			"""
 		end
 
 		if use_threads
-			@info "Running RT with $(Base.Threads.nthreads()) threads."
+			@verbose_info 2 "Running RT with $(Base.Threads.nthreads()) threads."
 		end
 
 		if (size(chi, 1) > 1000) & (use_threads == false)
-			@warn "Single-threaded Feutrier RT solver with a large opacity table may be slow and RAM intensive."
+			@verbose_warn 2 "Single-threaded Feutrier RT solver with a large opacity table may be slow and RAM intensive."
 		end
 
-		@info "========================================================================="
-		@info "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
+		@verbose_info 2 "========================================================================="
+		@verbose_info 1 "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
 	end
 	@optionalTiming relaxation_time for iter in 1:maxiter
 		# compute convective quantities (MLT)
@@ -201,7 +201,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			kwargs...
 		)
 		if converged 
-			@info "Atmosphere converged."
+			@verbose_info 1 "Atmosphere converged."
 			break
 		end
 
@@ -253,7 +253,7 @@ function evaluate_iteration!(result,
 	dt_err_max = maximum(abs.(dT[2:end-1] ./ T[2:end-1]))
 	sinf = TSO.@sprintf("%4d | %16.4f | %14.4f | %10.1f K\n", 
 			iter, flux_err_max*100, dt_err_max*100, maximum(abs.(dT[2:end-1])))
-	@info sinf
+	@verbose_info 1 sinf
 
 	converged = (dt_err_max<dt_tolerance_rel) | (flux_err_max<flux_tolerance_rel)
 	if converged | store
@@ -311,7 +311,7 @@ function save!(model_data::MUST.Box, model_name; eos500=nothing, folder="./", vm
     end
 
     model_data.z .= model_data.z .- TSO.optical_surface(model_data.data[:τ_ross][1,1,:], model_data.z[1,1,:])
-    MUST.flip!(model_data)
+    MUST.flip!(model_data, depth=true)
 
     b = model_data
     z = b[:z][1,1,:]
@@ -325,11 +325,13 @@ function save!(model_data::MUST.Box, model_name; eos500=nothing, folder="./", vm
     
     # 2. M1D format
 	if !isnothing(eos500)
+    	MUST.flip!(model_data, depth=false)
 		model_data.data[:Ne] = reshape(TSO.lookup(eos500, :lnNe, log.(model_data[:d]), log.(model_data[:T])) .|> exp, 1, 1, :)
 		model_data.data[:κ500] = reshape(TSO.lookup(eos500, :lnRoss, log.(model_data[:d]), log.(model_data[:T])) .|> exp, 1, 1, :)
     	model_data.data[:τ500] = MUST.optical_depth(model_data, opacity=:κ500, density=:d)
+    	MUST.flip!(model_data, depth=true)
 
-		tau500 = b[:τ500][1,1,:]
+		tau500 =log.(b[:τ500][1,1,:])
     	Ne = b[:Ne][1,1,:]
 
 		f_new_m1d = joinpath(run_i, "atmos.$(model_name)")

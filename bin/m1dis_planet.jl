@@ -8,6 +8,7 @@ using M1DIS
 using ArgParse
 using TSO
 using MUST
+using TOML
 
 # ==============================================================================
 # Constants (CGS Units)
@@ -19,58 +20,81 @@ const AU_CM    = 1.496e13      # Astronomical Unit [cm]
 const G_CGS    = 6.6743e-8     # Gravitational Constant [cm^3 g^-1 s^-2]
 
 function parse_commandline()
+    # Pre-scan for config file
+    config_file = ""
+    for i in 1:length(ARGS)
+        if ARGS[i] == "--config" || ARGS[i] == "-c"
+            if i < length(ARGS)
+                config_file = ARGS[i+1]
+            end
+            break
+        end
+    end
+
+    c = Dict{String, Any}()
+    if config_file != ""
+        if !isfile(config_file)
+            error("Configuration file not found: $config_file")
+        end
+        c = TOML.parsefile(config_file)
+    end
+
     s = ArgParseSettings(description = "M1DIS.jl Planet Atmosphere Solver")
 
     @add_arg_table s begin
+        "--config", "-c"
+            help = "Path to a TOML configuration file. Command line arguments override these values."
+            arg_type = String
+            default = ""
         "--t_int"
             help = "Internal temperature of the planet (K)"
             arg_type = Float64
-            default = 1200.0
+            default = convert(Float64, get(c, "t_int", 1200.0))
         "--a_au"
             help = "Semi-major axis [AU]"
             arg_type = Float64
-            default = 0.047
+            default = convert(Float64, get(c, "a_au", 0.047))
         "--r_pl"
             help = "Planetary Radius [R_Jup]"
             arg_type = Float64
-            default = 1.4
+            default = convert(Float64, get(c, "r_pl", 1.4))
         "--m_pl"
             help = "Planetary Mass [M_Jup]"
             arg_type = Float64
-            default = 0.69
+            default = convert(Float64, get(c, "m_pl", 0.69))
         "--t_star"
             help = "Host Star Effective Temperature [K]"
             arg_type = Float64
-            default = 6065.0
+            default = convert(Float64, get(c, "t_star", 6065.0))
         "--td"
             help = "Transit Depth [%] (superseded by --r_star if provided)"
             arg_type = Float64
-            default = 1.5
+            default = convert(Float64, get(c, "td", 1.5))
         "--r_star"
             help = "Host Star Radius [R_sun] (optional, overrides transit depth)"
             arg_type = Float64
-            default = -1.0
+            default = convert(Float64, get(c, "r_star", -1.0))
         "--vmic"
             help = "Microturbulence (km/s)"
             arg_type = Float64
-            default = 0.0
+            default = convert(Float64, get(c, "vmic", 0.0))
         "--maxiter"
             help = "Maximum number of iterations"
             arg_type = Int
-            default = 40
+            default = convert(Int, get(c, "maxiter", 40))
         "--alpha"
             help = "Mixing length parameter"
             arg_type = Float64
-            default = 1.5
+            default = convert(Float64, get(c, "alpha", 1.5))
         "--eos_dir"
-            help = "Path to the directory containing the Equation of State and Opacity table files (required)"
-            required = true
+            help = "Path to the directory containing the Equation of State and Opacity table files (required either via CLI or config)"
+            default = get(c, "eos_dir", "")
         "--out_dir"
             help = "Output directory for the saved models"
-            default = ""
+            default = get(c, "out_dir", "")
         "--model_name"
             help = "Name of the model to save"
-            default = "m1dis_planet_model"
+            default = get(c, "model_name", "m1dis_planet_model")
         "--mini"
             help = "Ignore source function from the opacity table and recompute it on-the-fly."
             action = :store_true
@@ -80,19 +104,19 @@ function parse_commandline()
         "--tau_min"
             help = "Minimum optical depth to compute."
             arg_type = Float64
-            default = -7.0
+            default = convert(Float64, get(c, "tau_min", -7.0))
         "--tau_max"
             help = "Maximum optical depth to compute."
             arg_type = Float64
-            default = 2.0
+            default = convert(Float64, get(c, "tau_max", 2.0))
         "--n_tau"
             help = "Number of optical depth points."
             arg_type = Int
-            default = 200
+            default = convert(Int, get(c, "n_tau", 200))
         "--damping"
             help = "Damping parameter for the temperature updates."
             arg_type = Float64
-            default = 0.05
+            default = convert(Float64, get(c, "damping", 0.05))
         "--use_threads"
             help = "Use multi-threading for the RT."
             action = :store_true
@@ -102,15 +126,25 @@ function parse_commandline()
             Will be interpolated to the internal grid of the opacity table.
             """
             arg_type = String
-            default = ""
+            default = get(c, "F_irradiation", "")
     end
 
-    return parse_args(s)
+    args = parse_args(s)
+
+    args["mini"] = args["mini"] || get(c, "mini", false)
+    args["binned"] = args["binned"] || get(c, "binned", false)
+    args["use_threads"] = args["use_threads"] || get(c, "use_threads", false)
+
+    return args
 end
 
 function main()
     args = parse_commandline()
     
+    if args["eos_dir"] == ""
+        error("You must provide --eos_dir either via command line or in the config file.")
+    end
+
     # 3. Derived Physical Parameters
     R_pl_cm = args["r_pl"] * R_JUP_CM
     M_pl_g  = args["m_pl"] * M_JUP_G

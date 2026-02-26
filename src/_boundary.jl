@@ -25,7 +25,7 @@ function lnP_boundary(T_top, g_eff_top, eos, τ_top; maxiter=200, tol=1e-8, P_gu
         lnP = 0.5*(lnP + lnP_new)
     end
 
-    @warn "Top pressure did not converge after $(maxiter) iterations; using last iterate"
+    @verbose_warn 1 "Top pressure did not converge after $(maxiter) iterations; using last iterate"
     return lnP
 end
 
