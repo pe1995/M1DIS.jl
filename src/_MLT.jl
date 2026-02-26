@@ -1,86 +1,85 @@
+# ============================================================================
+# MLT computation of convective quantities
+# ============================================================================
+
 """
     update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, τ_ross, eos_extended, g_surf; alpha_mlt=1.5, Teff=5777.0)
 
 Compute MLT parameters F_conv and g_turb based on Gustafsson et al. (1970).
 """
-function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, τ_ross, eos_extended, g_surf; alpha_mlt=1.5, Teff=5777.0, v_mic=0.0)
+function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha_mlt)
+    lnpgas_local = log(P_local - (4.0 * σ_SB / (3.0 * c_light)) * (T_local ^ 4))
+    lnt_local = log(T_local)
+    lnrho_local = TSO.extended_lookup(eos_extended, :lnRho, lnpgas_local, lnt_local)  
+    Hp = P_local / (exp(lnrho_local) * g_surf)
+    
+    κ_ross = exp(TSO.extended_lookup(eos_extended, :lnRoss, lnrho_local, lnt_local))
+    Cp = TSO.extended_lookup(eos_extended, :cₚ, lnrho_local, lnt_local)
+    Q = TSO.extended_lookup(eos_extended, :Q, lnrho_local, lnt_local)
+    ∇ₐ = TSO.extended_lookup(eos_extended, :∇ₐ, lnrho_local, lnt_local)
+    χr = TSO.extended_lookup(eos_extended, :χᵨ, lnrho_local, lnt_local)
+    χt = TSO.extended_lookup(eos_extended, :χₜ, lnrho_local, lnt_local)
+
+    super_adi = ∇_local - ∇ₐ
+    if super_adi < 1e-6
+        return 0.0, 0.0
+    end
+    
+    # Optically thick limit approximation for Gamma1
+    Γ₁_approx = χr / (1 - χt * ∇ₐ)
+    c_sound = sqrt(Γ₁_approx * P_local / exp(lnrho_local))
+    v_scale = sqrt(g_surf * Q * Hp / 8.0)
+    
+    # U = (24 sqrt(2) sigma T^3) / (kappa rho Hp alpha rho Cp v_scale)
+    numerator = 24.0 * sqrt(2.0) * σ_SB * T_local^3
+    denominator = κ_ross * exp(lnrho_local) * Hp * alpha_mlt * exp(lnrho_local) * Cp * v_scale
+    U = numerator / denominator
+
+    # Solve cubic for efficiency factor xi
+    # 2Uξ³ + ξ² + Uξ - (∇ - ∇ad) = 0
+    xi = 0.5
+    for _ in 1:50
+        xi_sq = xi^2
+        f_val = 2.0 * U * xi_sq * xi + xi_sq + U * xi - super_adi
+        df_dz = 6.0 * U * xi_sq + 2.0 * xi + U
+        dxi = f_val / df_dz
+        xi -= dxi
+        if abs(dxi) < 1e-6 * xi; break; end
+    end
+    xi = max(xi, 1e-9)
+
+    v_real = v_scale * xi
+    ratio = v_real / c_sound
+    soft_factor = (1.0 + ratio^4)^0.25
+    v_real = v_real / soft_factor
+    xi = xi / soft_factor
+
+    Flux = (0.5 * alpha_mlt) * (exp(lnrho_local) * Cp * T_local) * v_scale * xi^3
+    return Flux, v_real
+end
+
+function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, τ_ross, eos_extended, g_surf; 
+    alpha_mlt=1.5, Teff=5777.0, v_mic=0.0)
     n_depth = length(T)
     # Reset outputs
-    F_conv .= 0.0
-    v_conv .= 0.0
-    #g_turb .= 0.0
-    dFconv_dT .= 0.0
+    fill!(F_conv, 0.0)
+    fill!(v_conv, 0.0)
+    fill!(dFconv_dT, 0.0)
     
-    # Pre-calculate thermodynamic variables (Assume constant during local linearization)
-    lnrho = log.(ρ)
-    lnT = log.(T)
-
-    P_rad = (4.0 * σ_SB / (3.0 * c_light)) .* (T .^ 4)
-    P_tot = P_gas .+ P_rad
-    
-    function calc_mlt_local(n, T_local, P_local, ∇_local)
-        lnpgas_local = log(P_local - (4.0 * σ_SB / (3.0 * c_light)) * (T_local ^ 4))
-        lnt_local = log(T_local)
-        lnrho_local = TSO.extended_lookup(eos_extended, :lnRho, lnpgas_local, lnt_local)  
-        Hp = P_local / (exp(lnrho_local) * g_surf)
-        
-        κ_ross = exp.(TSO.extended_lookup(eos_extended, :lnRoss, lnrho_local, lnt_local))
-        Cp = TSO.extended_lookup(eos_extended, :cₚ, lnrho_local, lnt_local)
-        Q = TSO.extended_lookup(eos_extended, :Q, lnrho_local, lnt_local)
-        ∇ₐ = TSO.extended_lookup(eos_extended, :∇ₐ, lnrho_local, lnt_local)
-        χr = TSO.extended_lookup(eos_extended, :χᵨ, lnrho_local, lnt_local)
-        χt = TSO.extended_lookup(eos_extended, :χₜ, lnrho_local, lnt_local)
-
-        super_adi = ∇_local - ∇ₐ
-        if super_adi < 1e-6
-            return 0.0, 0.0
-        end
-        
-        # Optically thick limit approximation for Gamma1
-        Γ₁_approx = χr / (1 - χt * ∇ₐ)
-        c_sound = sqrt(Γ₁_approx * P_local / exp(lnrho_local))
-        v_scale = sqrt(g_surf * Q * Hp / 8.0)
-        
-        # U = (24 sqrt(2) sigma T^3) / (kappa rho Hp alpha rho Cp v_scale)
-        numerator = 24.0 * sqrt(2.0) * σ_SB * T_local^3
-        denominator = κ_ross * exp(lnrho_local) * Hp * alpha_mlt * exp(lnrho_local) * Cp * v_scale
-        U = numerator / denominator
-
-        # Solve cubic for efficiency factor xi
-        # 2Uξ³ + ξ² + Uξ - (∇ - ∇ad) = 0
-        xi = 0.5
-        for _ in 1:50
-            f_val = 2.0 * U * xi^3 + xi^2 + U * xi - super_adi
-            df_dz = 6.0 * U * xi^2 + 2.0 * xi + U
-            dxi = f_val / df_dz
-            xi -= dxi
-            if abs(dxi) < 1e-6 * xi; break; end
-        end
-        xi = max(xi, 1e-9)
-
-        v_real = v_scale * xi
-        # Cap at sound speed
-        #if v_real > c_sound
-        #    v_real = c_sound
-        #    xi = c_sound / v_scale
-        #end
-        ratio = v_real / c_sound
-        soft_factor = (1.0 + ratio^4)^0.25
-        v_real = v_real / soft_factor
-        xi = xi / soft_factor
-
-        Flux = (0.5 * alpha_mlt) * (exp(lnrho_local) * Cp * T_local) * v_scale * xi^3
-        return Flux, v_real
-    end
-
     @inbounds for n in 2:n_depth
+        P_rad_n = (4.0 * σ_SB / (3.0 * c_light)) * (T[n] ^ 4)
+        P_tot_n = P_gas[n] + P_rad_n
+        
+        P_rad_nm1 = (4.0 * σ_SB / (3.0 * c_light)) * (T[n-1] ^ 4)
+        P_tot_nm1 = P_gas[n-1] + P_rad_nm1
+
         # -- 1. Calculate Gradient (Backward Difference) --
         dlnT = log(T[n] / T[n-1])
-        dlnP = log(P_tot[n] / P_tot[n-1])
+        dlnP = log(P_tot_n / P_tot_nm1)
         ∇_base = dlnT / dlnP
         
         # -- 2. Base Flux --
-        F_base, v_base = calc_mlt_local(n, T[n], P_tot[n], ∇_base)
+        F_base, v_base = calc_mlt_local(T[n], P_tot_n, ∇_base, eos_extended, g_surf, alpha_mlt)
         F_conv[n] = F_base
         v_conv[n] = v_base
 
@@ -89,7 +88,7 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
         T_pert = T[n] + delta_T
         dlnT_pert = log(T_pert / T[n-1])
         ∇_pert = dlnT_pert / dlnP
-        F_pert, _ = calc_mlt_local(n, T_pert, P_tot[n], ∇_pert)
+        F_pert, _ = calc_mlt_local(T_pert, P_tot_n, ∇_pert, eos_extended, g_surf, alpha_mlt)
         
         # -- 4. Gustafsson Stability (Eq 20, 21) --
         if F_base <= 1e-10
@@ -98,7 +97,7 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
             
             dlnT_recipe = log(T_recipe / T[n-1])
             ∇_recipe = dlnT_recipe / dlnP
-            F_recipe, _ = calc_mlt_local(n, T_recipe, P_tot[n], ∇_recipe)
+            F_recipe, _ = calc_mlt_local(T_recipe, P_tot_n, ∇_recipe, eos_extended, g_surf, alpha_mlt)
             
             if F_recipe > 1e-10
                 dFconv_dT[n] = (F_recipe) / (T_recipe - T[n])
@@ -112,38 +111,37 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
     
     F_conv[1] = F_conv[2]
     dFconv_dT[1] = dFconv_dT[2]
-    # -- 5. Turbulent Pressure and Gravity --
-    P_turb = zeros(n_depth)
-    kappa = zeros(n_depth)
-    
-    @inbounds for i in 1:n_depth
-        P_turb[i] = 0.5 * ρ[i] * (v_conv[i]^2 + v_mic^2)
-        
-        lnrho_val = log(ρ[i])
-        lnt_val = log(T[i])
-        kappa[i] = exp(TSO.extended_lookup(eos_extended, :lnRoss, lnrho_val, lnt_val))
-    end
 
-    # Calculate gradient dP_turb/dtau and g_turb
-    @inbounds for i in 1:n_depth
-        if i == 1
-            dP_dtau = (P_turb[2] - P_turb[1]) / (τ_ross[2] - τ_ross[1])
-        elseif i == n_depth
-            dP_dtau = (P_turb[end] - P_turb[end-1]) / (τ_ross[end] - τ_ross[end-1])
-        else
-            h1 = τ_ross[i] - τ_ross[i-1]
-            h2 = τ_ross[i+1] - τ_ross[i]
-            dP_dtau = - (h2 / (h1 * (h1 + h2))) * P_turb[i-1] +
-                      ((h2 - h1) / (h1 * h2)) * P_turb[i] +
-                      (h1 / (h2 * (h1 + h2))) * P_turb[i+1]
-        end
+    # -- 5. Turbulent Pressure and Gravity --
+    prev_P_turb = 0.5 * ρ[1] * (v_conv[1]^2 + v_mic^2)
+    prev_kappa = exp(TSO.extended_lookup(eos_extended, :lnRoss, log(ρ[1]), log(T[1])))
+
+    curr_P_turb = 0.5 * ρ[2] * (v_conv[2]^2 + v_mic^2)
+    curr_kappa = exp(TSO.extended_lookup(eos_extended, :lnRoss, log(ρ[2]), log(T[2])))
+    
+    dP_dtau = (curr_P_turb - prev_P_turb) / (τ_ross[2] - τ_ross[1])
+    g_turb[1] = prev_kappa * dP_dtau
+    
+    @inbounds for i in 2:n_depth-1
+        next_P_turb = 0.5 * ρ[i+1] * (v_conv[i+1]^2 + v_mic^2)
         
-        g_turb[i] = kappa[i] * dP_dtau
+        h1 = τ_ross[i] - τ_ross[i-1]
+        h2 = τ_ross[i+1] - τ_ross[i]
+        dP_dtau = - (h2 / (h1 * (h1 + h2))) * prev_P_turb +
+                  ((h2 - h1) / (h1 * h2)) * curr_P_turb +
+                  (h1 / (h2 * (h1 + h2))) * next_P_turb
+                  
+        g_turb[i] = curr_kappa * dP_dtau
+        
+        prev_P_turb = curr_P_turb
+        curr_P_turb = next_P_turb
+        curr_kappa = exp(TSO.extended_lookup(eos_extended, :lnRoss, log(ρ[i+1]), log(T[i+1])))
     end
+    
+    dP_dtau = (curr_P_turb - prev_P_turb) / (τ_ross[n_depth] - τ_ross[n_depth-1])
+    g_turb[n_depth] = curr_kappa * dP_dtau
 
     gturb_stabilizer!(g_turb, g_surf)
-
-    #g_turb .= 0.0
 end
 
 """
@@ -180,16 +178,9 @@ function gturb_stabilizer!(g_turb, g_surf; max_fraction=0.1, passes=5, relax=0.2
     end
 end
 
-
-
-
-
-
-
-
-
-
-#= Temperature structure adjustment (non-Feutrier) =#
+# ============================================================================
+# Temperature structure adjustment (non-Feutrier, old and unreliable)
+# ============================================================================
 
 """
     update_temperature_correction_robust!(dT, F_rad, F_conv, dFconv_dT, T, τ_grid, Teff, J; damping=0.5)

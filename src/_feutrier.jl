@@ -1,5 +1,5 @@
 # ==============================================================================
-# 1. DATA STRUCTURES
+# Data structures
 # ==============================================================================
 mutable struct Atmosphere{T <: AbstractFloat}
     T_eff::T              # Effective Temperature [K] 
@@ -40,7 +40,7 @@ end
 @inline gid(i, d, N) = (d - 1) * N + i
 
 # ==============================================================================
-# 2. INITIALIZATION
+# Initialization
 # ==============================================================================
 
 function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Temp::Vector{T}, 
@@ -195,7 +195,7 @@ function Packer(atm::Atmosphere{T}) where T
 end
 
 # ==============================================================================
-# 3. DIRECT SOLVER (Original Gustafsson)
+# Direct solver (Gustafsson)
 # ==============================================================================
 
 function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
@@ -300,7 +300,7 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
 end
 
 # ==============================================================================
-# 4. DAGGER-BASED ALI SOLVER
+# Dagger-based approximate solver
 # ==============================================================================
 
 function solve_approximate!(atm::Atmosphere{T}) where T
@@ -543,7 +543,7 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, 
 end
 
 # ==============================================================================
-# 5. CORE FEUTRIER KERNELS
+# Core Feutrier kernels
 # ==============================================================================
 
 function solve_feutrier_1D!(atm::Atmosphere{T}, f::Int, J_out::Matrix{T}, L_acc::AbstractVector{T}) where T
@@ -607,7 +607,7 @@ function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
 end
 
 # ==============================================================================
-# 6. HELPERS (Cleaned)
+# Helpers
 # ==============================================================================
 
 function update_mean_intensity!(atm::Atmosphere{T}) where T

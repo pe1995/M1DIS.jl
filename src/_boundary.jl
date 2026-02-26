@@ -1,4 +1,6 @@
-#= boundary conditions =#
+# ============================================================================
+# Hydrostatic equilibrium boundary conditions (top)
+# ============================================================================
 
 """
     lnP_boundary(T_top, g_eff_top, eos, τ_top; maxiter=200, tol=1e-8, P_guess=1e-4)
@@ -20,12 +22,16 @@ function lnP_boundary(T_top, g_eff_top, eos, τ_top; maxiter=200, tol=1e-8, P_gu
             return lnP_new
         end
 
-        lnP = 0.5*(lnP + lnP_new)   # damping ensures stability
+        lnP = 0.5*(lnP + lnP_new)
     end
 
     @warn "Top pressure did not converge after $(maxiter) iterations; using last iterate"
     return lnP
 end
+
+# ============================================================================
+# enforce adiabatic bottom boundary condition
+# ============================================================================
 
 function force_adiabatic_bottom!(T, P, eos_extended; n_force=5)
     n_depth = length(T)
@@ -46,6 +52,10 @@ function force_adiabatic_bottom!(T, P, eos_extended; n_force=5)
         end
     end
 end
+
+# ============================================================================
+# External irradiation boundary conditions
+# ============================================================================
 
 function irradiate(eos, opa::TSO.ExtendedOpacity, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
     rho_min, rho_max = TSO.limits(eos.eos, 2)

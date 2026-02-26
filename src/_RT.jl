@@ -8,7 +8,215 @@ function generate_mu_grid(n_points::Integer)
 end
 
 # ============================================================================
-# Long characteristic solver
+# Opacity computations for Feutrier solvers
+# ============================================================================
+
+function compute_opacities(eos, opa::TSO.ExtendedOpacity, T, ρ)
+    chi = zeros(Float64, length(opa.opa.λ), length(T))
+    chi_ref = zeros(Float64, length(T))
+    B = zeros(Float64, length(opa.opa.λ), length(T))
+    dBdT = zeros(Float64, length(opa.opa.λ), length(T))
+
+    compute_opacities!(chi, chi_ref, B, dBdT, eos, opa, T, ρ)
+
+    return chi, chi_ref, B, dBdT
+end
+
+function compute_opacities!(chi, chi_ref, B, dBdT, eos, opa::TSO.ExtendedOpacity, T, ρ)
+    lnrho = log.(ρ)
+    lnt = log.(T)
+    
+    Threads.@threads for i in eachindex(opa.opa.λ)
+        chi[i, :] .= lookup(eos.eos, opa.opa, :κ, lnrho, lnt, i)
+        B[i, :] .= lookup(eos.eos, opa.opa, :src, lnrho, lnt, i)
+        dBdT[i, :] .= TSO.extended_lookup(eos.eos, opa, :dS_dT, lnrho, lnt, i)
+    end
+    chi_ref .= exp.(lookup(eos.eos, :lnRoss, lnrho, lnt)) .* ρ
+
+    return nothing
+end
+
+# mini opacity tables require to be called with the chunked version
+compute_opacities(eos, opa::TSO.MiniOpacityTable, T, ρ) = compute_opacities_chunked(eos, opa, T, ρ)
+compute_opacities!(chi, chi_ref, B, dBdT, eos, opa::TSO.MiniOpacityTable, T, ρ) = _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, opa.opacity.λ)
+
+# ============================================================================
+# Bilinear Interpolation for large frequency grids
+# ============================================================================
+struct InterpCoefs
+    idx::Int        
+    w_low::Float64  
+    w_high::Float64 
+end
+
+function get_interp_coefs(grid_nodes, val)
+    if val <= first(grid_nodes)
+        return InterpCoefs(1, 1.0, 0.0)
+    elseif val >= last(grid_nodes)
+        return InterpCoefs(length(grid_nodes)-1, 0.0, 1.0)
+    end
+    
+    i = searchsortedlast(grid_nodes, val)
+    
+    x0 = grid_nodes[i]
+    x1 = grid_nodes[i+1]
+    w_high = (val - x0) / (x1 - x0)
+    w_low  = 1.0 - w_high
+    
+    return InterpCoefs(i, w_low, w_high)
+end
+
+# ============================================================================
+# Chunked opacity computation for large tables
+# ============================================================================
+
+compute_opacities_chunked(eos, opa::TSO.ExtendedOpacity, T, ρ) = compute_opacities_chunked(eos, opa, T, ρ, opa.opa.λ)
+compute_opacities_chunked(eos, opa::TSO.MiniOpacityTable, T, ρ) = compute_opacities_chunked(eos, opa, T, ρ, opa.opacity.λ)
+
+function compute_opacities_chunked(eos, opa, T, ρ, λ)
+    chi = zeros(Float64, length(λ), length(T))
+    chi_ref = zeros(Float64, length(T))
+    B = zeros(Float64, length(λ), length(T))
+    dBdT = zeros(Float64, length(λ), length(T))
+
+    _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, λ) 
+
+    return chi, chi_ref, B, dBdT
+end
+
+compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa::TSO.ExtendedOpacity, T, ρ) = _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, opa.opa.λ)
+compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa::TSO.MiniOpacityTable, T, ρ) = _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, opa.opacity.λ)
+
+# ============================================================================
+# Chunked core computations
+# ============================================================================
+
+_is_binned(opa::TSO.ExtendedOpacity) = opa.binned
+_is_binned(opa::TSO.MiniOpacityTable) = false
+
+function _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, λ)
+    lnrho = log.(ρ)
+    lnt = log.(T)
+    
+    grid_T = eos.eos.lnT
+    grid_Rho = eos.eos.lnRho
+    n_shells = length(lnrho)
+    
+    coefs_T   = Vector{InterpCoefs}(undef, n_shells)
+    coefs_Rho = Vector{InterpCoefs}(undef, n_shells)
+    for j in 1:n_shells
+        coefs_T[j]   = get_interp_coefs(grid_T, lnt[j])
+        coefs_Rho[j] = get_interp_coefs(grid_Rho, lnrho[j])
+    end
+    
+    λ_indices = eachindex(λ)
+    chunk_size = cld(length(λ_indices), Threads.nthreads())
+    
+    ρ_eff = _is_binned(opa) ? ones(eltype(ρ), length(ρ)) : ρ
+    
+    tasks = map(Iterators.partition(λ_indices, chunk_size)) do range
+        Threads.@spawn _compute_opacities_chunk!(range, chi, B, dBdT, opa, coefs_T, coefs_Rho, ρ_eff, T, grid_T)
+    end
+    wait.(tasks)
+    
+    chi_ref .= exp.(lookup(eos.eos, :lnRoss, lnrho, lnt)) .* ρ
+    
+    return nothing
+end
+
+@inline _compute_opacities_chunk!(range, chi, B, dBdT, opa::TSO.MiniOpacityTable, coefs_T, coefs_Rho, ρ, T, grid_T) = begin
+    _inner_compute_chunk!(range, chi, B, dBdT, opa.opacity.κ, opa.opacity.λ, opa.weights, coefs_T, coefs_Rho, ρ, T)
+end
+
+@inline _compute_opacities_chunk!(range, chi, B, dBdT, opa::TSO.ExtendedOpacity, coefs_T, coefs_Rho, ρ_eff, T, grid_T) = begin
+    _inner_compute_chunk_extended!(range, chi, B, dBdT, opa.opa.κ, opa.opa.src, opa.weights, coefs_T, coefs_Rho, ρ_eff, T, grid_T)
+end
+
+# ExtendedOpacity tables can be either binned or unbinned.
+# If unbinned, weights are set according to midpoint integration. Rho is multiplied to the opacity.
+# If binned, weights are set to 1. Rho is not multiplied to the opacity, as this happened during the binning. In this case rho is set to 1.
+function _inner_compute_chunk_extended!(range, chi, B, dBdT, kappa_data, src_data, weights, coefs_T, coefs_Rho, ρ, T, grid_T)
+    n_shells = length(coefs_T)
+    nT = length(grid_T)
+
+    @inbounds for i in range
+        # w_i is 1 if the table is binned
+        w_i = weights[i]
+        for j in 1:n_shells
+            ct = coefs_T[j]
+            cr = coefs_Rho[j]
+            
+            it, ir = ct.idx, cr.idx
+            
+            w00 = ct.w_low  * cr.w_low
+            w10 = ct.w_high * cr.w_low
+            w01 = ct.w_low  * cr.w_high
+            w11 = ct.w_high * cr.w_high
+            
+            val_k = w00 * log(kappa_data[it,   ir,   i]) +
+                    w10 * log(kappa_data[it+1, ir,   i]) +
+                    w01 * log(kappa_data[it,   ir+1, i]) +
+                    w11 * log(kappa_data[it+1, ir+1, i])
+            chi[i, j] = exp(val_k) * ρ[j]
+
+            val_s = w00 * log(src_data[it,   ir,   i]) +
+                    w10 * log(src_data[it+1, ir,   i]) +
+                    w01 * log(src_data[it,   ir+1, i]) +
+                    w11 * log(src_data[it+1, ir+1, i])
+            B[i, j] = exp(val_s) * w_i
+
+            dS, dT_diff = if (it > 1) && (it < nT)
+                log(src_data[it+1, ir, i]) - log(src_data[it-1, ir, i]), 
+                grid_T[it+1] - grid_T[it-1]
+            elseif it == 1
+                log(src_data[it+1, ir, i]) - log(src_data[it, ir, i]), 
+                grid_T[it+1] - grid_T[it]
+            else
+                log(src_data[it, ir, i]) - log(src_data[it-1, ir, i]), 
+                grid_T[it] - grid_T[it-1]
+            end
+            
+            dBdT[i, j] = exp(val_s - grid_T[it]) * (dS / dT_diff) * w_i
+        end
+    end
+end
+
+# MiniOpacityTable always are unbinned, as they dont have the source function stored
+# On-thy-fly Planck function only works for monochromatic opacities. This means that weights are always multiplied.
+function _inner_compute_chunk!(range, chi, B, dBdT, kappa_data, λ, weights, coefs_T, coefs_Rho, ρ, T)
+    n_shells = length(coefs_T)
+
+    @inbounds for i in range
+        λ_i = λ[i]
+        w_i = weights[i]
+        for j in 1:n_shells
+            ct = coefs_T[j]
+            cr = coefs_Rho[j]
+            
+            it = ct.idx
+            ir = cr.idx
+            
+            w00 = ct.w_low  * cr.w_low
+            w10 = ct.w_high * cr.w_low
+            w01 = ct.w_low  * cr.w_high
+            w11 = ct.w_high * cr.w_high
+            
+            val_k = w00 * log(kappa_data[it,  ir,  i]) +
+                    w10 * log(kappa_data[it+1,ir,  i]) +
+                    w01 * log(kappa_data[it,  ir+1,i]) +
+                    w11 * log(kappa_data[it+1,ir+1,i])
+
+            chi[i, j] = exp(val_k) * ρ[j]
+            B[i, j] = TSO.Bλ_fast(λ_i, T[j]) * w_i
+            dBdT[i, j] = TSO.dBdTλ_fast(λ_i, T[j]) * w_i
+        end
+    end
+
+    nothing
+end
+
+# ============================================================================
+# Long characteristic solver (not recommended)
 # ============================================================================
 
 function compute_diagonal_inv!(diag_inv, A, B, C)
@@ -324,213 +532,4 @@ function update_radiation_z_longchar_dagger!(J, F, g_rad, Q, dQdT; T, ρ, z, eos
     end=#
 
     return nothing
-end
-
-# ============================================================================
-# Opacity computations for Feutrier solvers
-# ============================================================================
-
-function compute_opacities(eos, opa::TSO.ExtendedOpacity, T, ρ)
-    chi = zeros(Float64, length(opa.opa.λ), length(T))
-    chi_ref = zeros(Float64, length(T))
-    B = zeros(Float64, length(opa.opa.λ), length(T))
-    dBdT = zeros(Float64, length(opa.opa.λ), length(T))
-
-    compute_opacities!(chi, chi_ref, B, dBdT, eos, opa, T, ρ)
-
-    return chi, chi_ref, B, dBdT
-end
-
-
-function compute_opacities!(chi, chi_ref, B, dBdT, eos, opa::TSO.ExtendedOpacity, T, ρ)
-    lnrho = log.(ρ)
-    lnt = log.(T)
-    
-    Threads.@threads for i in eachindex(opa.opa.λ)
-        chi[i, :] .= lookup(eos.eos, opa.opa, :κ, lnrho, lnt, i)
-        B[i, :] .= lookup(eos.eos, opa.opa, :src, lnrho, lnt, i)
-        dBdT[i, :] .= TSO.extended_lookup(eos.eos, opa, :dS_dT, lnrho, lnt, i)
-    end
-    chi_ref .= exp.(lookup(eos.eos, :lnRoss, lnrho, lnt)) .* ρ
-
-    return nothing
-end
-
-# mini opacity tables require to be called with the chunked version
-compute_opacities(eos, opa::TSO.MiniOpacityTable, T, ρ) = compute_opacities_chunked(eos, opa, T, ρ)
-compute_opacities!(chi, chi_ref, B, dBdT, eos, opa::TSO.MiniOpacityTable, T, ρ) = _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, opa.opacity.λ)
-
-# ============================================================================
-# Bilinear Interpolation for large frequency grids
-# ============================================================================
-struct InterpCoefs
-    idx::Int        
-    w_low::Float64  
-    w_high::Float64 
-end
-
-function get_interp_coefs(grid_nodes, val)
-    if val <= first(grid_nodes)
-        return InterpCoefs(1, 1.0, 0.0)
-    elseif val >= last(grid_nodes)
-        return InterpCoefs(length(grid_nodes)-1, 0.0, 1.0)
-    end
-    
-    i = searchsortedlast(grid_nodes, val)
-    
-    x0 = grid_nodes[i]
-    x1 = grid_nodes[i+1]
-    w_high = (val - x0) / (x1 - x0)
-    w_low  = 1.0 - w_high
-    
-    return InterpCoefs(i, w_low, w_high)
-end
-
-# ============================================================================
-# Chunked opacity computation for large tables
-# ============================================================================
-
-compute_opacities_chunked(eos, opa::TSO.ExtendedOpacity, T, ρ) = compute_opacities_chunked(eos, opa, T, ρ, opa.opa.λ)
-compute_opacities_chunked(eos, opa::TSO.MiniOpacityTable, T, ρ) = compute_opacities_chunked(eos, opa, T, ρ, opa.opacity.λ)
-
-function compute_opacities_chunked(eos, opa, T, ρ, λ)
-    chi = zeros(Float64, length(λ), length(T))
-    chi_ref = zeros(Float64, length(T))
-    B = zeros(Float64, length(λ), length(T))
-    dBdT = zeros(Float64, length(λ), length(T))
-
-    _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, λ) 
-
-    return chi, chi_ref, B, dBdT
-end
-
-compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa::TSO.ExtendedOpacity, T, ρ) = _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, opa.opa.λ)
-compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa::TSO.MiniOpacityTable, T, ρ) = _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, opa.opacity.λ)
-
-# ============================================================================
-# Chunked core computations
-# ============================================================================
-
-_is_binned(opa::TSO.ExtendedOpacity) = opa.binned
-_is_binned(opa::TSO.MiniOpacityTable) = false
-
-function _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, λ)
-    lnrho = log.(ρ)
-    lnt = log.(T)
-    
-    grid_T = eos.eos.lnT
-    grid_Rho = eos.eos.lnRho
-    n_shells = length(lnrho)
-    
-    coefs_T   = Vector{InterpCoefs}(undef, n_shells)
-    coefs_Rho = Vector{InterpCoefs}(undef, n_shells)
-    for j in 1:n_shells
-        coefs_T[j]   = get_interp_coefs(grid_T, lnt[j])
-        coefs_Rho[j] = get_interp_coefs(grid_Rho, lnrho[j])
-    end
-    
-    λ_indices = eachindex(λ)
-    chunk_size = cld(length(λ_indices), Threads.nthreads())
-    
-    ρ_eff = _is_binned(opa) ? ones(eltype(ρ), length(ρ)) : ρ
-    
-    tasks = map(Iterators.partition(λ_indices, chunk_size)) do range
-        Threads.@spawn _compute_opacities_chunk!(range, chi, B, dBdT, opa, coefs_T, coefs_Rho, ρ_eff, T, grid_T)
-    end
-    wait.(tasks)
-    
-    chi_ref .= exp.(lookup(eos.eos, :lnRoss, lnrho, lnt)) .* ρ
-    
-    return nothing
-end
-
-@inline _compute_opacities_chunk!(range, chi, B, dBdT, opa::TSO.MiniOpacityTable, coefs_T, coefs_Rho, ρ, T, grid_T) = begin
-    _inner_compute_chunk!(range, chi, B, dBdT, opa.opacity.κ, opa.opacity.λ, opa.weights, coefs_T, coefs_Rho, ρ, T)
-end
-
-@inline _compute_opacities_chunk!(range, chi, B, dBdT, opa::TSO.ExtendedOpacity, coefs_T, coefs_Rho, ρ_eff, T, grid_T) = begin
-    _inner_compute_chunk_extended!(range, chi, B, dBdT, opa.opa.κ, opa.opa.src, opa.weights, coefs_T, coefs_Rho, ρ_eff, T, grid_T)
-end
-
-# ExtendedOpacity tables can be either binned or unbinned.
-# If unbinned, weights are set according to midpoint integration. Rho is multiplied to the opacity.
-# If binned, weights are set to 1. Rho is not multiplied to the opacity, as this happened during the binning. In this case rho is set to 1.
-function _inner_compute_chunk_extended!(range, chi, B, dBdT, kappa_data, src_data, weights, coefs_T, coefs_Rho, ρ, T, grid_T)
-    n_shells = length(coefs_T)
-    nT = length(grid_T)
-
-    @inbounds for i in range
-        # w_i is 1 if the table is binned
-        w_i = weights[i]
-        for j in 1:n_shells
-            ct = coefs_T[j]
-            cr = coefs_Rho[j]
-            
-            it, ir = ct.idx, cr.idx
-            
-            w00 = ct.w_low  * cr.w_low
-            w10 = ct.w_high * cr.w_low
-            w01 = ct.w_low  * cr.w_high
-            w11 = ct.w_high * cr.w_high
-            
-            val_k = w00 * log(kappa_data[it,   ir,   i]) +
-                    w10 * log(kappa_data[it+1, ir,   i]) +
-                    w01 * log(kappa_data[it,   ir+1, i]) +
-                    w11 * log(kappa_data[it+1, ir+1, i])
-            chi[i, j] = exp(val_k) * ρ[j]
-
-            val_s = w00 * log(src_data[it,   ir,   i]) +
-                    w10 * log(src_data[it+1, ir,   i]) +
-                    w01 * log(src_data[it,   ir+1, i]) +
-                    w11 * log(src_data[it+1, ir+1, i])
-            B[i, j] = exp(val_s) * w_i
-
-            dS, dT_diff = if (it > 1) && (it < nT)
-                log(src_data[it+1, ir, i]) - log(src_data[it-1, ir, i]), 
-                grid_T[it+1] - grid_T[it-1]
-            elseif it == 1
-                log(src_data[it+1, ir, i]) - log(src_data[it, ir, i]), 
-                grid_T[it+1] - grid_T[it]
-            else
-                log(src_data[it, ir, i]) - log(src_data[it-1, ir, i]), 
-                grid_T[it] - grid_T[it-1]
-            end
-            
-            dBdT[i, j] = exp(val_s - grid_T[it]) * (dS / dT_diff) * w_i
-        end
-    end
-end
-
-# MiniOpacityTable always are unbinned, as they dont have the source function stored
-# On-thy-fly Planck function only works for monochromatic opacities. This means that weights are always multiplied.
-function _inner_compute_chunk!(range, chi, B, dBdT, kappa_data, λ, weights, coefs_T, coefs_Rho, ρ, T)
-    n_shells = length(coefs_T)
-
-    @inbounds for i in range
-        λ_i = λ[i]
-        w_i = weights[i]
-        for j in 1:n_shells
-            ct = coefs_T[j]
-            cr = coefs_Rho[j]
-            
-            it = ct.idx
-            ir = cr.idx
-            
-            w00 = ct.w_low  * cr.w_low
-            w10 = ct.w_high * cr.w_low
-            w01 = ct.w_low  * cr.w_high
-            w11 = ct.w_high * cr.w_high
-            
-            val_k = w00 * log(kappa_data[it,  ir,  i]) +
-                    w10 * log(kappa_data[it+1,ir,  i]) +
-                    w01 * log(kappa_data[it,  ir+1,i]) +
-                    w11 * log(kappa_data[it+1,ir+1,i])
-
-            chi[i, j] = exp(val_k) * ρ[j]
-            B[i, j] = TSO.Bλ_fast(λ_i, T[j]) * w_i
-            dBdT[i, j] = TSO.dBdTλ_fast(λ_i, T[j]) * w_i
-        end
-    end
-
-    nothing
 end

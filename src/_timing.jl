@@ -1,4 +1,7 @@
-# --- Available Timers ---
+# ============================================================================
+# Global timers
+# ============================================================================
+
 const generalTimer = TimerOutput()
 const initialization_time = Ref(false)
 const mixing_length_time = Ref(false)
@@ -20,8 +23,10 @@ const timers = [
     relaxation_time
 ]
 
+# ============================================================================
+# Activate/Deactivate timers
+# ============================================================================
 
-# --- Activate/Deactivate Timers ---
 activate_timing!() = activate_timing!.(timers)
 activate_timing!(t) = begin
     reset_timer!(generalTimer)
@@ -45,7 +50,10 @@ end
 
 timer() = generalTimer
 
-# --- Optional Timing Macro to add to function calls ---
+# ============================================================================
+# Optional timing Macro to add to function calls
+# ============================================================================
+
 macro optionalTiming(name, exp)
     name_e = esc(name)
     ex = esc(exp)
