@@ -12,8 +12,10 @@ function lnP_boundary(T_top, g_eff_top, eos, τ_top; maxiter=200, tol=1e-8, P_gu
     lnP = log(P_guess) 
 	lnT = log(T_top)
     for _ in 1:maxiter
-        lnρ = TSO.extended_lookup(eos, :lnRho, lnP, lnT)
-        κ = exp(TSO.extended_lookup(eos, :lnRoss, lnρ, lnT))
+        #lnρ = TSO.extended_lookup(eos, :lnRho, lnP, lnT)
+        #κ = exp(TSO.extended_lookup(eos, :lnRoss, lnρ, lnT))
+        lnρ, lnκ_ross = sample(eos, (:lnRho, :lnRoss), lnP, lnT)
+        κ = exp(lnκ_ross)
 
         P_new = g_eff_top * τ_top / κ
         lnP_new = log(P_new)
@@ -58,13 +60,19 @@ end
 # ============================================================================
 
 function irradiate(eos, opa::TSO.ExtendedOpacity, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
-    rho_min, rho_max = TSO.limits(eos.eos, 2)
+    rho_min, rho_max = TSO.limits(TSO.table(eos), 2)
     rho_irr = exp((rho_max + rho_min) / 2)
-    S = isnothing(F_irradiation) ? lookup(eos.eos, opa.opa, :src, Float64(log(rho_irr)), Float64(log(T_irradiation))) : F_irradiation
+    #S = isnothing(F_irradiation) ? lookup(TSO.table(eos), opa.opa, :src, Float64(log(rho_irr)), Float64(log(T_irradiation))) : F_irradiation
+    S = if isnothing(F_irradiation)
+        sample(eos, opa, (:src,), Float64(log(rho_irr)), Float64(log(T_irradiation)))[1] 
+    else
+        F_irradiation
+    end
     S .* (R_irradiation ./ d_irradiation) .^2 .* opa.weights
 end
 
 function irradiate(eos, opa::TSO.MiniOpacityTable, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
+    # the mini table does not contain source function, so we need to compute it on the fly
     lf = TSO.lookup_variable(opa, :src)
     S = isnothing(F_irradiation) ? lf.(Float64(T_irradiation), eachindex(opa.opacity.λ)) : F_irradiation
     S .* (R_irradiation ./ d_irradiation) .^2 .* opa.weights

@@ -10,15 +10,19 @@ Compute MLT parameters F_conv and g_turb based on Gustafsson et al. (1970).
 function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha_mlt)
     lnpgas_local = log(P_local - (4.0 * σ_SB / (3.0 * c_light)) * (T_local ^ 4))
     lnt_local = log(T_local)
-    lnrho_local = TSO.extended_lookup(eos_extended, :lnRho, lnpgas_local, lnt_local)  
-    Hp = P_local / (exp(lnrho_local) * g_surf)
+    #lnrho_local = TSO.extended_lookup(eos_extended, :lnRho, lnpgas_local, lnt_local)  
+    #lnrho_local, = sample(eos_extended, (:lnRho,), lnpgas_local, lnt_local)  
     
-    κ_ross = exp(TSO.extended_lookup(eos_extended, :lnRoss, lnrho_local, lnt_local))
+    #=κ_ross = exp(TSO.extended_lookup(eos_extended, :lnRoss, lnrho_local, lnt_local))
     Cp = TSO.extended_lookup(eos_extended, :cₚ, lnrho_local, lnt_local)
     Q = TSO.extended_lookup(eos_extended, :Q, lnrho_local, lnt_local)
     ∇ₐ = TSO.extended_lookup(eos_extended, :∇ₐ, lnrho_local, lnt_local)
     χr = TSO.extended_lookup(eos_extended, :χᵨ, lnrho_local, lnt_local)
-    χt = TSO.extended_lookup(eos_extended, :χₜ, lnrho_local, lnt_local)
+    χt = TSO.extended_lookup(eos_extended, :χₜ, lnrho_local, lnt_local)=#
+
+    lnrho_local, lnκ_ross, Cp, Q, ∇ₐ, χr, χt = sample(eos_extended, (:lnRho,:lnRoss, :cₚ, :Q, :∇ₐ, :χᵨ, :χₜ), lnpgas_local, lnt_local)
+    κ_ross = exp(lnκ_ross)
+    Hp = P_local / (exp(lnrho_local) * g_surf)
 
     super_adi = ∇_local - ∇ₐ
     if super_adi < 1e-6
@@ -73,24 +77,24 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
         P_rad_nm1 = (4.0 * σ_SB / (3.0 * c_light)) * (T[n-1] ^ 4)
         P_tot_nm1 = P_gas[n-1] + P_rad_nm1
 
-        # -- 1. Calculate Gradient (Backward Difference) --
+        # Calculate Gradient (Backward Difference)
         dlnT = log(T[n] / T[n-1])
         dlnP = log(P_tot_n / P_tot_nm1)
         ∇_base = dlnT / dlnP
         
-        # -- 2. Base Flux --
+        # Base Flux
         F_base, v_base = calc_mlt_local(T[n], P_tot_n, ∇_base, eos_extended, g_surf, alpha_mlt)
         F_conv[n] = F_base
         v_conv[n] = v_base
 
-        # -- 3. Calculate Derivative dF/dT --
+        # Calculate Derivative dF/dT
         delta_T = 0.001 * T[n]
         T_pert = T[n] + delta_T
         dlnT_pert = log(T_pert / T[n-1])
         ∇_pert = dlnT_pert / dlnP
         F_pert, _ = calc_mlt_local(T_pert, P_tot_n, ∇_pert, eos_extended, g_surf, alpha_mlt)
         
-        # -- 4. Gustafsson Stability (Eq 20, 21) --
+        # Stability fix (Gustafsson et al.)
         if F_base <= 1e-10
             b = 0.005 
             T_recipe = T[n] * (1.0 + b)
@@ -112,12 +116,14 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
     F_conv[1] = F_conv[2]
     dFconv_dT[1] = dFconv_dT[2]
 
-    # -- 5. Turbulent Pressure and Gravity --
+    # Turbulent Pressure and Gravity
     prev_P_turb = 0.5 * ρ[1] * (v_conv[1]^2 + v_mic^2)
-    prev_kappa = exp(TSO.extended_lookup(eos_extended, :lnRoss, log(ρ[1]), log(T[1])))
+    #prev_kappa = exp(TSO.extended_lookup(eos_extended, :lnRoss, log(ρ[1]), log(T[1])))
+    prev_kappa, = sample(eos_extended, (:lnRoss,), log(ρ[1]), log(T[1])) .|> exp
 
     curr_P_turb = 0.5 * ρ[2] * (v_conv[2]^2 + v_mic^2)
-    curr_kappa = exp(TSO.extended_lookup(eos_extended, :lnRoss, log(ρ[2]), log(T[2])))
+    #curr_kappa = exp(TSO.extended_lookup(eos_extended, :lnRoss, log(ρ[2]), log(T[2])))
+    curr_kappa, = sample(eos_extended, (:lnRoss,), log(ρ[2]), log(T[2])) .|> exp
     
     dP_dtau = (curr_P_turb - prev_P_turb) / (τ_ross[2] - τ_ross[1])
     g_turb[1] = prev_kappa * dP_dtau
@@ -135,7 +141,8 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
         
         prev_P_turb = curr_P_turb
         curr_P_turb = next_P_turb
-        curr_kappa = exp(TSO.extended_lookup(eos_extended, :lnRoss, log(ρ[i+1]), log(T[i+1])))
+        #curr_kappa = exp(TSO.extended_lookup(eos_extended, :lnRoss, log(ρ[i+1]), log(T[i+1])))
+        curr_kappa, = sample(eos_extended, (:lnRoss,), log(ρ[i+1]), log(T[i+1])) .|> exp
     end
     
     dP_dtau = (curr_P_turb - prev_P_turb) / (τ_ross[n_depth] - τ_ross[n_depth-1])

@@ -20,20 +20,22 @@ function hydrostatic_equilibrium!(T_ip, g_rad_ip, g_turb_ip; g, eos)
 
         g_eff = max(g - g_rad - g_turb, 0.0)
 
-        lnρ = TSO.extended_lookup(eos, :lnRho, lnP, lnT)
-        κ_ross = exp(TSO.extended_lookup(eos, :lnRoss, lnρ, lnT))
+        #lnρ = TSO.extended_lookup(eos, :lnRho, lnP, lnT)
+        #κ_ross = exp(TSO.extended_lookup(eos, :lnRoss, lnρ, lnT))
 
+        lnρ, lnκ_ross = sample(eos, (:lnRho, :lnRoss), lnP, lnT)
         P = exp(lnP)
-        du[1] = g_eff / (κ_ross * P)
+        du[1] = g_eff / (exp(lnκ_ross) * P)
     end
     return HE!
 end
 
 function update_hydrostatic!(P, ρ, z, T, g_rad, g_turb, τ_grid; eos, logg)
     # prepare interpolations in log10(τ)
-    T_ip = linear_interpolation(log10.(τ_grid), log.(T))
-    g_rad_ip = linear_interpolation(log10.(τ_grid), g_rad)
-    g_turb_ip = linear_interpolation(log10.(τ_grid), g_turb)
+    lgt = log10.(τ_grid)
+    T_ip = linear_interpolation(lgt, log.(T))
+    g_rad_ip = linear_interpolation(lgt, g_rad)
+    g_turb_ip = linear_interpolation(lgt, g_turb)
 
     g_const = exp10(logg)
 
@@ -53,8 +55,11 @@ function update_hydrostatic!(P, ρ, z, T, g_rad, g_turb, τ_grid; eos, logg)
     sol = solve(prob, Tsit5(), saveat=τ_grid)
 
     # extract the pressure and density; compute new z scale
-	P .= [u[1] for u in sol.u] .|> exp
-	ρ .= [TSO.extended_lookup(eos,:lnRho,log(pi),log(ti)) for (pi,ti) in zip(P,T)] .|> exp
+    for i in eachindex(T)
+        P[i] = sol.u[i][1] |> exp
+        ρ[i], = sample(eos, (:lnRho,), log(P[i]), log(T[i])) .|> exp
+        #ρ[i] = exp(TSO.extended_lookup(eos,:lnRho,log(P[i]),log(T[i])))
+    end
 	update_z_grid!(z, T=T, ρ=ρ, τ=τ_grid, eos=eos.eos);
 end
 

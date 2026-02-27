@@ -22,4 +22,6 @@ include("_atmos.jl")
 
 export atmosphere, save!, activate_timing!, deactivate_timing!, start_timing!, end_timing!
 
+include("precompile.jl")
+
 end

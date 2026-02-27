@@ -25,13 +25,17 @@ end
 function compute_opacities!(chi, chi_ref, B, dBdT, eos, opa::TSO.ExtendedOpacity, T, ρ)
     lnrho = log.(ρ)
     lnt = log.(T)
+
+    sample!((chi, B, dBdT, chi_ref), eos, opa, (:κ, :src, :dS_dT, :lnRoss), lnrho, lnt)
+    chi_ref .= exp.(chi_ref) .* ρ
     
-    Threads.@threads for i in eachindex(opa.opa.λ)
+    #=Threads.@threads for i in eachindex(opa.opa.λ)
         chi[i, :] .= lookup(eos.eos, opa.opa, :κ, lnrho, lnt, i)
         B[i, :] .= lookup(eos.eos, opa.opa, :src, lnrho, lnt, i)
         dBdT[i, :] .= TSO.extended_lookup(eos.eos, opa, :dS_dT, lnrho, lnt, i)
-    end
-    chi_ref .= exp.(lookup(eos.eos, :lnRoss, lnrho, lnt)) .* ρ
+        chi_ref .= exp.(lookup(eos.eos, :lnRoss, lnrho, lnt)) .* ρ
+    end=#
+
 
     return nothing
 end
@@ -39,32 +43,6 @@ end
 # mini opacity tables require to be called with the chunked version
 compute_opacities(eos, opa::TSO.MiniOpacityTable, T, ρ) = compute_opacities_chunked(eos, opa, T, ρ)
 compute_opacities!(chi, chi_ref, B, dBdT, eos, opa::TSO.MiniOpacityTable, T, ρ) = _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, opa.opacity.λ)
-
-# ============================================================================
-# Bilinear Interpolation for large frequency grids
-# ============================================================================
-struct InterpCoefs
-    idx::Int        
-    w_low::Float64  
-    w_high::Float64 
-end
-
-function get_interp_coefs(grid_nodes, val)
-    if val <= first(grid_nodes)
-        return InterpCoefs(1, 1.0, 0.0)
-    elseif val >= last(grid_nodes)
-        return InterpCoefs(length(grid_nodes)-1, 0.0, 1.0)
-    end
-    
-    i = searchsortedlast(grid_nodes, val)
-    
-    x0 = grid_nodes[i]
-    x1 = grid_nodes[i+1]
-    w_high = (val - x0) / (x1 - x0)
-    w_low  = 1.0 - w_high
-    
-    return InterpCoefs(i, w_low, w_high)
-end
 
 # ============================================================================
 # Chunked opacity computation for large tables
@@ -98,17 +76,11 @@ function _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, λ)
     lnrho = log.(ρ)
     lnt = log.(T)
     
-    grid_T = eos.eos.lnT
-    grid_Rho = eos.eos.lnRho
+    grid_T = TSO.EnergyAxis(eos.eos).values
+    grid_Rho = TSO.DensityAxis(eos.eos).values
     n_shells = length(lnrho)
     
-    coefs_T   = Vector{InterpCoefs}(undef, n_shells)
-    coefs_Rho = Vector{InterpCoefs}(undef, n_shells)
-    for j in 1:n_shells
-        coefs_T[j]   = get_interp_coefs(grid_T, lnt[j])
-        coefs_Rho[j] = get_interp_coefs(grid_Rho, lnrho[j])
-    end
-    
+    coefs_Rho, coefs_T = TSO.weights(eos, lnrho, lnt)
     λ_indices = eachindex(λ)
     chunk_size = cld(length(λ_indices), Threads.nthreads())
     
@@ -119,7 +91,9 @@ function _compute_opacities_chunked!(chi, chi_ref, B, dBdT, eos, opa, T, ρ, λ)
     end
     wait.(tasks)
     
-    chi_ref .= exp.(lookup(eos.eos, :lnRoss, lnrho, lnt)) .* ρ
+    #chi_ref .= exp.(lookup(eos.eos, :lnRoss, lnrho, lnt)) .* ρ
+    sample!((chi_ref,), eos, (:lnRoss,), lnrho, lnt)
+    chi_ref .= exp.(chi_ref) .* ρ
     
     return nothing
 end

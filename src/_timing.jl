@@ -4,6 +4,10 @@
 
 const generalTimer = TimerOutput()
 const initialization_time = Ref(false)
+const atmosphere_preparation_time = Ref(false)
+const prepare_opacities_time = Ref(false)
+const allocate_feutrier_time = Ref(false)
+
 const mixing_length_time = Ref(false)
 const radiation_transfer_time = Ref(false)
 const hydrostatic_time = Ref(false)
@@ -20,7 +24,10 @@ const timers = [
     update_atmosphere_time,
     solve_RT_time,
     hydrostatic_time,
-    relaxation_time
+    relaxation_time,
+    atmosphere_preparation_time,
+    prepare_opacities_time,
+    allocate_feutrier_time,
 ]
 
 # ============================================================================

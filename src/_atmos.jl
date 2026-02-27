@@ -50,11 +50,11 @@ function atmosphere(; T_eff, logg, eos, opacity,
 	@optionalTiming initialization_time begin
 		# input opacities and EoS
 		eos = if typeof(eos) <: TSO.ExtendedEoS
-			@assert !TSO.is_internal_energy(@axed(eos.eos))
+			@assert !TSO.is_internal_energy(eos.eos)
 			eos
 		else
 			@assert !TSO.is_internal_energy(@axed(eos))
-			eos = TSO.ExtendedEoS(eos=eos)
+			eos = TSO.extended(eos)
 			TSO.add_thermodynamics!(eos)
 
 			eos
@@ -69,7 +69,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		else
 			opacity
 		end
-
+		
 		@assert typeof(opacity) <: Union{TSO.ExtendedOpacity, TSO.MiniOpacityTable} "Opacity must be an ExtendedOpacity or MiniOpacityTable."
 		
 		# Binned opacities require the source function to come from the table
@@ -83,7 +83,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
 		if opacity.binned && (typeof(opacity) <: TSO.ExtendedOpacity)
 			if !haskey(opacity.extensions, :dS_dT)
-				TSO.gradients!(eos.eos, opacity)
+				TSO.gradients!(TSO.table(eos), opacity)
 			end
 		end
 
@@ -94,12 +94,12 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		else
 			deepcopy(T), deepcopy(ρ), deepcopy(P), deepcopy(z)
 		end
-
+		
 		J, F_rad, g_rad = similar(T), similar(T), similar(T)
 		F_conv, v_conv, g_turb = similar(T), similar(T), similar(T)
-    	dFconv_dT = similar(T) 
+		dFconv_dT = similar(T) 
 		dT = similar(T)
-    	F_target = σ_SB * T_eff^4
+		F_target = σ_SB * T_eff^4
 		μ_angles, μ_weights = generate_mu_grid(4)
 
 		# check for irradiation and compute it
@@ -107,18 +107,22 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
 		# initialize the Feutrier RT solver storage arrays
 		chi, chi_ref, S, dSdT, atm = if feutrier
-			chi, chi_ref, S, dSdT = if opacity.binned
-				compute_opacities(eos, opacity, T, ρ)
-			else
-				compute_opacities_chunked(eos, opacity, T, ρ)
+			@optionalTiming prepare_opacities_time begin
+				chi, chi_ref, S, dSdT = if opacity.binned
+					compute_opacities(eos, opacity, T, ρ)
+				else
+					compute_opacities_chunked(eos, opacity, T, ρ)
+				end
 			end
-			atm = Atmosphere(
-				T_eff=T_eff, z=z, 
-				tau=τ, rho=ρ, Temp=T, 
-				F_conv=F_conv, dFconv_dT=dFconv_dT,
-				mu=μ_angles, w_mu=μ_weights, 
-				chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT, I_top=Irr
-			)
+			@optionalTiming allocate_feutrier_time begin
+				atm = Atmosphere(
+					T_eff=T_eff, z=z, 
+					tau=τ, rho=ρ, Temp=T, 
+					F_conv=F_conv, dFconv_dT=dFconv_dT,
+					mu=μ_angles, w_mu=μ_weights, 
+					chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT, I_top=Irr
+				)
+			end
 			chi, chi_ref, S, dSdT, atm
 		else
 			nothing, nothing, nothing, nothing, nothing
@@ -147,10 +151,6 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			@verbose_info 2 "Running RT with $(Base.Threads.nthreads()) threads."
 		end
 
-		if (size(chi, 1) > 1000) & (use_threads == false)
-			@verbose_warn 2 "Single-threaded Feutrier RT solver with a large opacity table may be slow and RAM intensive."
-		end
-
 		@verbose_info 2 "========================================================================="
 		@verbose_info 1 "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
 	end
@@ -161,11 +161,11 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			# solve the RT using long characteristic method
 			if use_threads
 				update_radiation_z_longchar_dagger!(
-					J, F_rad, g_rad, Q, dQdT, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opacity, λ_weights=opacity.weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles
+					J, F_rad, g_rad, Q, dQdT, T=T, ρ=ρ, z=z, eos=TSO.table(eos), opa=opacity, λ_weights=opacity.weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles
 				)
 			else
 				update_radiation_z_longchar!(
-					J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=eos.eos, opa=opacity.opa, λ_weights=opacity.weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles
+					J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=TSO.table(eos), opa=opacity.opa, λ_weights=opacity.weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles
 				)
 			end
 
@@ -331,7 +331,7 @@ function save!(model_data::MUST.Box, model_name; eos500=nothing, folder="./", vm
     	model_data.data[:τ500] = MUST.optical_depth(model_data, opacity=:κ500, density=:d)
     	MUST.flip!(model_data, depth=true)
 
-		tau500 =log.(b[:τ500][1,1,:])
+		tau500 =log10.(b[:τ500][1,1,:])
     	Ne = b[:Ne][1,1,:]
 
 		f_new_m1d = joinpath(run_i, "atmos.$(model_name)")
