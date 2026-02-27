@@ -341,6 +341,10 @@ function save!(model_data::MUST.Box, model_name; eos500=nothing, folder="./", vm
 		MUST.save_text_m1d_dscale(f_new_dscale, tau500; header=model_name)
 	end
 
+	# 3. HDF5 format
+	MUST.flip!(model_data)
+	MUST.save(model_data, folder=run_i, name=model_name)
+
     return run_i
 end
 
