@@ -23,6 +23,7 @@ mutable struct Atmosphere{T <: AbstractFloat}
     J_bol::Vector{T}      # Bolometric Mean Intensity (Size: D)
     F_bol::Vector{T}      # Bolometric Flux (Size: D)
     g_rad::Vector{T}      # Radiative Acceleration (Size: D) [cm/s^2] 
+    P_rad::Vector{T}      # Radiative Pressure (Size: D) [dyne/cm^2]
     dT::Vector{T}         # Temperature Correction (Size: D)
     J_raw                 # Specific Intensity J(mu) (Nf x Na x D)
 end
@@ -95,12 +96,13 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
     J_bol_init = zeros(T, D)
     F_bol_init = zeros(T, D)
     g_rad_init = zeros(T, D)
+    P_rad_init = zeros(T, D)
     dT_init    = zeros(T, D)
     return Atmosphere{T}(T_eff, deepcopy(z), deepcopy(tau), tau_lambda, deepcopy(rho), deepcopy(Temp), 
                          deepcopy(mu), deepcopy(w_mu), 
                          deepcopy(chi), deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), 
                          deepcopy(F_conv), dFconv, deepcopy(dFconv_dT), 
-                         eta, I_top_val, J_bol_init, F_bol_init, g_rad_init, dT_init, J_raw_init)
+                         eta, I_top_val, J_bol_init, F_bol_init, g_rad_init, P_rad_init, dT_init, J_raw_init)
 end
 
 function update!(atm::Atmosphere{T}; kwargs...) where T
@@ -321,7 +323,7 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_ja
     D = length(atm.tau)
     Nf = size(atm.chi, 1)
     
-    fill!(atm.J_bol, 0.0); fill!(atm.F_bol, 0.0); fill!(atm.g_rad, 0.0)
+    fill!(atm.J_bol, 0.0); fill!(atm.F_bol, 0.0); fill!(atm.g_rad, 0.0); fill!(atm.P_rad, 0.0)
     fill!(RE_res, 0.0); fill!(RE_jac, 0.0)
     fill!(K_rad_diag, 0.0); fill!(K_rad_prev, 0.0)
     
@@ -342,7 +344,7 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_ja
     end
     
     for t in tasks
-        (J_p, F_p, RE_r, RE_j, K_d, K_p, g_p) = fetch(t)::NTuple{7, Vector{T}}
+        (J_p, F_p, RE_r, RE_j, K_d, K_p, g_p, P_p) = fetch(t)::NTuple{8, Vector{T}}
         
         atm.J_bol   .+= J_p
         atm.F_bol   .+= F_p
@@ -351,6 +353,7 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_ja
         K_rad_diag  .+= K_d
         K_rad_prev  .+= K_p
         atm.g_rad   .+= g_p
+        atm.P_rad   .+= P_p
     end
 
     c_light = 2.99792458e10
@@ -398,8 +401,9 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     tri_sol = zeros(T, D)
     
     J_part, F_part = zeros(T, D), zeros(T, D)
-    g_rad_part     = zeros(T, D)
-    RE_res, RE_jac         = zeros(T, D), zeros(T, D)
+    P_rad_part = zeros(T, D)
+    g_rad_part = zeros(T, D)
+    RE_res, RE_jac = zeros(T, D), zeros(T, D)
     K_rad_diag, K_rad_prev = zeros(T, D), zeros(T, D)
 
     chi_col = zeros(T, D)
@@ -467,6 +471,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
             RE_jac[d] += term * (L_nu[d] - 1.0) * dB_col[d]
             
             flux_sum = 0.0
+            J_sum = 0.0
             k_d_sum  = 0.0
             k_p_sum  = 0.0
             
@@ -491,10 +496,10 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
                     dJ = J_nu[a, d+1] - J_nu[a, d-1]
                     dt = atm.tau_lambda[f, d+1] - atm.tau_lambda[f, d-1]
                 end
-                
+                J_sum += (ang / c_light) * J_nu[a, d]
                 flux_sum += ang * (dJ / max(dt, 1e-20))
             end
-            
+            P_rad_part[d] += J_sum
             F_part[d]     += flux_sum
             g_rad_part[d] += flux_sum * chi_col[d]
             K_rad_diag[d] += k_d_sum
@@ -502,7 +507,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
         end
     end
     
-    return (J_part, F_part, RE_res, RE_jac, K_rad_diag, K_rad_prev, g_rad_part)
+    return (J_part, F_part, RE_res, RE_jac, K_rad_diag, K_rad_prev, g_rad_part, P_rad_part)
 end
 
 function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}, F_target::T) where T
@@ -511,9 +516,9 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, 
     RHS = zeros(T, D)
         
     @inbounds for d in 1:D
-        if log10(atm.tau[d]) < 0.0
+        if log10(atm.tau[d]) < -1.0
             diag_val = -RE_jac[d]
-            diag_val = max(diag_val, 1e-20)
+            diag_val = max(diag_val, 1e-30)
             push!(rows, d); push!(cols, d); push!(vals, diag_val)
             RHS[d] = RE_res[d]
         else
@@ -523,17 +528,20 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, 
             
             # 1. Convection Terms
             val_Conv_d  = atm.dFconv_dT[d]
+            #cross_term  = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
+            #val_Conv_p  = d > 1 ? cross_term : 0.0
             val_Conv_p  = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
 
-            # 2. Radiative Terms (Using the new diffusion derivatives)
+
+            # 2. Radiative Terms
             val_Rad_d = K_rad_diag[d]
             val_Rad_p = K_rad_prev[d]
 
             # 3. Fill Matrix (Rad + Conv)
-            push!(rows, d); push!(cols, d);   push!(vals, val_Rad_d + val_Conv_d)
+            push!(rows, d); push!(cols, d); push!(vals, val_Rad_d + val_Conv_d)
             
             if d > 1
-                 push!(rows, d); push!(cols, d-1); push!(vals, val_Rad_p + val_Conv_p)
+                push!(rows, d); push!(cols, d-1); push!(vals, val_Rad_p + val_Conv_p)
             end
         end
     end
@@ -626,7 +634,7 @@ function compute_flux!(atm::Atmosphere{T}) where T
     D = length(atm.tau); Nf = size(atm.chi, 1); Na = length(atm.mu)
     c_light = 2.99792458e10
     
-    fill!(atm.F_bol, 0.0); fill!(atm.g_rad, 0.0)
+    fill!(atm.F_bol, 0.0); fill!(atm.g_rad, 0.0); fill!(atm.P_rad, 0.0)
     
     for f in 1:Nf
         w_f = 1 #atm.w_lambda[f]
@@ -647,6 +655,7 @@ function compute_flux!(atm::Atmosphere{T}) where T
                 flux = ang_f * (dJ / dt)
                 atm.F_bol[d] += flux
                 atm.g_rad[d] += flux * atm.chi[f, d]
+                atm.P_rad[d] += (ang_f / c_light) * atm.J_raw[f, a, d]
             end
         end
     end

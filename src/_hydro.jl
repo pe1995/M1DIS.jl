@@ -9,58 +9,53 @@ Generate the hydrostatic equilibrium function. Interpolated T, g_rad and g_turb
 functions are needed to interpolate the structure to any given τ. Note that the
 solver works with lnP instead of P itself.
 """
-function hydrostatic_equilibrium!(T_ip, g_rad_ip, g_turb_ip; g, eos)
+function hydrostatic_equilibrium!(T_ip, P_rad_ip, P_turb_ip; g, eos)
     function HE!(du, u, p, τ)
         lnP = u[1]
 		lgt = log10(τ)
 		
         lnT = T_ip(lgt)
-        g_rad  = g_rad_ip(lgt)
-        g_turb = g_turb_ip(lgt)
+        P_rad  = exp(P_rad_ip(lgt))
+        P_turb = exp(P_turb_ip(lgt))
+        P_tot = exp(lnP)
 
-        g_eff = max(g - g_rad - g_turb, 0.0)
+        P_gas = max(P_tot - P_rad - P_turb, 1e-30)
+        _, lnκ_ross = sample(eos, (:lnRho, :lnRoss), log(P_gas), lnT)
 
-        #lnρ = TSO.extended_lookup(eos, :lnRho, lnP, lnT)
-        #κ_ross = exp(TSO.extended_lookup(eos, :lnRoss, lnρ, lnT))
-
-        lnρ, lnκ_ross = sample(eos, (:lnRho, :lnRoss), lnP, lnT)
-        P = exp(lnP)
-        du[1] = g_eff / (exp(lnκ_ross) * P)
+        du[1] = g/ (exp(lnκ_ross) * P_tot)
     end
     return HE!
 end
 
-function update_hydrostatic!(P, ρ, z, T, g_rad, g_turb, τ_grid; eos, logg)
-    # prepare interpolations in log10(τ)
+function update_hydrostatic!(P_gas, ρ, z, T, P_turb, P_rad, τ_grid; eos, logg)
+    # Prepare interpolations in log10(τ)
+    # input P array is P_gas, however the solver expects P_tot
     lgt = log10.(τ_grid)
     T_ip = linear_interpolation(lgt, log.(T))
-    g_rad_ip = linear_interpolation(lgt, g_rad)
-    g_turb_ip = linear_interpolation(lgt, g_turb)
+    P_turb_ip = linear_interpolation(lgt, log.(max.(P_turb, 1e-30)))
+    P_rad_ip = linear_interpolation(lgt, log.(max.(P_rad, 1e-30)))
 
     g_const = exp10(logg)
 
-    # top boundary
     τ_top = τ_grid[1]
     T_top = T[1]
-    g_eff_top = max(g_const - g_rad[1] - g_turb[1], 0.0)
-    lnP_top = lnP_boundary(T_top, g_eff_top, eos, τ_top)
-
-    # solve HE from top to bottom on the rosseland optical depth scale
-    structure_eq = hydrostatic_equilibrium!(
-        T_ip, g_rad_ip, g_turb_ip; g=g_const, eos=eos
-    )
-    u0 = [lnP_top]
+    lnP_top = lnP_boundary(T_top, g_const, eos, τ_top)
+    u0 = [log(exp(lnP_top) + P_rad[1] + P_turb[1])]
     tspan = (τ_grid[1], τ_grid[end])
+
+    structure_eq = hydrostatic_equilibrium!(
+        T_ip, P_rad_ip, P_turb_ip; g=g_const, eos=eos
+    )
     prob = ODEProblem(structure_eq, u0, tspan)
     sol = solve(prob, Tsit5(), saveat=τ_grid)
 
-    # extract the pressure and density; compute new z scale
     for i in eachindex(T)
-        P[i] = sol.u[i][1] |> exp
-        ρ[i], = sample(eos, (:lnRho,), log(P[i]), log(T[i])) .|> exp
-        #ρ[i] = exp(TSO.extended_lookup(eos,:lnRho,log(P[i]),log(T[i])))
+        P_tot = exp(sol.u[i][1]) # The solver returns ln(P_tot)
+        P_gas[i] = max(P_tot - P_rad[i] - P_turb[i], 1e-30)
+        ρ[i], = sample(eos, (:lnRho,), log(P_gas[i]), log(T[i])) .|> exp
     end
-	update_z_grid!(z, T=T, ρ=ρ, τ=τ_grid, eos=eos.eos);
+    
+    update_z_grid!(z, T=T, ρ=ρ, τ=τ_grid, eos=eos.eos)
 end
 
 # ============================================================================

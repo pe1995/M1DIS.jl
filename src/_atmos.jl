@@ -16,7 +16,7 @@ Compute a M1DIS atmosphere iteratively based on the given binned opacity table, 
 - `α_MLT`: mixing length parameter
 - `maxiter`: maximum number of iterations
 - `damping`: damping parameter for limiting dT correction
-- `v_mic`: microturbulent velocity to add artificial turbulent pressure
+- `v_mac`: microturbulent velocity to add artificial turbulent pressure
 - `T_irradiation`: irradiation temperature
 - `R_irradiation`: irradiation radius
 - `d_irradiation`: irradiation distance
@@ -40,7 +40,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 	α_MLT=1.5, 
 	maxiter=20,
 	damping=0.1, 
-	v_mic=0.0,
+	v_mac=0.0,
 	T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, F_irradiation=nothing,
 	T=nothing, ρ=nothing, P=nothing, z=nothing, 
 	feutrier=true,
@@ -95,10 +95,10 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			deepcopy(T), deepcopy(ρ), deepcopy(P), deepcopy(z)
 		end
 		
-		J, F_rad, g_rad = similar(T), similar(T), similar(T)
-		F_conv, v_conv, g_turb = similar(T), similar(T), similar(T)
-		dFconv_dT = similar(T) 
-		dT = similar(T)
+		J, F_rad, g_rad, P_rad = fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0)
+		F_conv, v_conv, g_turb, P_turb = fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0)
+		dFconv_dT = fill!(similar(T), 0.0)
+		dT = fill!(similar(T), 0.0)
 		F_target = σ_SB * T_eff^4
 		μ_angles, μ_weights = generate_mu_grid(4)
 
@@ -155,23 +155,18 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		@verbose_info 1 "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
 	end
 	@optionalTiming relaxation_time for iter in 1:maxiter
+        #P_turb_old = copy(P_turb)
+        #P_rad_old = copy(P_rad)
+        
 		# compute convective quantities (MLT)
-		@optionalTiming mixing_length_time update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mic=v_mic*1e5)
-		@optionalTiming radiation_transfer_time if !feutrier
-			# solve the RT using long characteristic method
-			if use_threads
-				update_radiation_z_longchar_dagger!(
-					J, F_rad, g_rad, Q, dQdT, T=T, ρ=ρ, z=z, eos=TSO.table(eos), opa=opacity, λ_weights=opacity.weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles
-				)
-			else
-				update_radiation_z_longchar!(
-					J, F_rad, g_rad, T=T, ρ=ρ, z=z, eos=TSO.table(eos), opa=opacity.opa, λ_weights=opacity.weights, irradiation=Irr, μ_weights=μ_weights, μ_angles=μ_angles
-				)
-			end
-
-			# compute temperature correction
-			update_temperature_correction_robust!(dT, F_rad, F_conv, dFconv_dT, T, τ, T_eff, J; damping=damping)
-		else
+		#@optionalTiming mixing_length_time update_mixing_length_MARCS!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5)
+		@optionalTiming mixing_length_time update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5)
+        
+        #if iter > 1
+        #    P_turb .= 0.5 .* P_turb_old .+ 0.5 .* P_turb
+        #end
+        
+		@optionalTiming radiation_transfer_time begin
 			if opacity.binned
  				@optionalTiming compute_opacities_time compute_opacities!(chi, chi_ref, S, dSdT, eos, opacity, T, ρ)
 			else
@@ -189,25 +184,39 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			J .= atm.J_bol
 			F_rad .= atm.F_bol
 			g_rad .= atm.g_rad
+			P_rad .= atm.P_rad
 			dT .= atm.dT
 
-			# avoid overly large temperature corrections
+			# Depth-dependent damping: tighter in the deep convective zone
 			dT .= clamp.(dT, -damping.*T, damping.*T)
+			#=@inbounds for i in eachindex(dT)
+				d = log10(τ[i]) > 0.0 ? 0.3 * damping : damping
+				dT[i] = clamp(dT[i], -d*T[i], d*T[i])
+			end=#
 		end
+		
 
-		converged = evaluate_iteration!(
-			r, iter, maxiter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, T_eff, logg, eos; 
-			dFconv_dT=dFconv_dT, J=J, g_turb=g_turb, g_rad=g_rad,
+		converged, new_damping = evaluate_iteration!(
+			r, iter, maxiter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, T_eff, logg, eos, damping; 
+			dFconv_dT=dFconv_dT, J=J, g_turb=g_turb, g_rad=g_rad, P_turb=P_turb, P_rad=P_rad,
 			kwargs...
 		)
+
+		if new_damping != damping
+			@verbose_info 2 "Increasing damping to $(new_damping) (from $(damping))."
+			damping = new_damping
+		end
+
 		if converged 
 			@verbose_info 1 "Atmosphere converged."
 			break
 		end
 
+		#P_rad .= 0.0
+		#P_turb .= 0.0
 		T .+= dT
 		T = clamp.(T, 10, 1e12)
-		@optionalTiming hydrostatic_time update_hydrostatic!(P, ρ, z, T, g_rad, g_turb, τ, eos=eos, logg=logg)
+		@optionalTiming hydrostatic_time update_hydrostatic!(P, ρ, z, T, P_turb, P_rad, τ, eos=eos, logg=logg)
 	end
 
     length(r) == 1 ? r[1] : r
@@ -224,13 +233,17 @@ function initial_atmosphere(τ_grid; T_eff, logg, eos)
 	ρ_initial = similar(T_initial)
 	P_initial = similar(T_initial)
 	z_initial = similar(T_initial)
-	g_rad = similar(T_initial)
-	g_turb = similar(T_initial)
+	#g_rad = similar(T_initial)
+	#g_turb = similar(T_initial)
+	P_rad = similar(T_initial)
+	P_turb = similar(T_initial)
 
-	g_rad .= 0.0
-	g_turb .= 0.0
+	#g_rad .= 0.0
+	#g_turb .= 0.0
+	P_rad .= 0.0
+	P_turb .= 0.0
 	update_hydrostatic!(
-		P_initial, ρ_initial, z_initial, T_initial, g_rad, g_turb, τ_grid, 
+		P_initial, ρ_initial, z_initial, T_initial, P_turb, P_rad, τ_grid, 
 		logg=logg, eos=eos
 	)
 
@@ -244,8 +257,8 @@ end
 function evaluate_iteration!(result, 
 	iter, maxiter, 
 	F_target, dT, 
-	τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg, eos; 
-	dt_tolerance_rel=0.001, flux_tolerance_rel=0.001, save_every=1, kwargs...)
+	τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg, eos, damping; 
+	dt_tolerance_rel=0.0001, flux_tolerance_rel=0.0001, save_every=1, kwargs...)
 	# store the atmosphere every `save_every` iterations
 	store = save_every > 0 ? ((iter%save_every == 0) | (iter == maxiter)) : false
     F_total = F_rad .+ F_conv
@@ -255,12 +268,14 @@ function evaluate_iteration!(result,
 			iter, flux_err_max*100, dt_err_max*100, maximum(abs.(dT[2:end-1])))
 	@verbose_info 1 sinf
 
+	new_damping = flux_err_max < 0.05 ? min(damping * 1.05, 1.0) : damping
+
 	converged = (dt_err_max<dt_tolerance_rel) | (flux_err_max<flux_tolerance_rel)
 	if converged | store
 		append!(result, [m1disBox(τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, dT, teff, logg, eos; kwargs...)])
 	end
 
-	converged
+	converged, new_damping
 end
 
 # ============================================================================

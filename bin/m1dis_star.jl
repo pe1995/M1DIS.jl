@@ -146,7 +146,7 @@ function main()
     result = atmosphere(
         T_eff = args["teff"],
         logg = args["logg"],
-        v_mic = args["vmic"],
+        #v_mac = args["vmic"],
         α_MLT = args["alpha"],
         maxiter = args["maxiter"],
         eos = eos_complete,
@@ -165,11 +165,30 @@ function main()
     end
 
     println("Saving model $(args["model_name"]) to $out_dir...")
-    save!(result[end], args["model_name"]; 
-          folder = out_dir, 
-          vmic = args["vmic"], 
-          logg = args["logg"],
-          eos500 = eos500_complete)
+    save!(
+        result[end], args["model_name"]; 
+        folder = out_dir, 
+        vmic = args["vmic"], 
+        logg = args["logg"],
+        eos500 = eos500_complete
+    )
+
+    # save the iterations also
+    if (!isdir(joinpath(out_dir, args["model_name"], "iterations")))
+        mkpath(joinpath(out_dir, args["model_name"], "iterations"))
+    else
+        rm(joinpath(out_dir, args["model_name"], "iterations"), recursive=true)
+        mkpath(joinpath(out_dir, args["model_name"], "iterations"))
+    end
+    for (i, r) in enumerate(result)
+        save!(
+            r, "iteration_$(i)"; 
+            folder = joinpath(out_dir, args["model_name"], "iterations"), 
+            vmic = args["vmic"], 
+            logg = args["logg"],
+            eos500 = eos500_complete
+        )
+    end
     
     println("M1DIS.jl finished.")
     println("================================================================================")

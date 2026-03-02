@@ -217,7 +217,7 @@ function main()
     result = atmosphere(
         T_eff = t_internal_planet,
         logg = logg_planet,
-        v_mic = args["vmic"],
+        #v_mac = args["vmic"],
         α_MLT = args["alpha"],
         maxiter = args["maxiter"],
         eos = eos_complete,

@@ -7,18 +7,9 @@
 
 Compute MLT parameters F_conv and g_turb based on Gustafsson et al. (1970).
 """
-function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha_mlt)
-    lnpgas_local = log(P_local - (4.0 * σ_SB / (3.0 * c_light)) * (T_local ^ 4))
+function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha_mlt, P_rad_local, P_turb_local)
+    lnpgas_local = log(max(P_local - P_rad_local - P_turb_local, 1e-30))
     lnt_local = log(T_local)
-    #lnrho_local = TSO.extended_lookup(eos_extended, :lnRho, lnpgas_local, lnt_local)  
-    #lnrho_local, = sample(eos_extended, (:lnRho,), lnpgas_local, lnt_local)  
-    
-    #=κ_ross = exp(TSO.extended_lookup(eos_extended, :lnRoss, lnrho_local, lnt_local))
-    Cp = TSO.extended_lookup(eos_extended, :cₚ, lnrho_local, lnt_local)
-    Q = TSO.extended_lookup(eos_extended, :Q, lnrho_local, lnt_local)
-    ∇ₐ = TSO.extended_lookup(eos_extended, :∇ₐ, lnrho_local, lnt_local)
-    χr = TSO.extended_lookup(eos_extended, :χᵨ, lnrho_local, lnt_local)
-    χt = TSO.extended_lookup(eos_extended, :χₜ, lnrho_local, lnt_local)=#
 
     lnrho_local, lnκ_ross, Cp, Q, ∇ₐ, χr, χt = sample(eos_extended, (:lnRho,:lnRoss, :cₚ, :Q, :∇ₐ, :χᵨ, :χₜ), lnpgas_local, lnt_local)
     κ_ross = exp(lnκ_ross)
@@ -62,20 +53,24 @@ function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha
     return Flux, v_real
 end
 
-function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, τ_ross, eos_extended, g_surf; 
-    alpha_mlt=1.5, Teff=5777.0, v_mic=0.0)
+function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_gas, ρ, τ_ross, eos_extended, g_surf; 
+    alpha_mlt=1.5, Teff=5777.0, v_mac=0.0, pbeta=1.0)
     n_depth = length(T)
+    # Save previous iteration's P_turb before reset
+    P_turb_prev = copy(P_turb)
+
     # Reset outputs
     fill!(F_conv, 0.0)
     fill!(v_conv, 0.0)
+    fill!(P_turb, 0.0)
     fill!(dFconv_dT, 0.0)
     
     @inbounds for n in 2:n_depth
-        P_rad_n = (4.0 * σ_SB / (3.0 * c_light)) * (T[n] ^ 4)
-        P_tot_n = P_gas[n] + P_rad_n
+        P_rad_n = P_rad[n]
+        P_tot_n = P_gas[n] + P_rad_n + P_turb_prev[n]
         
-        P_rad_nm1 = (4.0 * σ_SB / (3.0 * c_light)) * (T[n-1] ^ 4)
-        P_tot_nm1 = P_gas[n-1] + P_rad_nm1
+        P_rad_nm1 = P_rad[n-1]
+        P_tot_nm1 = P_gas[n-1] + P_rad_nm1 + P_turb_prev[n-1]
 
         # Calculate Gradient (Backward Difference)
         dlnT = log(T[n] / T[n-1])
@@ -83,7 +78,7 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
         ∇_base = dlnT / dlnP
         
         # Base Flux
-        F_base, v_base = calc_mlt_local(T[n], P_tot_n, ∇_base, eos_extended, g_surf, alpha_mlt)
+        F_base, v_base = calc_mlt_local(T[n], P_tot_n, ∇_base, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n])
         F_conv[n] = F_base
         v_conv[n] = v_base
 
@@ -92,7 +87,7 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
         T_pert = T[n] + delta_T
         dlnT_pert = log(T_pert / T[n-1])
         ∇_pert = dlnT_pert / dlnP
-        F_pert, _ = calc_mlt_local(T_pert, P_tot_n, ∇_pert, eos_extended, g_surf, alpha_mlt)
+        F_pert, _ = calc_mlt_local(T_pert, P_tot_n, ∇_pert, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n])
         
         # Stability fix (Gustafsson et al.)
         if F_base <= 1e-10
@@ -101,7 +96,7 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
             
             dlnT_recipe = log(T_recipe / T[n-1])
             ∇_recipe = dlnT_recipe / dlnP
-            F_recipe, _ = calc_mlt_local(T_recipe, P_tot_n, ∇_recipe, eos_extended, g_surf, alpha_mlt)
+            F_recipe, _ = calc_mlt_local(T_recipe, P_tot_n, ∇_recipe, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n])
             
             if F_recipe > 1e-10
                 dFconv_dT[n] = (F_recipe) / (T_recipe - T[n])
@@ -115,40 +110,192 @@ function update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, 
     
     F_conv[1] = F_conv[2]
     dFconv_dT[1] = dFconv_dT[2]
+    v_conv[1] = v_conv[2]
 
     # Turbulent Pressure and Gravity
-    prev_P_turb = 0.5 * ρ[1] * (v_conv[1]^2 + v_mic^2)
-    #prev_kappa = exp(TSO.extended_lookup(eos_extended, :lnRoss, log(ρ[1]), log(T[1])))
-    prev_kappa, = sample(eos_extended, (:lnRoss,), log(ρ[1]), log(T[1])) .|> exp
+    P_turb .= 0.5 .* ρ .* (v_conv .^ 2 .+ v_mac .^ 2)
+    #F_conv_raw = copy(F_conv)
+    #gturb_stabilizer!(g_turb, g_surf)
+    fconv_stabilizer!(F_conv)
+    fconv_stabilizer!(P_turb)
+    fconv_stabilizer!(dFconv_dT)
 
-    curr_P_turb = 0.5 * ρ[2] * (v_conv[2]^2 + v_mic^2)
-    #curr_kappa = exp(TSO.extended_lookup(eos_extended, :lnRoss, log(ρ[2]), log(T[2])))
-    curr_kappa, = sample(eos_extended, (:lnRoss,), log(ρ[2]), log(T[2])) .|> exp
-    
-    dP_dtau = (curr_P_turb - prev_P_turb) / (τ_ross[2] - τ_ross[1])
-    g_turb[1] = prev_kappa * dP_dtau
-    
-    @inbounds for i in 2:n_depth-1
-        next_P_turb = 0.5 * ρ[i+1] * (v_conv[i+1]^2 + v_mic^2)
+    # 3. Derive the smoothed velocity and P_turb algebraically!
+    #=@inbounds for i in 1:length(T)
+        if F_conv_raw[i] > 1e-10 && F_conv[i] > 0.0
+            # The velocity scales as the cube root of the flux change
+            scaling_factor = (F_conv[i] / F_conv_raw[i]) ^ (1.0 / 3.0)
+            
+            # Update to the smooth velocity
+            v_conv[i] = v_conv[i] * scaling_factor
+        else
+            v_conv[i] = 0.0
+        end
         
-        h1 = τ_ross[i] - τ_ross[i-1]
-        h2 = τ_ross[i+1] - τ_ross[i]
-        dP_dtau = - (h2 / (h1 * (h1 + h2))) * prev_P_turb +
-                  ((h2 - h1) / (h1 * h2)) * curr_P_turb +
-                  (h1 / (h2 * (h1 + h2))) * next_P_turb
-                  
-        g_turb[i] = curr_kappa * dP_dtau
-        
-        prev_P_turb = curr_P_turb
-        curr_P_turb = next_P_turb
-        #curr_kappa = exp(TSO.extended_lookup(eos_extended, :lnRoss, log(ρ[i+1]), log(T[i+1])))
-        curr_kappa, = sample(eos_extended, (:lnRoss,), log(ρ[i+1]), log(T[i+1])) .|> exp
+        # 4. Calculate P_turb using the beautifully smoothed velocity
+        P_turb[i] = ρ[i] * (pbeta * v_conv[i]^2 + v_mac^2) 
+        # (Or 0.5 * ρ[i] * (v_conv[i]^2 + v_mic^2) depending on your exact definition)
+    end=#
+end
+
+# ============================================================================
+# MLT computation (MARCS)
+# ============================================================================
+
+function calc_mlt_half_point(T_mean, P_tot_mean, ∇_mean, eos_extended, g_surf, alpha_mlt, P_rad_mean, P_turb_mean; pbeta=1.0)
+    # 1. Staggered Grid: Calculate EOS properties exactly at the half-point
+    lnpgas_mean = log(max(P_tot_mean - P_rad_mean - P_turb_mean, 1e-30))
+    lnt_mean = log(T_mean)
+    
+    lnrho_mean, lnκ_ross, Cp, Q, ∇ₐ, χr, χt = sample(eos_extended, (:lnRho, :lnRoss, :cₚ, :Q, :∇ₐ, :χᵨ, :χₜ), lnpgas_mean, lnt_mean)
+    
+    rho_mean = exp(lnrho_mean)
+    κ_ross = exp(lnκ_ross)
+    
+    # 2. Scale height using local total pressure (Gas + Rad)
+    Hp = P_tot_mean / (rho_mean * g_surf)
+
+    super_adi = ∇_mean - ∇ₐ
+    if super_adi < 1e-6
+        return 0.0, 0.0, rho_mean, κ_ross
     end
     
-    dP_dtau = (curr_P_turb - prev_P_turb) / (τ_ross[n_depth] - τ_ross[n_depth-1])
-    g_turb[n_depth] = curr_kappa * dP_dtau
+    v_scale = sqrt(g_surf * Q * Hp / 8.0)
+    
+    # U = (24 sqrt(2) sigma T^3) / (kappa rho Hp alpha rho Cp v_scale)
+    numerator = 24.0 * sqrt(2.0) * σ_SB * T_mean^3
+    denominator = κ_ross * rho_mean^2 * Hp * alpha_mlt * Cp * v_scale
+    U = numerator / denominator
 
-    gturb_stabilizer!(g_turb, g_surf)
+    # Solve cubic for efficiency factor xi
+    xi = 0.5
+    for _ in 1:50
+        xi_sq = xi^2
+        f_val = 2.0 * U * xi_sq * xi + xi_sq + U * xi - super_adi
+        df_dz = 6.0 * U * xi_sq + 2.0 * xi + U
+        dxi = f_val / df_dz
+        xi -= dxi
+        if abs(dxi) < 1e-6 * xi; break; end
+    end
+    xi = max(xi, 1e-9)
+
+    v_real = v_scale * xi
+    
+    # 3. MARCS Velocity Capping: Hard cap based on local thermodynamics
+    v_max = sqrt(0.5 * P_tot_mean / (pbeta * rho_mean))
+    if v_real > v_max
+        v_real = v_max
+        # Adjust xi down so flux calculation uses the capped velocity
+        xi = v_real / v_scale 
+    end
+
+    Flux = (0.5 * alpha_mlt) * (rho_mean * Cp * T_mean) * v_scale * xi^3
+    return Flux, v_real, rho_mean, κ_ross
+end
+
+function update_mixing_length_MARCS!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_gas, ρ, τ_ross, eos_extended, g_surf; 
+    alpha_mlt=1.5, Teff=5777.0, v_mac=0.0, pbeta=1.0)
+    
+    n_depth = length(T)
+    
+    # Save previous iteration's P_turb before reset
+    P_turb_prev = copy(P_turb)
+
+    # Reset outputs
+    fill!(F_conv, 0.0)
+    fill!(v_conv, 0.0)
+    fill!(dFconv_dT, 0.0)
+    fill!(P_turb, 0.0)
+    
+    @inbounds for n in 2:n_depth
+        P_rad_n = P_rad[n]
+        P_tot_n = P_gas[n] + P_rad_n + P_turb_prev[n]
+        
+        P_rad_nm1 = P_rad[n-1]
+        P_tot_nm1 = P_gas[n-1] + P_rad_nm1 + P_turb_prev[n-1]
+
+        # Staggered variables (Mean of layer n and n-1)
+        T_mean = 0.5 * (T[n] + T[n-1])
+        P_tot_mean = 0.5 * (P_tot_n + P_tot_nm1)
+        P_rad_mean = 0.5 * (P_rad_n + P_rad_nm1)
+        P_turb_mean = 0.5 * (P_turb_prev[n] + P_turb_prev[n-1])
+
+        # Calculate Gradient across the layer
+        dlnT = log(T[n] / T[n-1])
+        dlnP = log(P_tot_n / P_tot_nm1)
+        ∇_base = dlnT / dlnP
+        
+        # Base Flux evaluated at the half point
+        F_base, v_base, rho_mean, kappa_mean = calc_mlt_half_point(T_mean, P_tot_mean, ∇_base, eos_extended, g_surf, alpha_mlt, P_rad_mean, P_turb_mean, pbeta=pbeta)
+        
+        F_conv[n] = F_base
+        v_conv[n] = v_base
+        
+        # Turbulent Pressure at half-point
+        P_turb[n] = rho_mean * (pbeta * v_base^2 + v_mac^2)
+
+        # Derivative tracking using finite differences applied to the mean
+        delta_T = 0.0001 * T[n]
+        T_pert_mean = 0.5 * ((T[n] + delta_T) + T[n-1])
+        dlnT_pert = log((T[n] + delta_T) / T[n-1])
+        ∇_pert = dlnT_pert / dlnP
+        
+        F_pert, _, _, _ = calc_mlt_half_point(T_pert_mean, P_tot_mean, ∇_pert, eos_extended, g_surf, alpha_mlt, P_rad_mean, P_turb_mean, pbeta=pbeta)
+        
+        # Stability fix (Gustafsson et al.)
+        #=if F_base <= 1e-10
+            b = 0.005 
+            T_recipe = T[n] * (1.0 + b)
+            T_recipe_mean = 0.5 * (T_recipe + T[n-1])
+            dlnT_recipe = log(T_recipe / T[n-1])
+            ∇_recipe = dlnT_recipe / dlnP
+            
+            F_recipe, _, _, _ = calc_mlt_half_point(T_recipe_mean, P_tot_mean, ∇_recipe, eos_extended, g_surf, alpha_mlt, P_rad_mean, P_turb_mean, pbeta=pbeta)
+            
+            if F_recipe > 1e-10
+                dFconv_dT[n] = F_recipe / (T_recipe - T[n])
+            else
+                dFconv_dT[n] = 0.0
+            end
+        else
+            dFconv_dT[n] = (F_pert - F_base) / delta_T
+        end=#
+        dFconv_dT[n] = (F_pert - F_base) / delta_T
+    end
+    
+    # Boundary conditions for arrays
+    F_conv[1] = F_conv[2]
+    v_conv[1] = v_conv[2]
+    dFconv_dT[1] = dFconv_dT[2]
+    P_turb[1] = P_turb[2]
+
+    fconv_stabilizer!(F_conv)
+    fconv_stabilizer!(P_turb)
+    fconv_stabilizer!(dFconv_dT)
+end
+
+# ============================================================================
+# Stabilizers
+# ============================================================================
+
+"""
+    fconv_stabilizer!(arr; passes=3)
+
+Stabilizes convective quantities by applying a simple running mean.
+"""
+function fconv_stabilizer!(arr; passes=1)
+    n = length(arr)
+    if n < 3 return end
+    
+    tmp = zeros(eltype(arr), n)
+    for _ in 1:passes
+        tmp[1] = 0.75 * arr[1] + 0.25 * arr[2]
+        tmp[n] = 0.75 * arr[n] + 0.25 * arr[n-1]
+        @inbounds for i in 2:n-1
+            tmp[i] = 0.25 * arr[i-1] + 0.5 * arr[i] + 0.25 * arr[i+1]
+        end
+        arr .= tmp
+    end
 end
 
 """
@@ -157,7 +304,7 @@ end
 Stabilisiert g_turb in-place. Nutzt den aktuellen Inhalt von g_turb als 
 Zielwert und relaxiert ihn gegen den vorherigen Zustand.
 """
-function gturb_stabilizer!(g_turb, g_surf; max_fraction=0.1, passes=5, relax=0.2)
+function gturb_stabilizer!(g_turb, g_surf; max_fraction=1.0, passes=5, relax=0.2)
     n = length(g_turb)
     if n < 3 return end
 

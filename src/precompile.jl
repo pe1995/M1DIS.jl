@@ -26,7 +26,7 @@ using PrecompileTools
                 atmosphere(
                     T_eff = 5777.0,
                     logg = 4.44,
-                    v_mic = 1.0,
+                    #v_mic = 1.0,
                     α_MLT = 1.5,
                     maxiter = 1,
                     eos = eos,
@@ -45,7 +45,7 @@ using PrecompileTools
                 atmosphere(
                     T_eff = 5777.0,
                     logg = 4.44,
-                    v_mic = 1.0,
+                    #v_mic = 1.0,
                     α_MLT = 1.5,
                     maxiter = 1,
                     eos = eos,

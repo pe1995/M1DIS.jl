@@ -43,8 +43,7 @@ function force_adiabatic_bottom!(T, P, eos_extended; n_force=5)
         lnP_prev = log(P[i-1])
         lnT_prev = log(T[i-1])
         
-        lnRho = TSO.extended_lookup(eos_extended, :lnRho, lnP_prev, lnT_prev)
-        ∇_ad  = TSO.extended_lookup(eos_extended, :∇ₐ, lnRho, lnT_prev)
+        lnRho, ∇_ad = sample(eos_extended, (:lnRho, :∇ₐ), lnP_prev, lnT_prev)
         
         dlnP = log(P[i]) - lnP_prev
         T[i] = T[i-1] * exp(∇_ad * dlnP)

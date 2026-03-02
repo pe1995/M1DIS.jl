@@ -192,7 +192,7 @@ end
 # ============================================================================
 # Long characteristic solver (not recommended)
 # ============================================================================
-
+#=
 function compute_diagonal_inv!(diag_inv, A, B, C)
     n = length(B)
     
@@ -328,14 +328,6 @@ function update_radiation_z_longchar!(J, F, g_rad; T, ρ, z, eos, opa, μ_weight
             g_rad[i] += k_rho_nodes[i] / ρ[i] * F_bin / c_light
         end
     end
-    
-    # Enforce Monotonicity of Radiative Flux (User Requested)
-    # F_rad must decrease with depth (index increase) as convection takes over.
-    #=for i in 2:Nnodes
-        if F[i] > F[i-1]
-            F[i] = F[i-1]
-        end
-    end=#
 end
 
 #= Parallel version ---> Needs update! =#
@@ -506,4 +498,4 @@ function update_radiation_z_longchar_dagger!(J, F, g_rad, Q, dQdT; T, ρ, z, eos
     end=#
 
     return nothing
-end
+end=#
