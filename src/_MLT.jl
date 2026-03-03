@@ -75,6 +75,12 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
         # Calculate Gradient (Backward Difference)
         dlnT = log(T[n] / T[n-1])
         dlnP = log(P_tot_n / P_tot_nm1)
+        # Guard: nearly isobaric layer or oscillating pressure → skip convection here
+        if abs(dlnP) < 1e-8
+            F_conv[n] = 0.0
+            dFconv_dT[n] = 0.0
+            continue
+        end
         ∇_base = dlnT / dlnP
         
         # Base Flux
@@ -112,13 +118,18 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
     dFconv_dT[1] = dFconv_dT[2]
     v_conv[1] = v_conv[2]
 
-    # Turbulent Pressure and Gravity
-    P_turb .= 0.5 .* ρ .* (v_conv .^ 2 .+ v_mac .^ 2)
+    
+    #P_turb .= 0.5 .* ρ .* (v_conv .^ 2 .+ v_mac .^ 2)
+
     #F_conv_raw = copy(F_conv)
     #gturb_stabilizer!(g_turb, g_surf)
     fconv_stabilizer!(F_conv)
+    fconv_stabilizer!(v_conv)
     fconv_stabilizer!(P_turb)
     fconv_stabilizer!(dFconv_dT)
+
+    # Turbulent Pressure and Gravity
+    P_turb .= 0.5 .* ρ .* (v_conv .^ 2 .+ v_mac .^ 2)
 
     # 3. Derive the smoothed velocity and P_turb algebraically!
     #=@inbounds for i in 1:length(T)
@@ -223,6 +234,12 @@ function update_mixing_length_MARCS!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T
         # Calculate Gradient across the layer
         dlnT = log(T[n] / T[n-1])
         dlnP = log(P_tot_n / P_tot_nm1)
+        # Guard: nearly isobaric layer or oscillating pressure → skip convection here
+        if abs(dlnP) < 1e-8
+            F_conv[n] = 0.0
+            dFconv_dT[n] = 0.0
+            continue
+        end
         ∇_base = dlnT / dlnP
         
         # Base Flux evaluated at the half point

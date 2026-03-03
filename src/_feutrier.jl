@@ -244,11 +244,11 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
         if include_dT
             row_flux = idx_T(d)
             if d == 1
+                # J = B (opacity-weighted thermal balance) at the surface
                 b_sum = 0.0; db_sum = 0.0
                 for k in 1:N
                     f = pack.freq_idx[k]
                     term = pack.weights[k] * atm.chi[f, d]
-                    
                     push!(rows, row_flux); push!(cols, idx_J(k,d)); push!(vals, term)
                     db_sum += term * atm.dBdT[f, d]
                     b_sum  += term * atm.B[f, d]
@@ -268,6 +268,7 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
                     push!(rows, row_flux); push!(cols, idx_J(k,d-1)); push!(vals, -coeff)
                 end
                 
+                # dFconv/dT: local term at d, plus cross-term from F_conv[d]'s dependence on T[d-1]
                 val_Td = 0.5 * atm.dFconv_dT[d]
                 push!(rows, row_flux); push!(cols, idx_T(d)); push!(vals, val_Td)
                 
@@ -507,6 +508,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
         end
     end
     
+    # d=1 has no backward neighbour; leave as 0 (d=1 uses RE regime, not flux conservation)
     return (J_part, F_part, RE_res, RE_jac, K_rad_diag, K_rad_prev, g_rad_part, P_rad_part)
 end
 
@@ -526,12 +528,9 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, 
             F_curr = atm.F_bol[d] + atm.F_conv[d]
             RHS[d] = F_target - F_curr
             
-            # 1. Convection Terms
+            # 1. Convection Terms (local + cross-derivative: ∂F_conv[d]/∂T[d-1] = –(T[d]/T[d-1])×dFconv_dT[d])
             val_Conv_d  = atm.dFconv_dT[d]
-            #cross_term  = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
-            #val_Conv_p  = d > 1 ? cross_term : 0.0
             val_Conv_p  = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
-
 
             # 2. Radiative Terms
             val_Rad_d = K_rad_diag[d]

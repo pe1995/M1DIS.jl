@@ -155,16 +155,19 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		@verbose_info 1 "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
 	end
 	@optionalTiming relaxation_time for iter in 1:maxiter
-        #P_turb_old = copy(P_turb)
+        P_turb_old = copy(P_turb)
         #P_rad_old = copy(P_rad)
         
 		# compute convective quantities (MLT)
 		#@optionalTiming mixing_length_time update_mixing_length_MARCS!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5)
 		@optionalTiming mixing_length_time update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5)
         
-        #if iter > 1
-        #    P_turb .= 0.5 .* P_turb_old .+ 0.5 .* P_turb
-        #end
+        #=if iter > 1
+            # Temporal averaging of P_turb prevents the self-referential
+            # P_turb → P_tot → ∇ → F_conv → v_conv → P_turb feedback from oscillating.
+            # Critical for stars with marginal convection zones (∇ ≈ ∇_ad near onset).
+            P_turb .= 0.5 .* P_turb_old .+ 0.5 .* P_turb
+        end=#
         
 		@optionalTiming radiation_transfer_time begin
 			if opacity.binned
@@ -216,6 +219,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		#P_turb .= 0.0
 		T .+= dT
 		T = clamp.(T, 10, 1e12)
+		#force_adiabatic_bottom!(T, P, eos, n_force=2)
 		@optionalTiming hydrostatic_time update_hydrostatic!(P, ρ, z, T, P_turb, P_rad, τ, eos=eos, logg=logg)
 	end
 

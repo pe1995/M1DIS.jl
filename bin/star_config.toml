@@ -18,6 +18,9 @@ binned = false
 # Ignore source function from the opacity table and recompute it on-the-fly
 mini = true
 
+# Use multi-threading for the Radiative Transfer (RT)
+use_threads = true
+
 # ==============================================================================
 # Model Output Parameters 
 # ==============================================================================
@@ -66,6 +69,3 @@ maxiter = 50
 
 # Damping parameter for the temperature updates
 damping = 0.05
-
-# Use multi-threading for the Radiative Transfer (RT)
-use_threads = false
