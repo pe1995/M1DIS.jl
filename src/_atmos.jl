@@ -272,7 +272,7 @@ function evaluate_iteration!(result,
 			iter, flux_err_max*100, dt_err_max*100, maximum(abs.(dT[2:end-1])))
 	@verbose_info 1 sinf
 
-	new_damping = flux_err_max < 0.05 ? min(damping * 1.05, 1.0) : damping
+	new_damping = flux_err_max < 0.05 ? min(damping * 1.05, 0.5) : damping
 
 	converged = (dt_err_max<dt_tolerance_rel) | (flux_err_max<flux_tolerance_rel)
 	if converged | store
