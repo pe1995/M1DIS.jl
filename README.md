@@ -58,8 +58,8 @@ The atmosphere object that is returned is fully compatible with `MUST.jl` and ca
 save!(
 	models[end], "my_model_name"; 
 	folder = out_dir, 
-	vmic = vmic, 					# added to the output atmosphere 
+	vmic = vmic,     # added to the output atmosphere 
 	logg = logg,
-	eos500 = eos500					# For Multi1D a tau500 scale is needed. You can pass the EoS here.
+	eos500 = eos500	 # For Multi1D a tau500 scale is needed. You can pass the EoS here.
 )
 ```
