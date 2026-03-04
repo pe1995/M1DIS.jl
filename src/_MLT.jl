@@ -310,36 +310,26 @@ function calc_mlt_marcs_local(T_local, P_local, ∇_local, eos_extended, g_surf,
     κ_ross = exp(lnκ_ross)
     ρ_local = exp(lnrho_local)
     
-    # MARCS explicitly excludes P_turb from the pressure scale height
     Hp = (P_gas_local + P_rad_local) / (ρ_local * g_surf)
     
-    # 1. Optical depth and theta interpolation
     omega = alpha_mlt * Hp * ρ_local * κ_ross
     y_val = py * omega^2
     theta = omega / (1.0 + y_val)
     
-    # 2. MARCS efficiency parameter 
     gamma_marcs_abs = (Cp * ρ_local) / (8.0 * σ_SB * T_local^3 * theta)
     
-    # 3. Setup inputs for vvmlt
     a_in = super_adi
     b_in = g_surf * Hp * max(Q, 0.0) * alpha_mlt^2 / pny
     c_in = gamma_marcs_abs^2 
     
-    # 4. Evaluate raw MARCS convective velocity
     v_real = vvmlt(a_in, b_in, c_in)
-
-    # 4b. MARCS EXACT VELOCITY LIMITER (v = min(v, sqrt(0.5 * P_tot / (pbeta * rho))))
     if pbeta > 0.0
         v_max = sqrt(0.5 * P_local / (pbeta * ρ_local))
         v_real = min(v_real, v_max)
     end
 
-    # 5. MARCS Gradient Difference dd(k) using the CAPPED velocity
     gg = gamma_marcs_abs * v_real
     dd = (gg / (1.0 + gg)) * super_adi
-
-    # 6. Flux Calculation
     Flux = (Cp * ρ_local * alpha_mlt * T_local) * v_real * dd
     
     return Flux, v_real
@@ -369,22 +359,18 @@ function update_mixing_length_marcs!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T
         P_rad_nm1 = P_rad[n-1]
         P_tot_nm1 = P_gas[n-1] + P_rad_nm1 + P_turb_prev[n-1]
 
-        # Calculate Gradient (Backward Difference)
         dlnT = log(T[n] / T[n-1])
         dlnP = log(P_tot_n / P_tot_nm1)
         
-        # Guard against zero division
         if abs(dlnP) < 1e-8
             continue
         end
         ∇_base = dlnT / dlnP
         
-        # Base Flux
         F_base, v_base = calc_mlt_marcs_local(T[n], P_tot_n, ∇_base, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n]; py=py, pny=pny, pbeta=pbeta)
         F_conv[n] = F_base
         v_conv[n] = v_base
 
-        # TOTAL Derivative using finite difference
         if F_base <= 1e-10
             b = 0.005 
             T_recipe = T[n] * (1.0 + b)
@@ -410,11 +396,9 @@ function update_mixing_length_marcs!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T
             dFconv_dT[n] = (F_pert - F_base) / delta_T
         end
         
-        # MARCS Turbulent Pressure Scaling
         P_turb[n] = ρ[n] * (pbeta * v_conv[n]^2 + macrobeta * v_mac^2)
     end
     
-    # Boundary conditions for n=1
     F_conv[1] = F_conv[2]
     dFconv_dT[1] = dFconv_dT[2]
     v_conv[1] = v_conv[2]
