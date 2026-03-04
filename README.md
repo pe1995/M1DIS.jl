@@ -63,3 +63,10 @@ save!(
 	eos500 = eos500	 # For Multi1D a tau500 scale is needed. You can pass the EoS here.
 )
 ```
+
+# Command line tools
+In case you want to run `M1DIS.jl` from the command line directly, there are scripts available in the `bin/` directory. For star and planet mode, there are default input files available that you can use to run the code. Note that you can override the defaults in the file via the command line directly. This means something like the following will work,
+```bash
+julia -t 10 bin/m1dis_star.jl -c bin/star_config.toml --teff=6500 --logg=4.0 --maxiter=100
+```
+and will create a stellar atmosphere (using 10 CPU threads) with all the default parameters selected in `bin/star_config.toml`, but with an effective temperature of 6500K and surface gravity of 4.0. The code will stop after 100 iterations and store each iteration for you to explore. For all available parameters see `julia bin/m1dis_star.jl --help`.
