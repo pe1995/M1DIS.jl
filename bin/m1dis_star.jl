@@ -164,6 +164,12 @@ function main()
         mkpath(out_dir)
     end
 
+    result = if !(typeof(result) <: AbstractArray)
+        [result]
+    else
+        result
+    end
+
     println("Saving model $(args["model_name"]) to $out_dir...")
     save!(
         result[end], args["model_name"]; 

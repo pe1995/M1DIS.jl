@@ -1,5 +1,5 @@
 # ============================================================================
-# MLT computation of convective quantities
+# MLT computation (1) of convective quantities
 # ============================================================================
 
 """
@@ -23,7 +23,7 @@ function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha
     # Optically thick limit approximation for Gamma1
     Γ₁_approx = χr / (1 - χt * ∇ₐ)
     c_sound = sqrt(Γ₁_approx * P_local / exp(lnrho_local))
-    v_scale = sqrt(g_surf * Q * Hp / 8.0)
+    v_scale = alpha_mlt * sqrt(g_surf * Q * Hp / 8.0)
     
     # U = (24 sqrt(2) sigma T^3) / (kappa rho Hp alpha rho Cp v_scale)
     numerator = 24.0 * sqrt(2.0) * σ_SB * T_local^3
@@ -56,7 +56,6 @@ end
 function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_gas, ρ, τ_ross, eos_extended, g_surf; 
     alpha_mlt=1.5, Teff=5777.0, v_mac=0.0, pbeta=1.0)
     n_depth = length(T)
-    # Save previous iteration's P_turb before reset
     P_turb_prev = copy(P_turb)
 
     # Reset outputs
@@ -118,39 +117,17 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
     dFconv_dT[1] = dFconv_dT[2]
     v_conv[1] = v_conv[2]
 
-    
-    #P_turb .= 0.5 .* ρ .* (v_conv .^ 2 .+ v_mac .^ 2)
-
-    #F_conv_raw = copy(F_conv)
-    #gturb_stabilizer!(g_turb, g_surf)
-    fconv_stabilizer!(F_conv)
-    fconv_stabilizer!(v_conv)
-    fconv_stabilizer!(P_turb)
-    fconv_stabilizer!(dFconv_dT)
+    #fconv_stabilizer!(F_conv)
+    #fconv_stabilizer!(v_conv)
+    #fconv_stabilizer!(P_turb)
+    #fconv_stabilizer!(dFconv_dT)
 
     # Turbulent Pressure and Gravity
     P_turb .= 0.5 .* ρ .* (v_conv .^ 2 .+ v_mac .^ 2)
-
-    # 3. Derive the smoothed velocity and P_turb algebraically!
-    #=@inbounds for i in 1:length(T)
-        if F_conv_raw[i] > 1e-10 && F_conv[i] > 0.0
-            # The velocity scales as the cube root of the flux change
-            scaling_factor = (F_conv[i] / F_conv_raw[i]) ^ (1.0 / 3.0)
-            
-            # Update to the smooth velocity
-            v_conv[i] = v_conv[i] * scaling_factor
-        else
-            v_conv[i] = 0.0
-        end
-        
-        # 4. Calculate P_turb using the beautifully smoothed velocity
-        P_turb[i] = ρ[i] * (pbeta * v_conv[i]^2 + v_mac^2) 
-        # (Or 0.5 * ρ[i] * (v_conv[i]^2 + v_mic^2) depending on your exact definition)
-    end=#
 end
 
 # ============================================================================
-# MLT computation (MARCS)
+# MLT computation (2) (MARCS-like velocity capping)
 # ============================================================================
 
 function calc_mlt_half_point(T_mean, P_tot_mean, ∇_mean, eos_extended, g_surf, alpha_mlt, P_rad_mean, P_turb_mean; pbeta=1.0)
@@ -171,7 +148,7 @@ function calc_mlt_half_point(T_mean, P_tot_mean, ∇_mean, eos_extended, g_surf,
         return 0.0, 0.0, rho_mean, κ_ross
     end
     
-    v_scale = sqrt(g_surf * Q * Hp / 8.0)
+    v_scale = alpha_mlt * sqrt(g_surf * Q * Hp / 8.0)
     
     # U = (24 sqrt(2) sigma T^3) / (kappa rho Hp alpha rho Cp v_scale)
     numerator = 24.0 * sqrt(2.0) * σ_SB * T_mean^3
@@ -289,6 +266,159 @@ function update_mixing_length_MARCS!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T
     fconv_stabilizer!(F_conv)
     fconv_stabilizer!(P_turb)
     fconv_stabilizer!(dFconv_dT)
+end
+
+# ============================================================================
+# MLT computation (3) (MARCS port)
+# ============================================================================
+
+"""
+    vvmlt(a, b, c)
+
+Compute MARCS convective velocity. 
+Translated directly from vvmlt.f.
+"""
+function vvmlt(a::Float64, b::Float64, c::Float64)
+    d = 0.5 / (b * c)
+    if d > 20.0 * a
+        e = 0.5 * max(a, 0.0)^2 / d
+    else
+        e = a + d - sqrt(d * (2.0 * a + d))
+    end
+    return sqrt(b * e)
+end
+
+"""
+    calc_mlt_marcs_local(...)
+
+Compute MLT parameters strictly using MARCS conventions, including 
+the `vvmlt` velocity function and the exact MARCS velocity cap.
+"""
+function calc_mlt_marcs_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha_mlt, P_rad_local, P_turb_local; py=0.076, pny=8.0, pbeta=1.0)
+    P_gas_local = max(P_local - P_rad_local - P_turb_local, 1e-30)
+    lnpgas_local = log(P_gas_local)
+    lnt_local = log(T_local)
+
+    # Sample EOS
+    lnrho_local, lnκ_ross, Cp, Q, ∇ₐ, χr, χt = sample(eos_extended, (:lnRho,:lnRoss, :cₚ, :Q, :∇ₐ, :χᵨ, :χₜ), lnpgas_local, lnt_local)
+    
+    super_adi = ∇_local - ∇ₐ
+    if super_adi <= 1e-6
+        return 0.0, 0.0
+    end
+
+    κ_ross = exp(lnκ_ross)
+    ρ_local = exp(lnrho_local)
+    
+    # MARCS explicitly excludes P_turb from the pressure scale height
+    Hp = (P_gas_local + P_rad_local) / (ρ_local * g_surf)
+    
+    # 1. Optical depth and theta interpolation
+    omega = alpha_mlt * Hp * ρ_local * κ_ross
+    y_val = py * omega^2
+    theta = omega / (1.0 + y_val)
+    
+    # 2. MARCS efficiency parameter 
+    gamma_marcs_abs = (Cp * ρ_local) / (8.0 * σ_SB * T_local^3 * theta)
+    
+    # 3. Setup inputs for vvmlt
+    a_in = super_adi
+    b_in = g_surf * Hp * max(Q, 0.0) * alpha_mlt^2 / pny
+    c_in = gamma_marcs_abs^2 
+    
+    # 4. Evaluate raw MARCS convective velocity
+    v_real = vvmlt(a_in, b_in, c_in)
+
+    # 4b. MARCS EXACT VELOCITY LIMITER (v = min(v, sqrt(0.5 * P_tot / (pbeta * rho))))
+    if pbeta > 0.0
+        v_max = sqrt(0.5 * P_local / (pbeta * ρ_local))
+        v_real = min(v_real, v_max)
+    end
+
+    # 5. MARCS Gradient Difference dd(k) using the CAPPED velocity
+    gg = gamma_marcs_abs * v_real
+    dd = (gg / (1.0 + gg)) * super_adi
+
+    # 6. Flux Calculation
+    Flux = (Cp * ρ_local * alpha_mlt * T_local) * v_real * dd
+    
+    return Flux, v_real
+end
+
+"""
+    update_mixing_length_marcs!(...)
+
+In-place update of MLT parameters mirroring the MARCS implementation logic.
+"""
+function update_mixing_length_marcs!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_gas, ρ, τ_ross, eos_extended, g_surf; 
+    alpha_mlt=1.5, Teff=5777.0, v_mac=0.0, pbeta=1.0, macrobeta=1.0, py=0.076, pny=8.0)
+    
+    n_depth = length(T)
+    P_turb_prev = copy(P_turb)
+
+    # Reset outputs
+    fill!(F_conv, 0.0)
+    fill!(v_conv, 0.0)
+    fill!(P_turb, 0.0)
+    fill!(dFconv_dT, 0.0)
+    
+    @inbounds for n in 2:n_depth
+        P_rad_n = P_rad[n]
+        P_tot_n = P_gas[n] + P_rad_n + P_turb_prev[n]
+        
+        P_rad_nm1 = P_rad[n-1]
+        P_tot_nm1 = P_gas[n-1] + P_rad_nm1 + P_turb_prev[n-1]
+
+        # Calculate Gradient (Backward Difference)
+        dlnT = log(T[n] / T[n-1])
+        dlnP = log(P_tot_n / P_tot_nm1)
+        
+        # Guard against zero division
+        if abs(dlnP) < 1e-8
+            continue
+        end
+        ∇_base = dlnT / dlnP
+        
+        # Base Flux
+        F_base, v_base = calc_mlt_marcs_local(T[n], P_tot_n, ∇_base, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n]; py=py, pny=pny, pbeta=pbeta)
+        F_conv[n] = F_base
+        v_conv[n] = v_base
+
+        # TOTAL Derivative using finite difference
+        if F_base <= 1e-10
+            b = 0.005 
+            T_recipe = T[n] * (1.0 + b)
+            
+            dlnT_recipe = log(T_recipe / T[n-1])
+            ∇_recipe = dlnT_recipe / dlnP
+            F_recipe, _ = calc_mlt_marcs_local(T_recipe, P_tot_n, ∇_recipe, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n]; py=py, pny=pny, pbeta=pbeta)
+            
+            if F_recipe > 1e-10
+                dFconv_dT[n] = (F_recipe) / (T_recipe - T[n])
+            else
+                dFconv_dT[n] = 0.0
+            end
+        else
+            delta_T = 0.001 * T[n]
+            T_pert = T[n] + delta_T
+            
+            dlnT_pert = log(T_pert / T[n-1])
+            ∇_pert = dlnT_pert / dlnP
+
+            F_pert, _ = calc_mlt_marcs_local(T_pert, P_tot_n, ∇_pert, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n]; py=py, pny=pny, pbeta=pbeta)
+            
+            dFconv_dT[n] = (F_pert - F_base) / delta_T
+        end
+        
+        # MARCS Turbulent Pressure Scaling
+        P_turb[n] = ρ[n] * (pbeta * v_conv[n]^2 + macrobeta * v_mac^2)
+    end
+    
+    # Boundary conditions for n=1
+    F_conv[1] = F_conv[2]
+    dFconv_dT[1] = dFconv_dT[2]
+    v_conv[1] = v_conv[2]
+    P_turb[1] = ρ[1] * (pbeta * v_conv[1]^2 + macrobeta * v_mac^2)
 end
 
 # ============================================================================

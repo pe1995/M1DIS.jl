@@ -96,7 +96,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		end
 		
 		J, F_rad, g_rad, P_rad = fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0)
-		F_conv, v_conv, g_turb, P_turb = fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0)
+		F_conv, v_conv, g_turb, P_turb, P_turb_old = fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0)
 		dFconv_dT = fill!(similar(T), 0.0)
 		dT = fill!(similar(T), 0.0)
 		F_target = σ_SB * T_eff^4
@@ -155,19 +155,16 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		@verbose_info 1 "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
 	end
 	@optionalTiming relaxation_time for iter in 1:maxiter
-        P_turb_old = copy(P_turb)
-        #P_rad_old = copy(P_rad)
+        P_turb_old .= P_turb
         
 		# compute convective quantities (MLT)
-		#@optionalTiming mixing_length_time update_mixing_length_MARCS!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5)
 		@optionalTiming mixing_length_time update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5)
-        
-        #=if iter > 1
-            # Temporal averaging of P_turb prevents the self-referential
-            # P_turb → P_tot → ∇ → F_conv → v_conv → P_turb feedback from oscillating.
-            # Critical for stars with marginal convection zones (∇ ≈ ∇_ad near onset).
+		#@optionalTiming mixing_length_time update_mixing_length_MARCS!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5)
+		#@optionalTiming mixing_length_time update_mixing_length_marcs!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5)
+
+        if iter > 1
             P_turb .= 0.5 .* P_turb_old .+ 0.5 .* P_turb
-        end=#
+        end
         
 		@optionalTiming radiation_transfer_time begin
 			if opacity.binned
@@ -191,11 +188,11 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			dT .= atm.dT
 
 			# Depth-dependent damping: tighter in the deep convective zone
-			dT .= clamp.(dT, -damping.*T, damping.*T)
-			#=@inbounds for i in eachindex(dT)
-				d = log10(τ[i]) > 0.0 ? 0.3 * damping : damping
+			#dT .= clamp.(dT, -damping.*T, damping.*T)
+			@inbounds for i in eachindex(dT)
+				d = log10(τ[i]) > 0.0 ? 0.5 * damping : damping
 				dT[i] = clamp(dT[i], -d*T[i], d*T[i])
-			end=#
+			end
 		end
 		
 
@@ -215,8 +212,6 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			break
 		end
 
-		#P_rad .= 0.0
-		#P_turb .= 0.0
 		T .+= dT
 		T = clamp.(T, 10, 1e12)
 		#force_adiabatic_bottom!(T, P, eos, n_force=2)
