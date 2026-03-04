@@ -7,7 +7,7 @@ You can install M1DIS.jl simply from the julia REPL:
 using Pkg
 Pkg.add(url="https://github.com/pe1995/MUST.jl.git")
 Pkg.add(url="https://github.com/pe1995/TSO.jl.git")
-Pkg.add("https://github.com/pe1995/M1DIS.jl")
+Pkg.add(url="https://github.com/pe1995/M1DIS.jl")
 ```
 
 Or clone this repository and just do `Pkg.instantiate()` within.
