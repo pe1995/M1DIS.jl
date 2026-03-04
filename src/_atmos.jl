@@ -257,7 +257,7 @@ function evaluate_iteration!(result,
 	iter, maxiter, 
 	F_target, dT, 
 	τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg, eos, damping; 
-	dt_tolerance_rel=0.001, flux_tolerance_rel=0.001, save_every=1, kwargs...)
+	dt_tolerance_rel=0.0005, flux_tolerance_rel=0.001, save_every=1, kwargs...)
 	# store the atmosphere every `save_every` iterations
 	store = save_every > 0 ? ((iter%save_every == 0) | (iter == maxiter)) : false
     F_total = F_rad .+ F_conv
