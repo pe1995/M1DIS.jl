@@ -55,11 +55,11 @@ will iterate 20 times to create an atmosphere. Note that if `save_every=1`, the 
 # Using the Output
 The atmosphere object that is returned is fully compatible with `MUST.jl` and can be used as the output from the `M3DIS` code. For more details see the `MUST.jl` [documentation](https://github.com/pe1995/MUST.jl?tab=readme-ov-file#atmosphere-analysis). You can save the result in Multi1D or Multi3D format by using the `save!` function.
 ```julia
-	save!(
-        models[end], "my_model_name"; 
-        folder = out_dir, 
-        vmic = vmic, 					# added to the output atmosphere 
-        logg = logg,
-        eos500 = eos500					# For Multi1D a tau500 scale is needed. You can pass the EoS here.
-    )
+save!(
+	models[end], "my_model_name"; 
+	folder = out_dir, 
+	vmic = vmic, 					# added to the output atmosphere 
+	logg = logg,
+	eos500 = eos500					# For Multi1D a tau500 scale is needed. You can pass the EoS here.
+)
 ```
