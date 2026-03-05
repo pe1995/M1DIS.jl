@@ -518,7 +518,8 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, 
     RHS = zeros(T, D)
         
     @inbounds for d in 1:D
-        if log10(atm.tau[d]) < -1.0
+        #if log10(atm.tau[d]) < -1.0
+        if (atm.dFconv_dT[d] < 1e-1) && (log10(atm.tau[d]) < 0.0)
             diag_val = -RE_jac[d]
             diag_val = max(diag_val, 1e-30)
             push!(rows, d); push!(cols, d); push!(vals, diag_val)
@@ -528,7 +529,7 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, 
             F_curr = atm.F_bol[d] + atm.F_conv[d]
             RHS[d] = F_target - F_curr
             
-            # 1. Convection Terms (local + cross-derivative: ∂F_conv[d]/∂T[d-1] = –(T[d]/T[d-1])×dFconv_dT[d])
+            # 1. Convection Terms
             val_Conv_d  = atm.dFconv_dT[d]
             val_Conv_p  = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
 

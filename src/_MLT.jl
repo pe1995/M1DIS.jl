@@ -19,7 +19,6 @@ function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha
     if super_adi < 1e-6
         return 0.0, 0.0
     end
-    
     # Optically thick limit approximation for Gamma1
     Γ₁_approx = χr / (1 - χt * ∇ₐ)
     c_sound = sqrt(Γ₁_approx * P_local / exp(lnrho_local))
@@ -74,12 +73,6 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
         # Calculate Gradient (Backward Difference)
         dlnT = log(T[n] / T[n-1])
         dlnP = log(P_tot_n / P_tot_nm1)
-        # Guard: nearly isobaric layer or oscillating pressure → skip convection here
-        if abs(dlnP) < 1e-8
-            F_conv[n] = 0.0
-            dFconv_dT[n] = 0.0
-            continue
-        end
         ∇_base = dlnT / dlnP
         
         # Base Flux
@@ -116,11 +109,6 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
     F_conv[1] = F_conv[2]
     dFconv_dT[1] = dFconv_dT[2]
     v_conv[1] = v_conv[2]
-
-    #fconv_stabilizer!(F_conv)
-    #fconv_stabilizer!(v_conv)
-    #fconv_stabilizer!(P_turb)
-    #fconv_stabilizer!(dFconv_dT)
 
     # Turbulent Pressure and Gravity
     P_turb .= 0.5 .* ρ .* (v_conv .^ 2 .+ v_mac .^ 2)
@@ -263,9 +251,9 @@ function update_mixing_length_MARCS!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T
     dFconv_dT[1] = dFconv_dT[2]
     P_turb[1] = P_turb[2]
 
-    fconv_stabilizer!(F_conv)
-    fconv_stabilizer!(P_turb)
-    fconv_stabilizer!(dFconv_dT)
+    #fconv_stabilizer!(F_conv)
+    #fconv_stabilizer!(P_turb)
+    #fconv_stabilizer!(dFconv_dT)
 end
 
 # ============================================================================
@@ -362,9 +350,9 @@ function update_mixing_length_marcs!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T
         dlnT = log(T[n] / T[n-1])
         dlnP = log(P_tot_n / P_tot_nm1)
         
-        if abs(dlnP) < 1e-8
-            continue
-        end
+        #if abs(dlnP) < 1e-8
+        #    continue
+        #end
         ∇_base = dlnT / dlnP
         
         F_base, v_base = calc_mlt_marcs_local(T[n], P_tot_n, ∇_base, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n]; py=py, pny=pny, pbeta=pbeta)
@@ -396,13 +384,15 @@ function update_mixing_length_marcs!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T
             dFconv_dT[n] = (F_pert - F_base) / delta_T
         end
         
-        P_turb[n] = ρ[n] * (pbeta * v_conv[n]^2 + macrobeta * v_mac^2)
+        #P_turb[n] = ρ[n] * (pbeta * v_conv[n]^2 + macrobeta * v_mac^2)
     end
     
     F_conv[1] = F_conv[2]
     dFconv_dT[1] = dFconv_dT[2]
     v_conv[1] = v_conv[2]
-    P_turb[1] = ρ[1] * (pbeta * v_conv[1]^2 + macrobeta * v_mac^2)
+    #P_turb[1] = ρ[1] * (pbeta * v_conv[1]^2 + macrobeta * v_mac^2)
+
+    P_turb .= ρ .* (pbeta .* v_conv.^2 .+ macrobeta .* v_mac^2)
 end
 
 # ============================================================================
@@ -526,6 +516,5 @@ function update_temperature_correction_robust!(dT, F_rad, F_conv, dFconv_dT, T, 
     #damp_depth = (1.0 .+ (damping .- 1.0) .* exp.(-1.0 ./ τ_grid))
     #dT .= damp_depth .* dT_new
 end
-
 
 

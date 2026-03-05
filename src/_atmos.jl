@@ -188,13 +188,12 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			dT .= atm.dT
 
 			# Depth-dependent damping: tighter in the deep convective zone
-			#dT .= clamp.(dT, -damping.*T, damping.*T)
-			@inbounds for i in eachindex(dT)
+			dT .= clamp.(dT, -damping.*T, damping.*T)
+			#=@inbounds for i in eachindex(dT)
 				d = log10(τ[i]) > 0.0 ? 0.5 * damping : damping
 				dT[i] = clamp(dT[i], -d*T[i], d*T[i])
-			end
+			end=#
 		end
-		
 
 		converged, new_damping = evaluate_iteration!(
 			r, iter, maxiter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, T_eff, logg, eos, damping; 
@@ -257,7 +256,7 @@ function evaluate_iteration!(result,
 	iter, maxiter, 
 	F_target, dT, 
 	τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg, eos, damping; 
-	dt_tolerance_rel=0.0005, flux_tolerance_rel=0.001, save_every=1, kwargs...)
+	dt_tolerance_rel=0.0001, flux_tolerance_rel=0.01, save_every=1, kwargs...)
 	# store the atmosphere every `save_every` iterations
 	store = save_every > 0 ? ((iter%save_every == 0) | (iter == maxiter)) : false
     F_total = F_rad .+ F_conv
@@ -267,7 +266,7 @@ function evaluate_iteration!(result,
 			iter, flux_err_max*100, dt_err_max*100, maximum(abs.(dT[2:end-1])))
 	@verbose_info 1 sinf
 
-	new_damping = flux_err_max < 0.05 ? min(damping * 1.05, 0.5) : damping
+	new_damping = damping #flux_err_max < 0.05 ? min(damping * 1.05, 0.25) : damping
 
 	converged = (dt_err_max<dt_tolerance_rel) | (flux_err_max<flux_tolerance_rel)
 	if converged | store
