@@ -16,7 +16,7 @@ function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha
     Hp = P_local / (exp(lnrho_local) * g_surf)
 
     super_adi = ∇_local - ∇ₐ
-    if super_adi < 1e-6
+    if super_adi <= 0.0
         return 0.0, 0.0
     end
     # Optically thick limit approximation for Gamma1
@@ -32,15 +32,15 @@ function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha
     # Solve cubic for efficiency factor xi
     # 2Uξ³ + ξ² + Uξ - (∇ - ∇ad) = 0
     xi = 0.5
-    for _ in 1:50
+    for _ in 1:200
         xi_sq = xi^2
         f_val = 2.0 * U * xi_sq * xi + xi_sq + U * xi - super_adi
         df_dz = 6.0 * U * xi_sq + 2.0 * xi + U
         dxi = f_val / df_dz
         xi -= dxi
-        if abs(dxi) < 1e-6 * xi; break; end
+        if abs(dxi) < 1e-32 * xi; break; end
     end
-    xi = max(xi, 1e-9)
+    xi = max(xi, 1e-32)
 
     v_real = v_scale * xi
     ratio = v_real / c_sound
@@ -73,6 +73,9 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
         # Calculate Gradient (Backward Difference)
         dlnT = log(T[n] / T[n-1])
         dlnP = log(P_tot_n / P_tot_nm1)
+        if abs(dlnP) < 1e-32
+            continue
+        end
         ∇_base = dlnT / dlnP
         
         # Base Flux
@@ -80,8 +83,8 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
         F_conv[n] = F_base
         v_conv[n] = v_base
 
-        # Calculate Derivative dF/dT
-        delta_T = 0.001 * T[n]
+        # Calculate Derivative dF/dT (Local T_n)
+        delta_T = 1e-3 * T[n]
         T_pert = T[n] + delta_T
         dlnT_pert = log(T_pert / T[n-1])
         ∇_pert = dlnT_pert / dlnP
@@ -109,7 +112,7 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
     F_conv[1] = F_conv[2]
     dFconv_dT[1] = dFconv_dT[2]
     v_conv[1] = v_conv[2]
-
+    
     # Turbulent Pressure and Gravity
     P_turb .= 0.5 .* ρ .* (v_conv .^ 2 .+ v_mac .^ 2)
 end
@@ -132,7 +135,7 @@ function calc_mlt_half_point(T_mean, P_tot_mean, ∇_mean, eos_extended, g_surf,
     Hp = P_tot_mean / (rho_mean * g_surf)
 
     super_adi = ∇_mean - ∇ₐ
-    if super_adi < 1e-6
+    if super_adi < 1e-32
         return 0.0, 0.0, rho_mean, κ_ross
     end
     
@@ -151,9 +154,9 @@ function calc_mlt_half_point(T_mean, P_tot_mean, ∇_mean, eos_extended, g_surf,
         df_dz = 6.0 * U * xi_sq + 2.0 * xi + U
         dxi = f_val / df_dz
         xi -= dxi
-        if abs(dxi) < 1e-6 * xi; break; end
+        if abs(dxi) < 1e-32 * xi; break; end
     end
-    xi = max(xi, 1e-9)
+    xi = max(xi, 1e-32)
 
     v_real = v_scale * xi
     
@@ -200,7 +203,7 @@ function update_mixing_length_MARCS!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T
         dlnT = log(T[n] / T[n-1])
         dlnP = log(P_tot_n / P_tot_nm1)
         # Guard: nearly isobaric layer or oscillating pressure → skip convection here
-        if abs(dlnP) < 1e-8
+        if abs(dlnP) < 1e-32
             F_conv[n] = 0.0
             dFconv_dT[n] = 0.0
             continue
@@ -217,7 +220,7 @@ function update_mixing_length_MARCS!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T
         P_turb[n] = rho_mean * (pbeta * v_base^2 + v_mac^2)
 
         # Derivative tracking using finite differences applied to the mean
-        delta_T = 0.0001 * T[n]
+        delta_T = 1e-3 * T[n]
         T_pert_mean = 0.5 * ((T[n] + delta_T) + T[n-1])
         dlnT_pert = log((T[n] + delta_T) / T[n-1])
         ∇_pert = dlnT_pert / dlnP
@@ -291,7 +294,7 @@ function calc_mlt_marcs_local(T_local, P_local, ∇_local, eos_extended, g_surf,
     lnrho_local, lnκ_ross, Cp, Q, ∇ₐ, χr, χt = sample(eos_extended, (:lnRho,:lnRoss, :cₚ, :Q, :∇ₐ, :χᵨ, :χₜ), lnpgas_local, lnt_local)
     
     super_adi = ∇_local - ∇ₐ
-    if super_adi <= 1e-6
+    if super_adi <= 1e-32
         return 0.0, 0.0
     end
 
@@ -350,7 +353,7 @@ function update_mixing_length_marcs!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T
         dlnT = log(T[n] / T[n-1])
         dlnP = log(P_tot_n / P_tot_nm1)
         
-        #if abs(dlnP) < 1e-8
+        #if abs(dlnP) < 1e-12
         #    continue
         #end
         ∇_base = dlnT / dlnP
@@ -359,21 +362,21 @@ function update_mixing_length_marcs!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T
         F_conv[n] = F_base
         v_conv[n] = v_base
 
-        if F_base <= 1e-10
-            b = 0.005 
-            T_recipe = T[n] * (1.0 + b)
-            
-            dlnT_recipe = log(T_recipe / T[n-1])
-            ∇_recipe = dlnT_recipe / dlnP
-            F_recipe, _ = calc_mlt_marcs_local(T_recipe, P_tot_n, ∇_recipe, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n]; py=py, pny=pny, pbeta=pbeta)
-            
-            if F_recipe > 1e-10
-                dFconv_dT[n] = (F_recipe) / (T_recipe - T[n])
-            else
-                dFconv_dT[n] = 0.0
-            end
-        else
-            delta_T = 0.001 * T[n]
+        #if F_base <= 1e-10
+        #    b = 0.005 
+        #    T_recipe = T[n] * (1.0 + b)
+        #    
+        #    dlnT_recipe = log(T_recipe / T[n-1])
+        #    ∇_recipe = dlnT_recipe / dlnP
+        #    F_recipe, _ = calc_mlt_marcs_local(T_recipe, P_tot_n, ∇_recipe, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n]; py=py, pny=pny, pbeta=pbeta)
+        #    
+        #    if F_recipe > 1e-10
+        #        dFconv_dT[n] = (F_recipe) / (T_recipe - T[n])
+        #    else
+        #        dFconv_dT[n] = 0.0
+        #    end
+        #else
+            delta_T = 1e-3 * T[n]
             T_pert = T[n] + delta_T
             
             dlnT_pert = log(T_pert / T[n-1])
@@ -382,7 +385,7 @@ function update_mixing_length_marcs!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T
             F_pert, _ = calc_mlt_marcs_local(T_pert, P_tot_n, ∇_pert, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n]; py=py, pny=pny, pbeta=pbeta)
             
             dFconv_dT[n] = (F_pert - F_base) / delta_T
-        end
+        #end
         
         #P_turb[n] = ρ[n] * (pbeta * v_conv[n]^2 + macrobeta * v_mac^2)
     end
@@ -393,6 +396,18 @@ function update_mixing_length_marcs!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T
     #P_turb[1] = ρ[1] * (pbeta * v_conv[1]^2 + macrobeta * v_mac^2)
 
     P_turb .= ρ .* (pbeta .* v_conv.^2 .+ macrobeta .* v_mac^2)
+
+    # Monotonic Enforcer during early relaxation (Error > 10%)
+    if flux_err_max > 0.1
+        for n in 2:n_depth
+            if F_conv[n-1] > 0.0 && F_conv[n] < F_conv[n-1]
+                F_conv[n] = F_conv[n-1]
+                v_conv[n] = v_conv[n-1]
+                P_turb[n] = P_turb[n-1]
+                dFconv_dT[n] = dFconv_dT[n-1]
+            end
+        end
+    end
 end
 
 # ============================================================================

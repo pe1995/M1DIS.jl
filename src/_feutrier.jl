@@ -518,8 +518,10 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, 
     RHS = zeros(T, D)
         
     @inbounds for d in 1:D
-        #if log10(atm.tau[d]) < -1.0
-        if (atm.dFconv_dT[d] < 1e-1) && (log10(atm.tau[d]) < 0.0)
+        # Use RE only if convection has safely died (<xx % of F_target) and we are near the surface
+        is_pure_rad = (atm.F_conv[d] < 1e-4 * F_target)
+        if is_pure_rad && (log10(atm.tau[d]) < -0.1)
+            # Use Radiative Equilibrium
             diag_val = -RE_jac[d]
             diag_val = max(diag_val, 1e-30)
             push!(rows, d); push!(cols, d); push!(vals, diag_val)

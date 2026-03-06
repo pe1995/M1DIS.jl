@@ -8,8 +8,8 @@
 # ==============================================================================
 
 # Path to the directory containing the Equation of State and Opacity table files.
-#eos_dir = "/mnt/beegfs/gemini/groups/bergemann/users/eitner/StAt/opacity_tables/magg_m2_a4_vmic1_v3.5/"
-eos_dir = "/mnt/beegfs/gemini/groups/bergemann/users/eitner/StAt/opacity_tables/magg_m0_a0_vmic1_v3.5/"
+eos_dir = "/mnt/beegfs/gemini/groups/bergemann/users/eitner/StAt/opacity_tables/magg_m2_a4_vmic1_v3.5/"
+#eos_dir = "/mnt/beegfs/gemini/groups/bergemann/users/eitner/StAt/opacity_tables/magg_m0_a0_vmic1_v3.5/"
 #eos_dir = "/mnt/beegfs/gemini/groups/bergemann/users/eitner/StAt/stellar_atmospheres/MainSequenceInterpolated/M1D1_E_t65.00g40.00m0.000_v1.0/"
 
 # Signal that the opacity table uses binned opacities
