@@ -4,24 +4,6 @@
 # Any command-line arguments explicitly passed will override the settings here.
 
 # ==============================================================================
-# EoS & Opacity Table Parameters
-# ==============================================================================
-
-# Path to the directory containing the Equation of State and Opacity table files.
-eos_dir = "/mnt/beegfs/gemini/groups/bergemann/users/eitner/StAt/opacity_tables/magg_m2_a4_vmic1_v3.5/"
-#eos_dir = "/mnt/beegfs/gemini/groups/bergemann/users/eitner/StAt/opacity_tables/magg_m0_a0_vmic1_v3.5/"
-#eos_dir = "/mnt/beegfs/gemini/groups/bergemann/users/eitner/StAt/stellar_atmospheres/MainSequenceInterpolated/M1D1_E_t65.00g40.00m0.000_v1.0/"
-
-# Signal that the opacity table uses binned opacities
-binned = false
-
-# Ignore source function from the opacity table and recompute it on-the-fly
-mini = true
-
-# Use multi-threading for the Radiative Transfer (RT)
-use_threads = true
-
-# ==============================================================================
 # Model Output Parameters 
 # ==============================================================================
 
@@ -41,11 +23,49 @@ teff = 5777.0
 # Surface gravity [log10(g)]
 logg = 4.44
 
-# Microturbulence velocity [km/s] --  only used to added to the output atmosphere
+# Mixing length parameter
+alpha_MLT = 1.5
+
+# ==============================================================================
+# Chemical composition
+# ==============================================================================
+
+# metallicity
+feh = -1.5
+
+# abundance of each element. All elements missing are set to the default values
+# which are specified in the abund file (see eos config toml file).
+# specify [X/Fe] composition here as e.g. "C_0.3O,O_0.2,Si_-0.3"
+composition = "C_0.2,O_0.4,Ba_-0.2"
+
+# abundance of alpha elements
+alpha = 0.4
+
+# Microturbulence velocity (for opacities only) [km/s]
 vmic = 1.0
 
-# Mixing length parameter
-alpha = 1.5
+# config file for other opacity table related parameters
+eos_config = "bin/eos_config.toml"
+
+# ==============================================================================
+# EoS & Opacity Treatment
+# ==============================================================================
+
+# Path to the directory containing the Equation of State and Opacity table files. 
+# Leave blank if you want to compute the EoS dynamically
+eos_dir = ""
+
+# Signal that the opacity table uses binned opacities (only if eos_dir!="")
+binned = false
+
+# Ignore source function from the opacity table and recompute it on-the-fly
+mini = true
+
+# Use multi-threading for the Radiative Transfer (RT)
+use_threads = true
+
+# include scattering opacity separately from true absorption opacity
+scattering = false
 
 # ==============================================================================
 # Optical depth grid
@@ -68,4 +88,4 @@ n_tau = 100
 maxiter = 50
 
 # Damping parameter for the temperature updates
-damping = 0.05
+damping = 0.1

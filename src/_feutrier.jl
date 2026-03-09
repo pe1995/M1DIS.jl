@@ -12,6 +12,7 @@ mutable struct Atmosphere{T <: AbstractFloat}
     w_mu::Vector{T}       # Angle weights (Normalized to sum=1)
     #w_lambda::Vector{T}   # Frequency Bin weights (Size: Nf)
     chi::Matrix{T}        # Opacity (Nf x D)
+    chi_scat::Union{Matrix{T}, Nothing}   # Scattering opacity (Nf x D)
     chi_ref::Vector{T}    # Reference opacity (Size: D)
     B::Matrix{T}          # Planck function (Nf x D)
     dBdT::Matrix{T}       # Derivative of B (Nf x D)
@@ -50,7 +51,7 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
                     #w_lambda::Vector{T},
                     chi::Matrix{T}, chi_ref::Vector{T}, 
                     B::Matrix{T}, dBdT::Matrix{T}, 
-                    I_top::Union{Vector{T}, Nothing}=nothing) where T
+                    I_top::Union{Vector{T}, Nothing}=nothing, chi_scat::Union{Matrix{T}, Nothing}=nothing) where T
     D = length(tau)
     Nf = size(chi, 1) 
     Na = length(mu)
@@ -90,6 +91,7 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
     end
     
     I_top_val = isnothing(I_top) ? zeros(T, Nf) : I_top
+    chi_scat_val = isnothing(chi_scat) ? nothing : deepcopy(chi_scat)
     
     # --- 5. Allocation ---
     J_raw_init = nothing #zeros(T, Nf, Na, D)
@@ -100,7 +102,7 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
     dT_init    = zeros(T, D)
     return Atmosphere{T}(T_eff, deepcopy(z), deepcopy(tau), tau_lambda, deepcopy(rho), deepcopy(Temp), 
                          deepcopy(mu), deepcopy(w_mu), 
-                         deepcopy(chi), deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), 
+                         deepcopy(chi), chi_scat_val, deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), 
                          deepcopy(F_conv), dFconv, deepcopy(dFconv_dT), 
                          eta, I_top_val, J_bol_init, F_bol_init, g_rad_init, P_rad_init, dT_init, J_raw_init)
 end
@@ -413,48 +415,100 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     
     J_nu = zeros(T, Na, D)
     L_nu = zeros(T, D)
+
+    sig_col = zeros(T, D) # NEW
+    S_col   = zeros(T, D) # NEW
+    eps_col = zeros(T, D) # NEW
+    J_old   = zeros(T, D) # NEW
+    j_sum_new = zeros(T, D) # NEW
+
+    do_scattering = !isnothing(atm.chi_scat)
+    max_scat_iter = !do_scattering ? 1 : 50
+    tol = 1e-2
     
     @inbounds for f in f_start:f_end
         
         chi_col .= view(atm.chi, f, :)
         B_col   .= view(atm.B, f, :)
         dB_col  .= view(atm.dBdT, f, :)
-        
-        fill!(L_nu, 0.0)
-        
-        for a in 1:Na
-            mu_sq  = atm.mu[a]^2
-            weight = atm.w_mu[a]
-            
-            (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, 1, mu_sq)
-            tri_d[1]   = B
-            tri_du[1]  = C
-            tri_rhs[1] = src_fac * B_col[1] + ext_fac * atm.I_top[f]
-            
-            L_nu[1] += weight * (src_fac / B)
 
-            for d in 2:D-1
-                (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, d, mu_sq)
-                tri_dl[d]  = A
-                tri_d[d]   = B
-                tri_du[d]  = C
-                tri_rhs[d] = src_fac * B_col[d]
+        # --- NEW: Fetch scattering and compute epsilon ---
+        if do_scattering
+            sig_col .= view(atm.chi_scat, f, :)
+            eps_col .= 1.0 .- (sig_col ./ chi_col)
+        else
+            eps_col .= 1.0
+            sig_col .= 0.0
+        end
+        
+        J_old .= B_col
+        
+        # lambda iterations
+        for iter in 1:max_scat_iter
+            # 1. Update Source Function
+            S_col .= eps_col .* B_col .+ (1.0 .- eps_col) .* J_old
+            
+            fill!(L_nu, 0.0)
+            fill!(j_sum_new, 0.0)
+
+            # solution for current source function
+            for a in 1:Na
+                mu_sq  = atm.mu[a]^2
+                weight = atm.w_mu[a]
                 
-                L_nu[d] += weight * (src_fac / B)
+                (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, 1, mu_sq)
+                tri_d[1]   = B
+                tri_du[1]  = C
+                tri_rhs[1] = src_fac * S_col[1] + ext_fac * atm.I_top[f]
+                
+                L_nu[1] += weight * (src_fac / B)
+
+                for d in 2:D-1
+                    (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, d, mu_sq)
+                    tri_dl[d]  = A
+                    tri_d[d]   = B
+                    tri_du[d]  = C
+                    tri_rhs[d] = src_fac * S_col[d]
+                    
+                    L_nu[d] += weight * (src_fac / B)
+                end
+                
+                (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, D, mu_sq)
+                tri_dl[D]  = A
+                tri_d[D]   = B
+                tri_rhs[D] = src_fac * S_col[D]
+                
+                L_nu[D] += weight * (src_fac / B)
+                
+                solve_tridiagonal!(tri_sol, tri_dl, tri_d, tri_du, tri_rhs)
+                
+                for d in 1:D
+                    J_nu[a, d] = tri_sol[d]
+                end
             end
-            
-            (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, D, mu_sq)
-            tri_dl[D]  = A
-            tri_d[D]   = B
-            tri_rhs[D] = src_fac * B_col[D]
-            
-            L_nu[D] += weight * (src_fac / B)
-            
-            solve_tridiagonal!(tri_sol, tri_dl, tri_d, tri_du, tri_rhs)
-            
+
             for d in 1:D
-                J_nu[a, d] = tri_sol[d]
+                for a in 1:Na
+                    j_sum_new[d] += atm.w_mu[a] * J_nu[a, d]
+                end
             end
+            
+            # Check Convergence
+            max_err = 0.0
+            for d in 1:D
+                err = abs(j_sum_new[d] - J_old[d]) / max(j_sum_new[d], 1e-20)
+                max_err = max(max_err, err)
+            end
+            
+            J_old .= j_sum_new
+            
+            if (max_err < tol) || (!do_scattering)
+                break # Converged or no scattering
+            end
+            
+            #if (iter==max_scat_iter)
+            #    @warn "Lambda iteration not converged after $(iter) iterations. (err: $(max_err))"
+            #end
         end
         
         w_f = 1 #atm.w_lambda[f]
@@ -467,7 +521,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
             
             J_part[d] += w_f * j_sum
             
-            term = w_f * chi_col[d]
+            term = w_f * (chi_col[d] - sig_col[d])
             RE_res[d] += term * (j_sum - B_col[d])
             RE_jac[d] += term * (L_nu[d] - 1.0) * dB_col[d]
             

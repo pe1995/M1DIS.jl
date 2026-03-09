@@ -45,6 +45,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 	T=nothing, ρ=nothing, P=nothing, z=nothing, 
 	feutrier=true,
 	use_threads=false,
+	scattering_opacity=nothing,
 	kwargs...)	
 
 	@optionalTiming initialization_time begin
@@ -87,6 +88,14 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			end
 		end
 
+		# scattering opacity
+		if !isnothing(scattering_opacity)
+			if !(typeof(scattering_opacity) <: TSO.MiniOpacityTable)
+				error("Scattering opacity must be of type MiniOpacityTable. $(typeof(scattering_opacity))")
+			end
+			@info "Running with scattering treatment."
+		end
+
 		# if no atmosphere is provided, compute an initial gray atmosphere
 		τ = deepcopy(τ)
 		T, ρ, P, z = if isnothing(T) 
@@ -108,12 +117,18 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		Irr = isnothing(d_irradiation) ? nothing : irradiate(eos, opacity, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
 
 		# initialize the Feutrier RT solver storage arrays
-		chi, chi_ref, S, dSdT, atm = if feutrier
+		chi, chi_ref, S, dSdT, chi_scat, atm = if feutrier
 			@optionalTiming prepare_opacities_time begin
 				chi, chi_ref, S, dSdT = if opacity.binned
 					compute_opacities(eos, opacity, T, ρ)
 				else
 					compute_opacities_chunked(eos, opacity, T, ρ)
+				end
+
+				chi_scat, _, _, _ = if !isnothing(scattering_opacity)
+					compute_opacities_chunked(eos, scattering_opacity, T, ρ, opacity_only=true)
+				else
+					nothing, nothing, nothing, nothing
 				end
 			end
 			@optionalTiming allocate_feutrier_time begin
@@ -122,10 +137,10 @@ function atmosphere(; T_eff, logg, eos, opacity,
 					tau=τ, rho=ρ, Temp=T, 
 					F_conv=F_conv, dFconv_dT=dFconv_dT,
 					mu=μ_angles, w_mu=μ_weights, 
-					chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT, I_top=Irr
+					chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT, I_top=Irr, chi_scat=chi_scat
 				)
 			end
-			chi, chi_ref, S, dSdT, atm
+			chi, chi_ref, S, dSdT, chi_scat, atm
 		else
 			nothing, nothing, nothing, nothing, nothing
 		end
@@ -150,7 +165,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		end
 
 		if use_threads
-			@verbose_info 2 "Running RT with $(Base.Threads.nthreads()) threads."
+			@verbose_info 1 "Running approximate Feutrier RT with $(Base.Threads.nthreads()) threads."
 		end
 
 		@verbose_info 2 "========================================================================="
@@ -180,12 +195,12 @@ function atmosphere(; T_eff, logg, eos, opacity,
 					dFconv_dT[n] = dFconv_dT[n-1]
 				end
 			end
-			fconv_stabilizer!(F_conv, passes=2)
-			fconv_stabilizer!(v_conv, passes=2)
-			fconv_stabilizer!(P_turb, passes=2)
-			fconv_stabilizer!(dFconv_dT, passes=2)
+			fconv_stabilizer!(F_conv, passes=1)
+			fconv_stabilizer!(v_conv, passes=1)
+			fconv_stabilizer!(P_turb, passes=1)
+			fconv_stabilizer!(dFconv_dT, passes=1)
 			base_damping
-		elseif flux_err_max_prev > 10.0
+		elseif flux_err_max_prev > 1.0
 			fconv_stabilizer!(F_conv, passes=1)
 			fconv_stabilizer!(v_conv, passes=1)
 			fconv_stabilizer!(P_turb, passes=1)
@@ -203,7 +218,11 @@ function atmosphere(; T_eff, logg, eos, opacity,
  				@optionalTiming compute_opacities_time compute_opacities_chunked!(chi, chi_ref, S, dSdT, eos, opacity, T, ρ)
 			end
 
-			@optionalTiming update_atmosphere_time update!(atm; tau=τ, rho=ρ, Temp=T, F_conv=F_conv, dFconv_dT=dFconv_dT, chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT)
+			if !isnothing(scattering_opacity)
+				@optionalTiming compute_opacities_time compute_opacities_chunked!(chi_scat, nothing, nothing, nothing, eos, opacity, T, ρ)
+			end
+
+			@optionalTiming update_atmosphere_time update!(atm; tau=τ, rho=ρ, Temp=T, F_conv=F_conv, dFconv_dT=dFconv_dT, chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT, chi_scat=chi_scat)
 			
 			@optionalTiming solve_RT_time if !use_threads
 				solve_gustafsson!(atm, include_dT=true)
@@ -227,7 +246,8 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
 		converged, new_damping = evaluate_iteration!(
 			r, iter, maxiter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, T_eff, logg, eos, damping; 
-			dFconv_dT=dFconv_dT, J=J, g_turb=g_turb, g_rad=g_rad, P_turb=P_turb, P_rad=P_rad, F_err_rel=F_err_rel,
+			dFconv_dT=dFconv_dT, J=J, g_turb=g_turb, g_rad=g_rad, P_turb=P_turb, P_rad=P_rad, F_err_rel=F_err_rel, 
+			chi_max=maximum(chi, dims=1), chi_min=minimum(chi, dims=1), #chi_scat_max=maximum(chi_scat, dims=1), chi_scat_min=minimum(chi_scat, dims=1),
 			kwargs...
 		)
 

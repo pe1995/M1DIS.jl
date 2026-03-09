@@ -1,0 +1,64 @@
+# EoS & Opacity Generation Configuration
+
+# ==========================================
+# Core Paths 
+# (Make sure to set these to your actual local paths)
+# ==========================================
+
+# Multi3D installation (relative to cwd or absolute path)
+m3d_dir = "/mnt/beegfs/gemini/groups/bergemann/users/eitner/StAt/m3dis/experiments/Multi3D"
+
+# Path to store opacities (relative to cwd or absolute path)
+opacity_tables_path = "data/"
+
+# Path to store Multi3D input file (relative to M3D)
+modelatmosfolder = "input_multi3d/test_opac_table/"
+
+# ==========================================
+# Grid Parameters (T & Rho)
+# ==========================================
+
+t_min = 1000.0
+t_max = 100000.0
+n_t = 50
+
+rho_min = 1e-18
+rho_max = 1e-2
+n_rho = 50
+
+# ==========================================
+# Wavelength Grid Parameters
+# ==========================================
+
+lambda_min = 1000.0
+lambda_max = 200000.0
+n_lambda = 50000
+
+# File with wavelengths to use for opacity grid (relative to M3D)
+lambda_file = "input_multi3d/flx_wavelengths_UV.vac"
+use_lambda_file = false
+
+# ==========================================
+# Physics & Composition Parameters
+# ==========================================
+
+tmolim = 100000.0
+
+# Default abund file (relative to M3D)
+abund = "./input_multi3d/abund/abund_magg"
+
+# Default absdat file  (relative to M3D)
+absdat = "./input_multi3d/TS_absdat.dat"
+
+# Default linelists (relative to M3D)
+linelist_dir = "input_multi3d/master_linelists"
+
+# ==========================================
+# Execution & Computation Settings
+# ==========================================
+
+# number of frequency splits in M3D
+nnu = 32
+
+# number of threads for M3D
+multi_threads = 20

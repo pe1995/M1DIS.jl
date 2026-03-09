@@ -396,18 +396,6 @@ function update_mixing_length_marcs!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T
     #P_turb[1] = ρ[1] * (pbeta * v_conv[1]^2 + macrobeta * v_mac^2)
 
     P_turb .= ρ .* (pbeta .* v_conv.^2 .+ macrobeta .* v_mac^2)
-
-    # Monotonic Enforcer during early relaxation (Error > 10%)
-    if flux_err_max > 0.1
-        for n in 2:n_depth
-            if F_conv[n-1] > 0.0 && F_conv[n] < F_conv[n-1]
-                F_conv[n] = F_conv[n-1]
-                v_conv[n] = v_conv[n-1]
-                P_turb[n] = P_turb[n-1]
-                dFconv_dT[n] = dFconv_dT[n-1]
-            end
-        end
-    end
 end
 
 # ============================================================================
