@@ -107,7 +107,7 @@ n_tau = 200
 # ==============================================================================
 
 # Maximum number of iterations for the solver
-maxiter = 40
+maxiter = 200
 
 # Damping parameter for the temperature updates
-damping = 0.05
+damping = 0.01

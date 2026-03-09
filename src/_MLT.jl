@@ -20,7 +20,7 @@ function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha
         return 0.0, 0.0
     end
     # Optically thick limit approximation for Gamma1
-    Γ₁_approx = χr / (1 - χt * ∇ₐ)
+    Γ₁_approx = abs(χr / (1 - χt * ∇ₐ))
     c_sound = sqrt(Γ₁_approx * P_local / exp(lnrho_local))
     v_scale = alpha_mlt * sqrt(g_surf * Q * Hp / 8.0)
     

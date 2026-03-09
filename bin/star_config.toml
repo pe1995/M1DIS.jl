@@ -65,7 +65,7 @@ mini = true
 use_threads = true
 
 # include scattering opacity separately from true absorption opacity
-scattering = false
+scattering = true
 
 # ==============================================================================
 # Optical depth grid
@@ -85,7 +85,7 @@ n_tau = 100
 # ==============================================================================
 
 # Maximum number of iterations for the solver
-maxiter = 50
+maxiter = 200
 
 # Damping parameter for the temperature updates
-damping = 0.1
+damping = 0.01

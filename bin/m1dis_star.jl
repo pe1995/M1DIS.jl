@@ -136,7 +136,7 @@ function main()
         println("================================================================================")
         println("================== M1DIS.jl + TSO.jl Opacity Tables ============================")
         println("================================================================================")
-        @info("Fetching/Computing from composition...")
+        @info("Searching for tables with requested composition...")
         eos_c = TOML.parsefile(eos_config_path)
 
         try
