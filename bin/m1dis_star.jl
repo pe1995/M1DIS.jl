@@ -188,13 +188,9 @@ function main()
         scat_file = MUST.glob("*_sopacities_*.hdf5", eos_dir)[1]
     end
 
-    #println("Loading Equation of State from: $eos_file")
     eos_complete = TSO.reload(eos_file)
-    
-    #println("Loading Equation of State (500nm) from: $eos500_file")
     eos500_complete = TSO.reload(eos500_file)
 
-    #println("Loading Opacity from: $opa_file")
     opa_complete = if args["mini"]
         TSO.reload(TSO.MiniOpacityTable, opa_file)
     else
