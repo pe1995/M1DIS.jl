@@ -65,7 +65,7 @@ mini = true
 use_threads = true
 
 # include scattering opacity separately from true absorption opacity
-scattering = true
+scattering = false
 
 # ==============================================================================
 # Optical depth grid
