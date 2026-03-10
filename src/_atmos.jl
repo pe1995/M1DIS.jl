@@ -107,11 +107,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		F_conv, v_conv, g_turb, P_turb = fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0)
 		dFconv_dT = fill!(similar(T), 0.0)
 		dT = fill!(similar(T), 0.0)
-		dT_rel = fill!(similar(T), 0.0)
-		dT_rel_smoothed = fill!(similar(T), 0.0)
 		F_target = σ_SB * T_eff^4
-		#F_conv_old = fill!(similar(T), 0.0)
-		#dFconv_dT_old = fill!(similar(T), 0.0)
 		F_total = fill!(similar(T), 0.0)
 		F_err_rel = fill!(similar(T), 0.0)
 		μ_angles, μ_weights = generate_mu_grid(4)
@@ -177,49 +173,8 @@ function atmosphere(; T_eff, logg, eos, opacity,
 	flux_err_max_prev = Inf
 	base_damping = damping
 	@optionalTiming relaxation_time for iter in 1:maxiter
-        #P_turb_old .= P_turb
-		#F_conv_old .= F_conv
-		#dFconv_dT_old .= dFconv_dT
-        
 		# compute convective quantities (MLT)
 		@optionalTiming mixing_length_time update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5)
-		
-        #if iter > 1
-        #    P_turb .= 0.5 .* P_turb_old .+ 0.5 .* P_turb
-        #    F_conv .= 0.5 .* F_conv_old .+ 0.5 .* F_conv
-        #    dFconv_dT .= 0.5 .* dFconv_dT_old .+ 0.5 .* dFconv_dT
-        #end
-
-		# Monotonic Enforcer during early relaxation (Error > 10%)
-		#=damping = if flux_err_max_prev > 50.0
-			for n in 2:length(F_conv)
-				if (F_conv[n-1] > 0.0) && (F_conv[n] < F_conv[n-1])
-					F_conv[n] = F_conv[n-1]
-					v_conv[n] = v_conv[n-1]
-					P_turb[n] = P_turb[n-1]
-					dFconv_dT[n] = dFconv_dT[n-1]
-				end
-			end
-			fconv_stabilizer!(F_conv, passes=1)
-			fconv_stabilizer!(v_conv, passes=1)
-			fconv_stabilizer!(P_turb, passes=1)
-			fconv_stabilizer!(dFconv_dT, passes=1)
-			base_damping
-		elseif flux_err_max_prev > 1.0
-			fconv_stabilizer!(F_conv, passes=1)
-			fconv_stabilizer!(v_conv, passes=1)
-			fconv_stabilizer!(P_turb, passes=1)
-			fconv_stabilizer!(dFconv_dT, passes=1)
-			base_damping * 0.5
-		else
-			base_damping * 0.1
-		end=#
-		#=if flux_err_max_prev > 10.0
-			fconv_stabilizer!(F_conv, passes=1)
-			fconv_stabilizer!(v_conv, passes=1)
-			fconv_stabilizer!(P_turb, passes=1)
-			fconv_stabilizer!(dFconv_dT, passes=1)
-		end=#
         
 		@optionalTiming radiation_transfer_time begin
 			if opacity.binned
@@ -250,24 +205,14 @@ function atmosphere(; T_eff, logg, eos, opacity,
             F_total .= atm.F_bol .+ atm.F_conv
 			F_err_rel .= (F_total .- F_target) ./ F_target
             flux_err_max = maximum(abs.(F_err_rel))
-
-			#damping = if flux_err_max > flux_err_max_prev
-			#	max(damping * 0.75, 0.001)
-			#end
 			flux_err_max_prev = flux_err_max
 
-			#=dT_rel .= dT ./ T
-			dT_rel_smoothed .= dT_rel
-			for i in 2:length(dT_rel)-1
-				dT_rel_smoothed[i] = 0.25 * dT_rel[i-1] + 0.5 * dT_rel[i] + 0.25 * dT_rel[i+1]
-			end
-			dT .= dT_rel_smoothed .* T=#
 			dT .= clamp.(dT, -damping.*T, damping.*T)
 		end
 
 		converged, new_damping = evaluate_iteration!(
 			r, iter, maxiter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, T_eff, logg, eos, damping; 
-			dFconv_dT=dFconv_dT, J=J, g_turb=g_turb, g_rad=g_rad, P_turb=P_turb, P_rad=P_rad, F_err_rel=F_err_rel, 
+			dFconv_dT=dFconv_dT, J=J, g_turb=g_turb, g_rad=g_rad, P_turb=P_turb, P_rad=P_rad, F_err_rel=F_err_rel, Q_rad=atm.Q_rad,
 			chi_max=maximum(chi, dims=1), chi_min=minimum(chi, dims=1), #chi_scat_max=maximum(chi_scat, dims=1), chi_scat_min=minimum(chi_scat, dims=1),
 			kwargs...
 		)
