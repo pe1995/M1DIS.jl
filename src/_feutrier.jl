@@ -26,6 +26,7 @@ mutable struct Atmosphere{T <: AbstractFloat}
     g_rad::Vector{T}      # Radiative Acceleration (Size: D) [cm/s^2] 
     P_rad::Vector{T}      # Radiative Pressure (Size: D) [dyne/cm^2]
     dT::Vector{T}         # Temperature Correction (Size: D)
+    Q_rad::Vector{T}      # Radiative Heating [erg/cm^3/s] (Size: D)
     J_raw                 # Specific Intensity J(mu) (Nf x Na x D)
 end
 
@@ -100,11 +101,12 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
     g_rad_init = zeros(T, D)
     P_rad_init = zeros(T, D)
     dT_init    = zeros(T, D)
+    Q_rad_init = zeros(T, D)
     return Atmosphere{T}(T_eff, deepcopy(z), deepcopy(tau), tau_lambda, deepcopy(rho), deepcopy(Temp), 
                          deepcopy(mu), deepcopy(w_mu), 
                          deepcopy(chi), chi_scat_val, deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), 
                          deepcopy(F_conv), dFconv, deepcopy(dFconv_dT), 
-                         eta, I_top_val, J_bol_init, F_bol_init, g_rad_init, P_rad_init, dT_init, J_raw_init)
+                         eta, I_top_val, J_bol_init, F_bol_init, g_rad_init, P_rad_init, dT_init, Q_rad_init, J_raw_init)
 end
 
 function update!(atm::Atmosphere{T}; kwargs...) where T
@@ -357,6 +359,7 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_ja
         K_rad_prev  .+= K_p
         atm.g_rad   .+= g_p
         atm.P_rad   .+= P_p
+        atm.Q_rad   .+= 4π .* RE_r
     end
 
     c_light = 2.99792458e10
@@ -416,11 +419,11 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     J_nu = zeros(T, Na, D)
     L_nu = zeros(T, D)
 
-    sig_col = zeros(T, D) # NEW
-    S_col   = zeros(T, D) # NEW
-    eps_col = zeros(T, D) # NEW
-    J_old   = zeros(T, D) # NEW
-    j_sum_new = zeros(T, D) # NEW
+    sig_col = zeros(T, D) 
+    S_col   = zeros(T, D) 
+    eps_col = zeros(T, D) 
+    J_old   = zeros(T, D) 
+    j_sum_new = zeros(T, D) 
 
     do_scattering = !isnothing(atm.chi_scat)
     max_scat_iter = !do_scattering ? 1 : 50
@@ -432,7 +435,6 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
         B_col   .= view(atm.B, f, :)
         dB_col  .= view(atm.dBdT, f, :)
 
-        # --- NEW: Fetch scattering and compute epsilon ---
         if do_scattering
             sig_col .= view(atm.chi_scat, f, :)
             eps_col .= 1.0 .- (sig_col ./ chi_col)
@@ -445,13 +447,11 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
         
         # lambda iterations
         for iter in 1:max_scat_iter
-            # 1. Update Source Function
             S_col .= eps_col .* B_col .+ (1.0 .- eps_col) .* J_old
             
             fill!(L_nu, 0.0)
             fill!(j_sum_new, 0.0)
 
-            # solution for current source function
             for a in 1:Na
                 mu_sq  = atm.mu[a]^2
                 weight = atm.w_mu[a]
@@ -493,7 +493,6 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
                 end
             end
             
-            # Check Convergence
             max_err = 0.0
             for d in 1:D
                 err = abs(j_sum_new[d] - J_old[d]) / max(j_sum_new[d], 1e-20)
@@ -503,12 +502,8 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
             J_old .= j_sum_new
             
             if (max_err < tol) || (!do_scattering)
-                break # Converged or no scattering
+                break 
             end
-            
-            #if (iter==max_scat_iter)
-            #    @warn "Lambda iteration not converged after $(iter) iterations. (err: $(max_err))"
-            #end
         end
         
         w_f = 1 #atm.w_lambda[f]
@@ -574,7 +569,7 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, 
     @inbounds for d in 1:D
         # Use RE only if convection has safely died (<xx % of F_target) and we are near the surface
         is_pure_rad = (atm.F_conv[d] < 1e-4 * F_target)
-        if is_pure_rad && (log10(atm.tau[d]) < -0.1)
+        if is_pure_rad && (log10(atm.tau[d]) < -0.5)
             # Use Radiative Equilibrium
             diag_val = -RE_jac[d]
             diag_val = max(diag_val, 1e-30)
@@ -677,12 +672,15 @@ end
 function update_mean_intensity!(atm::Atmosphere{T}) where T
     D = length(atm.tau); Nf = size(atm.chi, 1); Na = length(atm.mu)
     fill!(atm.J_bol, 0.0)
-    for d in 1:D; bol_sum = zero(T)
+    fill!(atm.Q_rad, 0.0)
+    for d in 1:D; bol_sum = zero(T); q_sum = zero(T)
         for f in 1:Nf; sum_J = zero(T)
             for a in 1:Na; sum_J += atm.w_mu[a] * atm.J_raw[f, a, d]; end
             bol_sum += sum_J
+            q_sum += atm.chi[f, d] * (sum_J - atm.B[f, d])
         end
         atm.J_bol[d] = bol_sum
+        atm.Q_rad[d] = 4π * q_sum
     end
 end
 
