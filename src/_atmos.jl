@@ -214,7 +214,12 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		else
 			base_damping * 0.1
 		end=#
-		
+		#=if flux_err_max_prev > 10.0
+			fconv_stabilizer!(F_conv, passes=1)
+			fconv_stabilizer!(v_conv, passes=1)
+			fconv_stabilizer!(P_turb, passes=1)
+			fconv_stabilizer!(dFconv_dT, passes=1)
+		end=#
         
 		@optionalTiming radiation_transfer_time begin
 			if opacity.binned
