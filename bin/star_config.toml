@@ -31,15 +31,15 @@ alpha_MLT = 1.5
 # ==============================================================================
 
 # metallicity
-feh = -1.5
+feh = 0.0
 
 # abundance of each element. All elements missing are set to the default values
 # which are specified in the abund file (see eos config toml file).
 # specify [X/Fe] composition here as e.g. "C_0.3O,O_0.2,Si_-0.3"
-composition = "C_0.2,O_0.4,Ba_-0.2"
+composition = ""
 
 # abundance of alpha elements
-alpha = 0.4
+alpha = 0.0
 
 # Microturbulence velocity (for opacities only) [km/s]
 vmic = 1.0
@@ -53,6 +53,7 @@ eos_config = "bin/eos_config.toml"
 
 # Path to the directory containing the Equation of State and Opacity table files. 
 # Leave blank if you want to compute the EoS dynamically
+#eos_dir = "/mnt/beegfs/gemini/groups/bergemann/users/eitner/storage/opacity_tables/magg_m2_a4_vmic1_v3.5/"
 eos_dir = ""
 
 # Signal that the opacity table uses binned opacities (only if eos_dir!="")
