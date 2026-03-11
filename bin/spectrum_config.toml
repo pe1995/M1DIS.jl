@@ -50,7 +50,7 @@ alpha = 0.0
 # Individual element abundances [X/Fe], e.g. "C_0.3,O_0.2,Si_-0.3"
 composition = ""
 
-# Microturbulence velocity [km/s] (for the namelist)
+# Microturbulence velocity [km/s]
 vmic = 1.0
 
 # ==============================================================================
@@ -58,13 +58,12 @@ vmic = 1.0
 # ==============================================================================
 
 # Directory containing linelists (relative to M3D or absolute)
-# Use "all" for default linelists, "" for no linelists
 linelists = "input_multi3d/linelists/"
 
 # Default abundance file (relative to M3D or absolute)
 abund = "./input_multi3d/abund/abund_magg"
 
-# Absdat file (relative to M3D or absolute)
+# Absdat file (relative to M3D or absolute) -- not added yet
 absdat = "./input_multi3d/TS_absdat.dat"
 
 # Absmet file (leave empty if not used)
