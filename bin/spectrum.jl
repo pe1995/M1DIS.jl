@@ -448,9 +448,9 @@ function main()
         push!(spec_id_parts, "NLTE_$(atom_base)")
     end
     spec_id = join(spec_id_parts, ":")
-    spec_name = (length(prefix)==0) ? spec_id*"_" : prefix #* spec_id
+    spec_name = (length(prefix)==0) ? spec_id : args["name"] #* spec_id
 
-    name_cat(n) = Symbol(spec_name * "$(n)")
+    name_cat(n) = Symbol(spec_name * "_$(n)")
 
     # =========================================================================
     # Save spectrum to HDF5 box in model directory
