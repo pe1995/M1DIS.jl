@@ -213,7 +213,7 @@ function parse_commandline()
 end
 
 # ==============================================================================
-# Main
+# Main function
 # ==============================================================================
 
 function main()
@@ -223,7 +223,9 @@ function main()
     
     args = parse_commandline()
 
+    # ==============================================================================
     # Resolve model directory and find M3D text file
+    # ==============================================================================
     model_dir = args["model_dir"]
     if isempty(model_dir)
         error("No model directory provided. Use --model_dir or set model_dir in the config file.")
@@ -248,8 +250,10 @@ function main()
     end
     m3d_basename = basename(m3d_file)
 
+    # ==============================================================================
+    # Load M3D
+    # ==============================================================================
     @info "Computing spectra for: $m3d_basename"
-
     eos_config_path = args["eos_config"]
     if !isabspath(eos_config_path)
         eos_config_path = joinpath(@__DIR__, eos_config_path)
@@ -264,7 +268,9 @@ function main()
     end
     MUST.@import_tumult m3d_dir
 
+    # ==============================================================================
     # Wavelength grid
+    # ==============================================================================
     λs = args["lambda_log"] ? log(args["lambda_start"]) : args["lambda_start"]
     λe = args["lambda_log"] ? log(args["lambda_end"]) : args["lambda_end"]
     Δλ, nλ = if args["lambda_n"] < 0.0
@@ -283,10 +289,14 @@ function main()
 
     @info "Spectral window: $(window_nice)."
 
+    # ==============================================================================
     # Linelists
+    # ==============================================================================
     linelists = args["linelists"]
 
+    # ==============================================================================
     # Chemical composition
+    # ==============================================================================
     FeH = args["feh"]
     α = args["alpha"]
     composition = args["composition"]
@@ -300,7 +310,9 @@ function main()
     cstring = length(cs) > 0 ? "[Fe/H]=$(FeH),[α/Fe]=$(α),$(cs)" : "[Fe/H]=$(FeH),[α/Fe]=$(α)"
     @info "Chemical composition: $(cstring), saved at $(abund_file)."
 
-    # --- Model atom ---
+    # ==============================================================================
+    # Model atom
+    # ==============================================================================
     atom_params, line_mask, spectrum_params = if (length(args["atom"]) > 0) && (λs < 0)
         @info "Leaving `spectrum_params` empty."
         ma = args["atom"]
@@ -337,7 +349,9 @@ function main()
         Dict(), Dict(), Dict(:daa=>Δλ, :aa_blue=>λs, :aa_red=>λe, :in_log=>args["lambda_log"])
     end
 
+    # ==============================================================================
     # Angular quadrature
+    # ==============================================================================
     angle_params = if length(args["long_mu"]) > 0
         Dict(
             :long_nphi=>args["long_nphi"],
@@ -352,6 +366,9 @@ function main()
         )
     end
 
+    # ==============================================================================
+    # General namelist adjustments
+    # ==============================================================================
     nz = args["nz"] == -1 ? 128 : args["nz"]
     spectrum_namelist = Dict(
         :model_folder=>model_dir,
@@ -390,7 +407,9 @@ function main()
         spectrum_namelist[:atmos_params] = (:vmic=>args["vmic"], spectrum_namelist[:atmos_params]...)
     end
 
-    # --- Run Multi3D ---
+    # ==============================================================================
+    # Run Multi3D
+    # ==============================================================================
     m3dis_kwargs = Dict(:threads=>args["multi_threads"])
 
     result = try
@@ -416,7 +435,6 @@ function main()
     # =========================================================================
     # Build unique spectrum identifier from composition + atom
     # =========================================================================
-
     spec_id_parts = String[]
     push!(spec_id_parts, "feh_$(round(FeH, digits=2))")
     if α != 0.0
@@ -426,7 +444,6 @@ function main()
         push!(spec_id_parts, "$(k)_$(round(v, digits=2))")
     end
     if args["NLTE"] && length(args["atom"]) > 0
-        #atom_base = replace(basename(args["atom"]), r"\.[^.]+$" => "")
         atom_base = basename(args["atom"])
         push!(spec_id_parts, "NLTE_$(atom_base)")
     end
@@ -435,12 +452,9 @@ function main()
 
     name_cat(n) = Symbol(spec_name * "_$(n)")
 
-    #@info "Spectrum identifier: $(spec_id)"
-
     # =========================================================================
     # Save spectrum to HDF5 box in model directory
     # =========================================================================
-
     box_file = joinpath(model_dir, "$(model_name).hdf5")
     if !isfile(box_file)
         @warn "No HDF5 box found at $(box_file). Creating a basic box from M3D output."
@@ -496,7 +510,6 @@ function main()
     # =========================================================================
     # Save flux and intensity as text files
     # =========================================================================
-
     spectra_dir = joinpath(model_dir, "spectra")
     if !isdir(spectra_dir)
         mkpath(spectra_dir)
@@ -608,7 +621,9 @@ function main()
 
     @info "Spectrum also saved to $(spectra_dir)."
 
+    # ==============================================================================
     # Clean up M3D raw output if requested
+    # ==============================================================================
     if args["remove"]
         rawp = @in_m3dis("data/$(m3d_basename)_$(model_name)_$(window)$(extension)")
         if isdir(rawp)
