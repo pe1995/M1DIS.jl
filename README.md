@@ -10,7 +10,7 @@ Pkg.add(url="https://github.com/pe1995/TSO.jl.git")
 Pkg.add(url="https://github.com/pe1995/M1DIS.jl")
 ```
 
-Or clone this repository and just do `Pkg.instantiate()` within.
+Or clone this repository and just do `Pkg.instantiate()` within. If you want to use the command line tools, I recommend cloning instead of installing through the REPL.
 
 # Microphysics
 After the intstallation is done, you need to load an opacity table that was generated for `M3DIS`. `M1DIS.jl` is compatible with binned as well as unbinned opacity tables. For this, the `TSO.jl` package is required. Luckily `M1DIS.jl` already contains this package, so you can simply use its functionality 
@@ -69,4 +69,11 @@ In case you want to run `M1DIS.jl` from the command line directly, there are scr
 ```bash
 julia -t 10 bin/m1dis_star.jl -c bin/star_config.toml --teff=6500 --logg=4.0 --maxiter=100
 ```
-and will create a stellar atmosphere (using 10 CPU threads) with all the default parameters selected in `bin/star_config.toml`, but with an effective temperature of 6500K and surface gravity of 4.0. The code will stop after 100 iterations and store each iteration for you to explore. For all available parameters see `julia bin/m1dis_star.jl --help`.
+and will create a stellar atmosphere (using 10 CPU threads) with all the default parameters selected in `bin/star_config.toml`, but with an effective temperature of 6500K and surface gravity of 4.0. The code will stop after 100 iterations and store each iteration for you to explore. For all available parameters see `julia bin/m1dis_star.jl --help`. There also is a version available specifically for planets. 
+Note that if you do not specify an EoS, the code will automatically generate an EoS table using Multi3D. For this, please make sure that the settings in `bin/eos_config.toml` are correct. You can then just pass the chemical composition as arguments and the corresponding table will be created. These tables can be quite large, so make sure you have enough RAM and disc space for this computation.
+
+Besides creating the models, the command line tool can also be used to compute the corresponding spectra. For this, there are example scripts available in `bin/spectrum.jl`. The principle is the same:
+```bash
+julia bin/spectrum.jl -c bin/spectrum_config.toml -m models/m1dis_model -n 'myspectrum' --feh=-1 --alpha=0.4
+```
+Where the default parameters are again stored in a `.toml` file. Multi3D is assumed to be located at the path you specified in the `bin/eos_config.toml`.
