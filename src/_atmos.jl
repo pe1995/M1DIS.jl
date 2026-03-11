@@ -171,10 +171,44 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		@verbose_info 1 "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
 	end
 	flux_err_max_prev = Inf
+	stabilizer_stage = 3
 	base_damping = damping
 	@optionalTiming relaxation_time for iter in 1:maxiter
 		# compute convective quantities (MLT)
 		@optionalTiming mixing_length_time update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5)
+		#@optionalTiming mixing_length_time update_mixing_length_marcs!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5)
+
+		if stabilizer_stage == 3
+			for n in 2:length(F_conv)
+				if (F_conv[n-1] > 0.0) && (F_conv[n] < F_conv[n-1])
+					F_conv[n] = F_conv[n-1]
+					v_conv[n] = v_conv[n-1]
+					P_turb[n] = P_turb[n-1]
+					dFconv_dT[n] = dFconv_dT[n-1]
+				end
+			end
+			fconv_stabilizer!(F_conv, passes=1)
+			fconv_stabilizer!(v_conv, passes=1)
+			fconv_stabilizer!(P_turb, passes=1)
+			fconv_stabilizer!(dFconv_dT, passes=1)
+		elseif stabilizer_stage == 2
+			for n in 2:length(F_conv)
+				if (F_conv[n-1] > 0.0) && (dFconv_dT[n] < dFconv_dT[n-1])
+					dFconv_dT[n] = dFconv_dT[n-1]
+					P_turb[n] = P_turb[n-1]
+				end
+			end
+			fconv_stabilizer!(dFconv_dT, passes=1)
+			fconv_stabilizer!(P_turb, passes=1)
+		end
+
+		if flux_err_max_prev > 50.0
+			stabilizer_stage = 3
+		elseif flux_err_max_prev > 10
+			stabilizer_stage = 2
+		else
+			stabilizer_stage = 1
+		end
         
 		@optionalTiming radiation_transfer_time begin
 			if opacity.binned
