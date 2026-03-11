@@ -45,7 +45,7 @@ alpha = 0.0
 vmic = 1.0
 
 # config file for other opacity table related parameters
-eos_config = "bin/eos_config.toml"
+eos_config = "eos_config.toml"
 
 # ==============================================================================
 # EoS & Opacity Treatment

@@ -104,7 +104,7 @@ function parse_commandline()
             default = get(c, "composition", "")
         "--eos_config"
             help = "Path to the config file that contains the general EoS setup."
-            default = get(c, "eos_config", "bin/eos_config.toml")
+            default = get(c, "eos_config", "eos_config.toml")
         "--eos_dir"
             help = "Path to the directory containing the Equation of State and Opacity table files (required either via CLI or config)"
             default = get(c, "eos_dir", "")
@@ -166,6 +166,9 @@ function main()
     
     eos_dir = if (args["eos_dir"] == "")
         eos_config_path = args["eos_config"]
+        if !isabspath(eos_config_path)
+            eos_config_path = joinpath(@__DIR__, eos_config_path)
+        end
         if !isfile(eos_config_path)
             error("EoS configuration file not found at: $eos_config_path. Please provide a valid --eos_config or explicitly set --eos_dir.")
         end 

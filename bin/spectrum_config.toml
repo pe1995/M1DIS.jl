@@ -1,0 +1,137 @@
+# M1DIS Spectrum Configuration File
+# This file can be passed to spectrum.jl using the --config option.
+# Example: julia bin/spectrum.jl --config bin/spectrum_config.toml
+# Any command-line arguments explicitly passed will override the settings here.
+
+# ==============================================================================
+# Model Input
+# ==============================================================================
+
+# Path to the M1DIS model directory (e.g. "models/m1dis_model")
+# The code will automatically find the *_m3d.txt file and save results
+# to the HDF5 box in this directory.
+model_dir = "models/m1dis_model"
+
+# Additional name extension for the output. Useful if you want to compute multiple spectra
+name = ""
+
+# config file for EoS/opacity table parameters (used for m3d_dir)
+eos_config = "eos_config.toml"
+
+# ==============================================================================
+# Wavelength Grid
+# ==============================================================================
+
+# Start wavelength [Å]
+lambda_start = 3000.0
+
+# End wavelength [Å]
+lambda_end = 10000.0
+
+# Wavelength step [Å] (used when lambda_n < 0)
+lambda_step = 0.01
+
+# Number of wavelength points (overrides lambda_step if > 0)
+lambda_n = -1.0
+
+# Sample wavelength grid in log units
+lambda_log = false
+
+# ==============================================================================
+# Chemical Composition
+# ==============================================================================
+
+# Metallicity [Fe/H]
+feh = 0.0
+
+# Alpha enhancement [α/Fe]
+alpha = 0.0
+
+# Individual element abundances [X/Fe], e.g. "C_0.3,O_0.2,Si_-0.3"
+composition = ""
+
+# Microturbulence velocity [km/s] (for the namelist)
+vmic = 1.0
+
+# ==============================================================================
+# Line Data & Atom Files
+# ==============================================================================
+
+# Directory containing linelists (relative to M3D or absolute)
+# Use "all" for default linelists, "" for no linelists
+linelists = "input_multi3d/linelists/"
+
+# Default abundance file (relative to M3D or absolute)
+abund = "./input_multi3d/abund/abund_magg"
+
+# Absdat file (relative to M3D or absolute)
+absdat = "./input_multi3d/TS_absdat.dat"
+
+# Absmet file (leave empty if not used)
+absmet = ""
+
+# Model atom file (leave empty for no model atom)
+atom = ""
+
+# Lines in the model atom for special treatment (comma-separated indices)
+atom_lines = ""
+
+# Enable NLTE
+NLTE = false
+
+# ==============================================================================
+# Multi3D Execution Parameters
+# ==============================================================================
+
+# Number of threads for M3D
+multi_threads = 20
+
+# Number of frequency splits in M3D
+nnu = 32
+
+# Number of vertical atmosphere splits
+dims = 32
+
+# Number of vertical grid points for resampling (-1 = 128)
+nz = -1
+
+# ==============================================================================
+# Angular Quadrature
+# ==============================================================================
+
+# Scheme for short characteristics
+short_scheme = "radau"
+
+# Number of theta angles (short char.)
+short_ntheta = 2
+
+# Number of phi angles (short char.)
+short_nphi = 4
+
+# Scheme for long characteristics
+long_scheme = "lobatto"
+
+# Number of theta angles (long char.)
+long_ntheta = 4
+
+# Number of phi angles (long char.)
+long_nphi = 4
+
+# Custom mu quadrature for long char. (space-separated, e.g. "0.1 0.5 1.0")
+long_mu = ""
+
+# ==============================================================================
+# Output Flags
+# ==============================================================================
+
+# Save opacities
+save_chi = false
+
+# Save source function
+save_snu = false
+
+# Keep M3D output logs
+keep_logs = true
+
+# Remove M3D raw output after saving to HDF5
+remove = true
