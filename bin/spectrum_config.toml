@@ -131,7 +131,7 @@ save_chi = false
 save_snu = false
 
 # Keep M3D output logs
-keep_logs = true
+keep_logs = false
 
 # Remove M3D raw output after saving to HDF5
 remove = true
