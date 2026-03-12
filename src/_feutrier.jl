@@ -529,10 +529,25 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
                 ang = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
                 
                 if d > 1
-                    dt_local = atm.tau_lambda[f, d] - atm.tau_lambda[f, d-1]
-                    diff_coeff = ang / max(dt_local, 1e-20)
-                    k_d_sum +=  diff_coeff * dB_col[d]
-                    k_p_sum += -diff_coeff * dB_col[d-1]
+                    if d == D
+                        dt_local = atm.tau_lambda[f, D] - atm.tau_lambda[f, D-1]
+                        diff_coeff = ang / max(dt_local, 1e-20)
+                        k_d_sum +=  diff_coeff * dB_col[D]
+                        k_p_sum += -diff_coeff * dB_col[D-1]
+                    else
+                        dt_plus = atm.tau_lambda[f, d+1] - atm.tau_lambda[f, d]
+                        dt_minus = atm.tau_lambda[f, d] - atm.tau_lambda[f, d-1]
+                        
+                        w_plus = dt_minus / (dt_plus + dt_minus)
+                        w_minus = dt_plus / (dt_plus + dt_minus)
+                        
+                        diff_plus = ang / max(dt_plus, 1e-20)
+                        diff_minus = ang / max(dt_minus, 1e-20)
+                        
+                        k_d_sum += w_plus * diff_plus * dB_col[d] + w_minus * diff_minus * dB_col[d]
+                        k_p_sum += w_minus * (-diff_minus * dB_col[d-1])
+                        # The plus contribution (d+1) from dJ_plus is ignored in K_rad matrix because it's approximately tri-diagonal but we fold it away
+                    end
                 end
                 
                 dJ, dt = 0.0, 1.0
@@ -543,8 +558,19 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
                     dJ = J_nu[a, D] - J_nu[a, D-1]
                     dt = atm.tau_lambda[f, D] - atm.tau_lambda[f, D-1]
                 else
-                    dJ = J_nu[a, d+1] - J_nu[a, d-1]
-                    dt = atm.tau_lambda[f, d+1] - atm.tau_lambda[f, d-1]
+                    # 3-point central flux derivative for non-uniform grid
+                    dt_plus = atm.tau_lambda[f, d+1] - atm.tau_lambda[f, d]
+                    dt_minus = atm.tau_lambda[f, d] - atm.tau_lambda[f, d-1]
+                    
+                    w_plus = dt_minus / (dt_plus + dt_minus)
+                    w_minus = dt_plus / (dt_plus + dt_minus)
+                    
+                    dJ_plus = (J_nu[a, d+1] - J_nu[a, d]) / dt_plus
+                    dJ_minus = (J_nu[a, d] - J_nu[a, d-1]) / dt_minus
+                    
+                    flux_local = w_plus * dJ_plus + w_minus * dJ_minus
+                    dJ = flux_local
+                    dt = 1.0
                 end
                 J_sum += (ang / c_light) * J_nu[a, d]
                 flux_sum += ang * (dJ / max(dt, 1e-20))
@@ -557,7 +583,6 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
         end
     end
     
-    # d=1 has no backward neighbour; leave as 0 (d=1 uses RE regime, not flux conservation)
     return (J_part, F_part, RE_res, RE_jac, K_rad_diag, K_rad_prev, g_rad_part, P_rad_part)
 end
 
@@ -708,8 +733,19 @@ function compute_flux!(atm::Atmosphere{T}) where T
                     dt = atm.tau_lambda[f, D] - atm.tau_lambda[f, D-1]
                     dJ = atm.J_raw[f,a,D] - atm.J_raw[f,a,D-1]
                 else
-                    dt = atm.tau_lambda[f, d+1] - atm.tau_lambda[f, d-1]
-                    dJ = atm.J_raw[f,a,d+1] - atm.J_raw[f,a,d-1]
+                    # 3-point central flux derivative for non-uniform grid
+                    dt_plus = atm.tau_lambda[f, d+1] - atm.tau_lambda[f, d]
+                    dt_minus = atm.tau_lambda[f, d] - atm.tau_lambda[f, d-1]
+                    
+                    w_plus = dt_minus / (dt_plus + dt_minus)
+                    w_minus = dt_plus / (dt_plus + dt_minus)
+                    
+                    dJ_plus = (atm.J_raw[f,a,d+1] - atm.J_raw[f,a,d]) / dt_plus
+                    dJ_minus = (atm.J_raw[f,a,d] - atm.J_raw[f,a,d-1]) / dt_minus
+                    
+                    flux_local = w_plus * dJ_plus + w_minus * dJ_minus
+                    dJ = flux_local
+                    dt = 1.0
                 end
                 
                 flux = ang_f * (dJ / dt)
