@@ -114,7 +114,7 @@ function parse_commandline()
         "--out_dir"
             help = "Output directory for the saved models"
             default = get(c, "out_dir", "")
-        "--model_name"
+        "--model_name", "-n"
             help = "Name of the model to save"
             default = get(c, "model_name", "m1dis_planet_model")
         "--mini"
