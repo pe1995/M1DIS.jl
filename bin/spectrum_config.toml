@@ -18,6 +18,9 @@ name = ""
 # config file for EoS/opacity table parameters (used for m3d_dir)
 eos_config = "eos_config.toml"
 
+# if true, `model_dir` is assumed to be the path to a MARCS model
+marcs = false
+
 # ==============================================================================
 # Wavelength Grid
 # ==============================================================================
