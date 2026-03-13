@@ -248,7 +248,7 @@ function main()
         a = args["alpha"]
         z = args["feh"]
         v = args["vmic"]
-        i = "* Teff [K]\n* $(args["teff"])\n* [Fe/H]\n* $(z)\n* [alpha/Fe]\n* $(a)\n* vmic [km/s]\n* $(v)"
+        i = "* Teff [K]\n* $(args["teff"])\n*\n* [Fe/H]\n* $(z)\n*\n* [alpha/Fe]\n* $(a)\n*\n* vmic [km/s]\n* $(v)\n*"
         "p$(args["teff"])_g$(args["logg"])_z$(z)_a$(a)_vmic$(v)", i
     else
         args["model_name"], nothing
