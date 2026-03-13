@@ -82,7 +82,7 @@ function parse_commandline()
         "--out_dir"
             help = "Output directory for the saved models"
             default = get(c, "out_dir", "./models")
-        "--model_name"
+        "--model_name", "-n"
             help = "Name of the model to save"
             default = get(c, "model_name", "")
         "--mini"
@@ -252,6 +252,14 @@ function main()
         "p$(args["teff"])_g$(args["logg"])_z$(z)_a$(a)_vmic$(v)", i
     else
         args["model_name"], nothing
+    end
+    println("Saving model $(model_name) to $out_dir...")
+
+    # deleting the dir if it exists
+    run_dir = joinpath(abspath(out_dir), model_name)
+    if isdir(run_dir)
+        @info "Output dir already exists. Clearing $(run_dir)."
+        rm(run_dir, recursive=true, force=true)
     end
     println("Saving model $(model_name) to $out_dir...")
     save!(

@@ -192,6 +192,9 @@ function parse_commandline()
         "--remove"
             help = "Remove M3D raw output after saving to HDF5."
             action = :store_true
+        "--marcs"
+            help = "The model passed in `-m` is assumed to be a MARCS model."
+            action = :store_true
     end
 
     args = parse_args(s)
@@ -203,6 +206,7 @@ function parse_commandline()
     args["save_snu"] = args["save_snu"] || get(c, "save_snu", false)
     args["keep_logs"] = args["keep_logs"] || get(c, "keep_logs", false)
     args["remove"] = args["remove"] || get(c, "remove", false)
+    args["marcs"] = args["marcs"] || get(c, "marcs", false)
 
     # Handle composition from config if not set via CLI
     if isempty(args["composition"].abundances) && haskey(c, "composition") && !isempty(c["composition"])
@@ -227,33 +231,51 @@ function main()
     # Resolve model directory and find M3D text file
     # ==============================================================================
     model_dir = args["model_dir"]
-    if isempty(model_dir)
-        error("No model directory provided. Use --model_dir or set model_dir in the config file.")
-    end
-    model_dir = abspath(model_dir)
-    if !isdir(model_dir)
-        error("Model directory not found: $model_dir")
-    end
-
-    model_dir = model_dir[end] == '/' ?  model_dir[1:end-1] : model_dir
-    model_name = basename(model_dir)
-
-    # Find the *_m3d.txt file automatically
-    m3d_file = joinpath(model_dir, "$(model_name)_m3d.txt")
-    if !isfile(m3d_file)
-        candidates = filter(f -> endswith(f, "_m3d.txt"), readdir(model_dir))
-        if isempty(candidates)
-            error("No *_m3d.txt file found in $model_dir. Expected $(model_name)_m3d.txt")
+    if !args["marcs"]
+        if isempty(model_dir)
+            error("No model directory provided. Use --model_dir or set model_dir in the config file.")
         end
-        m3d_file = joinpath(model_dir, candidates[1])
-        @warn "Expected $(model_name)_m3d.txt, using $(candidates[1]) instead."
+        model_dir = abspath(model_dir)
+        if !isdir(model_dir)
+            error("Model directory not found: $model_dir")
+        end
+
+        model_dir = model_dir[end] == '/' ?  model_dir[1:end-1] : model_dir
+        model_name = basename(model_dir)
+
+        # Find the *_m3d.txt file automatically
+        m3d_file = joinpath(model_dir, "$(model_name)_m3d.txt")
+        if !isfile(m3d_file)
+            candidates = filter(f -> endswith(f, "_m3d.txt"), readdir(model_dir))
+            if isempty(candidates)
+                error("No *_m3d.txt file found in $model_dir. Expected $(model_name)_m3d.txt")
+            end
+            m3d_file = joinpath(model_dir, candidates[1])
+            @warn "Expected $(model_name)_m3d.txt, using $(candidates[1]) instead."
+        end
+        m3d_basename = basename(m3d_file)
+        @info "Computing spectra for: $m3d_basename"
+    else
+        if !isfile(model_dir)
+            error("No MARCS model file provided. Use --model_dir or set model_dir in the config file to the path of the MARCS model.")
+        end
+        model_dir = model_dir[end] == '/' ?  model_dir[1:end-1] : model_dir
+        model_name = basename(model_dir)
+        marcsfolder = abspath(model_dir*"_data/")
+        if !isdir(marcsfolder)
+            mkdir(marcsfolder)
+            @info "Created MARCS output directory: $marcsfolder"
+        end
+        m3d_file = joinpath(marcsfolder, model_name)
+        cp(model_dir, m3d_file, force=true)
+        m3d_basename = basename(m3d_file)
+        model_dir = marcsfolder
+        @info "Computing spectra for: $m3d_basename"
     end
-    m3d_basename = basename(m3d_file)
 
     # ==============================================================================
     # Load M3D
     # ==============================================================================
-    @info "Computing spectra for: $m3d_basename"
     eos_config_path = args["eos_config"]
     if !isabspath(eos_config_path)
         eos_config_path = joinpath(@__DIR__, eos_config_path)
@@ -380,7 +402,7 @@ function main()
         :spectrum_params=>(spectrum_params...,),
         :atmos_params=>(
             :dims=>args["dims"],
-            :atmos_format=>"text",
+            :atmos_format=>args["marcs"] ? "marcs" : "text",
             :use_rho=>true,
             :use_ne=>false,
             :FeH=>FeH,
@@ -457,18 +479,23 @@ function main()
     # =========================================================================
     box_file = joinpath(model_dir, "$(model_name).hdf5")
     if !isfile(box_file)
-        @warn "No HDF5 box found at $(box_file). Creating a basic box from M3D output."
-        x = Base.convert.(Float32, MUST.pyconvert(Array, result.run.atmos.xx) .* 1e8)
-        y = Base.convert.(Float32, MUST.pyconvert(Array, result.run.atmos.yy) .* 1e8)
-        z = Base.convert.(Float32, MUST.pyconvert(Array, result.run.atmos.zz) .* 1e8)
-        set_size(v) = reshape(v, 1, 1, length(v))
-        data = Dict{Symbol, Any}(
-            :T => set_size(MUST.pyconvert(Array, result.run.atmos.temp)),
-            :d => set_size(MUST.pyconvert(Array, result.run.atmos.rho)),
-        )
-        xx, yy, zz = MUST.meshgrid(x, y, z)
-        b2 = MUST.Box(xx, yy, zz, data, MUST.AtmosphericParameters())
-        MUST.save(b2, folder=model_dir, name=model_name)
+        if !args["marcs"]
+            @warn "No HDF5 box found at $(box_file). Creating a basic box from M3D output."
+            x = Base.convert.(Float32, MUST.pyconvert(Array, result.run.atmos.xx) .* 1e8)
+            y = Base.convert.(Float32, MUST.pyconvert(Array, result.run.atmos.yy) .* 1e8)
+            z = Base.convert.(Float32, MUST.pyconvert(Array, result.run.atmos.zz) .* 1e8)
+            set_size(v) = reshape(v, 1, 1, length(v))
+            data = Dict{Symbol, Any}(
+                :T => set_size(MUST.pyconvert(Array, result.run.atmos.temp)),
+                :d => set_size(MUST.pyconvert(Array, result.run.atmos.rho)),
+            )
+            xx, yy, zz = MUST.meshgrid(x, y, z)
+            b2 = MUST.Box(xx, yy, zz, data, MUST.AtmosphericParameters())
+            MUST.save(b2, folder=model_dir, name=model_name)
+        else
+            b2 = MUST.marcsBox(joinpath(model_dir, model_name))
+            MUST.save(b2, folder=model_dir, name=model_name)
+        end
     end
 
     b2 = MUST.Box(model_name, folder=model_dir)
