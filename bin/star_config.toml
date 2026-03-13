@@ -7,8 +7,8 @@
 # Model Output Parameters 
 # ==============================================================================
 
-# Name of the model to save
-model_name = "m1dis_model"
+# Name of the model to save (will be created if empty)
+model_name = ""
 
 # Output directory for the saved models (defaults to M1DIS.jl/models/)
 out_dir = "models"
@@ -53,8 +53,8 @@ eos_config = "eos_config.toml"
 
 # Path to the directory containing the Equation of State and Opacity table files. 
 # Leave blank if you want to compute the EoS dynamically
-#eos_dir = "/mnt/beegfs/gemini/groups/bergemann/users/eitner/storage/opacity_tables/magg_m2_a4_vmic1_v3.5/"
-eos_dir = ""
+eos_dir = "/mnt/beegfs/gemini/groups/bergemann/users/eitner/storage/opacity_tables/magg_m0_a0_vmic1_v3.5/"
+#eos_dir = ""
 
 # Signal that the opacity table uses binned opacities (only if eos_dir!="")
 binned = false

@@ -607,12 +607,6 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, 
             
             # 1. Convection Terms
             val_Conv_d  = atm.dFconv_dT[d]
-            #=val_Conv_p  = if atm.F_conv[d-1] <= 1e-10
-                val_Conv_p = 0.0
-            else
-                -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
-            end=#
-            #val_Conv_p = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
             val_Conv_p  = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
 
             # 2. Radiative Terms

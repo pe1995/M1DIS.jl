@@ -84,7 +84,7 @@ function parse_commandline()
             default = get(c, "out_dir", "./models")
         "--model_name"
             help = "Name of the model to save"
-            default = get(c, "model_name", "m1dis_model")
+            default = get(c, "model_name", "")
         "--mini"
             help = "Ignore source function from the opacity table and recompute it on-the-fly."
             action = :store_true
@@ -242,26 +242,37 @@ function main()
         result
     end
 
-    println("Saving model $(args["model_name"]) to $out_dir...")
+    model_name, information = if (args["model_name"] == "") && (args["eos_dir"] != "")
+        "m1dis_model", nothing
+    elseif (args["model_name"] == "") && (args["eos_dir"] == "")
+        a = args["alpha"]
+        z = args["feh"]
+        v = args["vmic"]
+        i = "* Teff [K]\n* $(args["teff"])\n* [Fe/H]\n* $(z)\n* [alpha/Fe]\n* $(a)\n* vmic [km/s]\n* $(v)"
+        "p$(args["teff"])_g$(args["logg"])_z$(z)_a$(a)_vmic$(v)", i
+    else
+        args["model_name"], nothing
+    end
+    println("Saving model $(model_name) to $out_dir...")
     save!(
-        result[end], args["model_name"]; 
+        result[end], model_name; 
         folder = out_dir, 
         vmic = args["vmic"], 
         logg = args["logg"],
-        eos500 = eos500_complete
+        eos500 = eos500_complete, information = information
     )
 
     # save the iterations also
-    if (!isdir(joinpath(out_dir, args["model_name"], "iterations")))
-        mkpath(joinpath(out_dir, args["model_name"], "iterations"))
+    if (!isdir(joinpath(out_dir, model_name, "iterations")))
+        mkpath(joinpath(out_dir, model_name, "iterations"))
     else
-        rm(joinpath(out_dir, args["model_name"], "iterations"), recursive=true)
-        mkpath(joinpath(out_dir, args["model_name"], "iterations"))
+        rm(joinpath(out_dir, model_name, "iterations"), recursive=true)
+        mkpath(joinpath(out_dir, model_name, "iterations"))
     end
     for (i, r) in enumerate(result)
         save!(
             r, "iteration_$(i)"; 
-            folder = joinpath(out_dir, args["model_name"], "iterations"), 
+            folder = joinpath(out_dir, model_name, "iterations"), 
             vmic = args["vmic"], 
             logg = args["logg"],
             eos500 = eos500_complete

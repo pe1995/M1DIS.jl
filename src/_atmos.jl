@@ -361,7 +361,7 @@ end
 # Saving the M1DIS.jl result in the Multi3D and Multi1D format
 # ============================================================================
 
-function save!(model_data::MUST.Box, model_name; eos500=nothing, folder="./", vmic=0.0, logg=4.5)
+function save!(model_data::MUST.Box, model_name; eos500=nothing, folder="./", vmic=0.0, logg=4.5, information=nothing)
     base_path = abspath(folder)
     
     if !isdir(base_path)
@@ -398,7 +398,7 @@ function save!(model_data::MUST.Box, model_name; eos500=nothing, folder="./", vm
     	Ne = b[:Ne][1,1,:]
 
 		f_new_m1d = joinpath(run_i, "atmos.$(model_name)")
-		MUST.save_text_m1d(f_new_m1d, tau500, T, Ne; logg=logg, header=model_name, vmic=vmic_arr)
+		MUST.save_text_m1d(f_new_m1d, tau500, T, Ne; logg=logg, header=model_name, vmic=vmic_arr, information=information)
 		
 		f_new_dscale = joinpath(run_i, "dscale.$(model_name)")
 		MUST.save_text_m1d_dscale(f_new_dscale, tau500; header=model_name)
