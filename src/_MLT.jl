@@ -8,23 +8,24 @@
 Compute MLT parameters F_conv and g_turb based on Gustafsson et al. (1970).
 """
 function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha_mlt, P_rad_local, P_turb_local)
+    # 1. Use ONLY Gas + Rad pressure for the scale height (MARCS hscale)
+    P_gas_rad = max(P_local - P_turb_local, 1e-30)
     lnpgas_local = log(max(P_local - P_rad_local - P_turb_local, 1e-30))
     lnt_local = log(T_local)
 
     lnrho_local, lnκ_ross, Cp, Q, ∇ₐ, χr, χt = sample(eos_extended, (:lnRho,:lnRoss, :cₚ, :Q, :∇ₐ, :χᵨ, :χₜ), lnpgas_local, lnt_local)
     κ_ross = exp(lnκ_ross)
-    Hp = P_local / (exp(lnrho_local) * g_surf)
+    Hp = P_gas_rad / (exp(lnrho_local) * g_surf)
 
     super_adi = ∇_local - ∇ₐ
     if super_adi <= 0.0
         return 0.0, 0.0
     end
-    # Optically thick limit approximation for Gamma1
+    
     Γ₁_approx = abs(χr / (1 - χt * ∇ₐ))
     c_sound = sqrt(Γ₁_approx * P_local / exp(lnrho_local))
     v_scale = alpha_mlt * sqrt(g_surf * Q * Hp / 8.0)
     
-    # U = (24 sqrt(2) sigma T^3) / (kappa rho Hp alpha rho Cp v_scale)
     numerator = 24.0 * sqrt(2.0) * σ_SB * T_local^3
     denominator = κ_ross * exp(lnrho_local) * Hp * alpha_mlt * exp(lnrho_local) * Cp * v_scale
     U = numerator / denominator
@@ -43,17 +44,21 @@ function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha
     xi = max(xi, 1e-32)
 
     v_real = v_scale * xi
-    ratio = v_real / c_sound
-    soft_factor = (1.0 + ratio^4)^0.25
-    v_real = v_real / soft_factor
-    xi = xi / soft_factor
+    v_real = min(v_real, sqrt(0.5 * P_local / exp(lnrho_local)))
+
+    #ratio = v_real / c_sound
+    #soft_factor = (1.0 + ratio^4)^0.25
+    #v_real = v_real / soft_factor
+    #xi = xi / soft_factor
 
     Flux = (0.5 * alpha_mlt) * (exp(lnrho_local) * Cp * T_local) * v_scale * xi^3
+    
     return Flux, v_real
 end
 
 function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_gas, ρ, τ_ross, eos_extended, g_surf; 
     alpha_mlt=1.5, Teff=5777.0, v_mac=0.0, pbeta=1.0)
+    
     n_depth = length(T)
     P_turb_prev = copy(P_turb)
 
@@ -70,15 +75,15 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
         P_rad_nm1 = P_rad[n-1]
         P_tot_nm1 = P_gas[n-1] + P_rad_nm1 + P_turb_prev[n-1]
 
-        # Calculate Gradient (Backward Difference)
-        dlnT = log(T[n] / T[n-1])
+        # Calculate Gradient (Strictly Backward Difference for stability, exactly like MARCS)
         dlnP = log(P_tot_n / P_tot_nm1)
         if abs(dlnP) < 1e-32
             continue
         end
+        dlnT = log(T[n] / T[n-1])
         ∇_base = dlnT / dlnP
         
-        # Base Flux
+        # Base Flux (Make sure calc_mlt_local accepts pbeta)
         F_base, v_base = calc_mlt_local(T[n], P_tot_n, ∇_base, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n])
         F_conv[n] = F_base
         v_conv[n] = v_base
@@ -86,17 +91,16 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
         # Calculate Derivative dF/dT (Local T_n)
         delta_T = 1e-3 * T[n]
         T_pert = T[n] + delta_T
-        dlnT_pert = log(T_pert / T[n-1])
-        ∇_pert = dlnT_pert / dlnP
+        ∇_pert = log(T_pert / T[n-1]) / dlnP
+        
         F_pert, _ = calc_mlt_local(T_pert, P_tot_n, ∇_pert, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n])
         
         # Stability fix (Gustafsson et al.)
         if F_base <= 1e-10
             b = 0.005 
             T_recipe = T[n] * (1.0 + b)
+            ∇_recipe = log(T_recipe / T[n-1]) / dlnP
             
-            dlnT_recipe = log(T_recipe / T[n-1])
-            ∇_recipe = dlnT_recipe / dlnP
             F_recipe, _ = calc_mlt_local(T_recipe, P_tot_n, ∇_recipe, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n])
             
             if F_recipe > 1e-10
@@ -113,8 +117,10 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
     dFconv_dT[1] = dFconv_dT[2]
     v_conv[1] = v_conv[2]
     
-    # Turbulent Pressure and Gravity
-    P_turb .= 0.5 .* ρ .* (v_conv .^ 2 .+ v_mac .^ 2)
+    # Turbulent Pressure
+    P_turb .= ρ .* (pbeta .* v_conv .^ 2 .+ v_mac .^ 2)
+    #P_turb .= min.(ρ .* (pbeta .* v_conv .^ 2 .+ v_mac .^ 2), P_gas .+ P_rad)
+    #P_turb .= 0.5 .* ρ .* (v_conv .^ 2 .+ v_mac .^ 2)
 end
 
 # ============================================================================

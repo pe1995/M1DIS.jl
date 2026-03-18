@@ -242,9 +242,7 @@ function main()
         result
     end
 
-    model_name, information = if (args["model_name"] == "") && (args["eos_dir"] != "")
-        "m1dis_model", nothing
-    elseif (args["model_name"] == "") && (args["eos_dir"] == "")
+    model_name, information = if args["model_name"] == ""
         a = args["alpha"]
         z = args["feh"]
         v = args["vmic"]

@@ -50,6 +50,10 @@ function parse_commandline()
             help = "Internal temperature of the planet (K)"
             arg_type = Float64
             default = convert(Float64, get(c, "t_int", 1200.0))
+        "--t_target"
+            help = "Target temperature of the planet. This is used as the target flux."
+            arg_type = Float64
+            default = convert(Float64, get(c, "t_target", -1.0))
         "--a_au"
             help = "Semi-major axis [AU]"
             arg_type = Float64
@@ -113,10 +117,10 @@ function parse_commandline()
             action = :store_true
         "--out_dir"
             help = "Output directory for the saved models"
-            default = get(c, "out_dir", "")
+            default = get(c, "out_dir", "./models")
         "--model_name", "-n"
             help = "Name of the model to save"
-            default = get(c, "model_name", "m1dis_planet_model")
+            default = get(c, "model_name", "")
         "--mini"
             help = "Ignore source function from the opacity table and recompute it on-the-fly."
             action = :store_true
@@ -175,7 +179,7 @@ function main()
         println("================================================================================")
         println("================== M1DIS.jl + TSO.jl Opacity Tables ============================")
         println("================================================================================")
-        @info("Fetching/Computing from composition...")
+        @info("Searching for tables with requested composition...")
         eos_c = TOML.parsefile(eos_config_path)
 
         try
@@ -291,6 +295,7 @@ function main()
     M1DIS.start_timing!()
     result = atmosphere(
         T_eff = t_internal_planet,
+        target_flux = args["t_target"] < 0.0 ? nothing : M1DIS.σ_SB * args["t_target"]^4,
         logg = logg_planet,
         #v_mac = args["vmic"],
         α_MLT = args["alpha_MLT"],
@@ -309,11 +314,7 @@ function main()
     )
     M1DIS.end_timing!()
     
-    out_dir = if args["out_dir"] == ""
-        joinpath(@__DIR__, "../models")
-    else
-        args["out_dir"]
-    end
+    out_dir = args["out_dir"]
     if !isdir(out_dir)
         println("Creating output directory: $out_dir")
         mkpath(out_dir)
@@ -325,26 +326,45 @@ function main()
         result
     end
 
-    println("Saving model $(args["model_name"]) to $out_dir...")
+    model_name, information = if args["model_name"] == ""
+        a = args["alpha"]
+        z = args["feh"]
+        v = args["vmic"]
+        t = args["t_star"]
+        ti = args["t_int"]
+        i = "* T_int [K]\n* $(ti)\n*\n* T_star [K]\n* $(t)\n*\n* [Fe/H]\n* $(z)\n*\n* [alpha/Fe]\n* $(a)\n*\n* vmic [km/s]\n* $(v)\n*"
+        "p_tint$(ti)_tstar$(t)_g$(round(logg_planet, digits=2))_z$(z)_a$(a)_vmic$(v)", i
+    else
+        args["model_name"], nothing
+    end
+    println("Saving model $(model_name) to $out_dir...")
+
+    # deleting the dir if it exists
+    run_dir = joinpath(abspath(out_dir), model_name)
+    if isdir(run_dir)
+        @info "Output dir already exists. Clearing $(run_dir)."
+        rm(run_dir, recursive=true, force=true)
+    end
+    println("Saving model $(model_name) to $out_dir...")
     save!(
-        result[end], args["model_name"]; 
+        result[end], model_name; 
         folder = out_dir, 
         vmic = args["vmic"], 
         logg = logg_planet,
-        eos500 = eos500_complete
+        eos500 = eos500_complete, information = information
     )
 
     # save the iterations also
-    if (!isdir(joinpath(out_dir, args["model_name"], "iterations")))
-        mkpath(joinpath(out_dir, args["model_name"], "iterations"))
+    if (!isdir(joinpath(out_dir, model_name, "iterations")))
+        mkpath(joinpath(out_dir, model_name, "iterations"))
     else
-        rm(joinpath(out_dir, args["model_name"], "iterations"), recursive=true)
-        mkpath(joinpath(out_dir, args["model_name"], "iterations"))
+        rm(joinpath(out_dir, model_name, "iterations"), recursive=true)
+        mkpath(joinpath(out_dir, model_name, "iterations"))
     end
     for (i, r) in enumerate(result)
         save!(
             r, "iteration_$(i)"; 
-            folder = joinpath(out_dir, args["model_name"], "iterations"), 
+            folder = joinpath(out_dir, model_name, "iterations"), 
             vmic = args["vmic"], 
             logg = logg_planet,
             eos500 = eos500_complete

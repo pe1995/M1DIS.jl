@@ -7,8 +7,8 @@
 # Model Output Parameters 
 # ==============================================================================
 
-# Name of the model to save
-model_name = "m1dis_planet_model"
+# Name of the model to save (will be generated if empty)
+model_name = ""
 
 # Output directory for the saved models (defaults to M1DIS.jl/models/)
 out_dir = "models"

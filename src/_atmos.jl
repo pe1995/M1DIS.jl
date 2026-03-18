@@ -39,13 +39,14 @@ function atmosphere(; T_eff, logg, eos, opacity,
 	τ=10 .^range(-6.0, 2.0, length=100), 
 	α_MLT=1.5, 
 	maxiter=20,
-	damping=0.1, 
+	damping=0.01, 
 	v_mac=0.0,
 	T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, F_irradiation=nothing,
 	T=nothing, ρ=nothing, P=nothing, z=nothing, 
 	feutrier=true,
 	use_threads=false,
 	scattering_opacity=nothing,
+	target_flux=nothing,
 	kwargs...)	
 
 	@optionalTiming initialization_time begin
@@ -104,10 +105,11 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		end
 		
 		J, F_rad, g_rad, P_rad = fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0)
-		F_conv, v_conv, g_turb, P_turb = fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0)
+		F_conv, v_conv, g_turb, P_turb, P_old = fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0)
 		dFconv_dT = fill!(similar(T), 0.0)
 		dT = fill!(similar(T), 0.0)
-		F_target = σ_SB * T_eff^4
+		F_target = isnothing(target_flux) ? σ_SB * T_eff^4 : target_flux
+		teff_target = isnothing(target_flux) ? T_eff : (target_flux / σ_SB) ^ 0.25
 		F_total = fill!(similar(T), 0.0)
 		F_err_rel = fill!(similar(T), 0.0)
 		μ_angles, μ_weights = generate_mu_grid(4)
@@ -132,7 +134,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			end
 			@optionalTiming allocate_feutrier_time begin
 				atm = Atmosphere(
-					T_eff=T_eff, z=z, 
+					T_eff=teff_target, z=z, 
 					tau=τ, rho=ρ, Temp=T, 
 					F_conv=F_conv, dFconv_dT=dFconv_dT,
 					mu=μ_angles, w_mu=μ_weights, 
@@ -173,6 +175,17 @@ function atmosphere(; T_eff, logg, eos, opacity,
 	flux_err_max_prev = Inf
 	stabilizer_stage = 3
 	base_damping = damping
+
+	# Define MARCS-standard thresholds (in % change)
+	tcrmaxsrf = damping # 1% max change for upper layers
+	tcrmaxbot = damping * 5.0 # 5% max change for bottom 5 layers
+	pcrmax = 0.5
+
+	tcmxu_inv = 1.0 / tcrmaxsrf
+	tcmxb_inv = 1.0 / tcrmaxbot
+	pcrmax_inv = 1.0 / pcrmax
+	
+
 	@optionalTiming relaxation_time for iter in 1:maxiter
 		# compute convective quantities (MLT)
 		@optionalTiming mixing_length_time update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5)
@@ -241,7 +254,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
             flux_err_max = maximum(abs.(F_err_rel))
 			flux_err_max_prev = flux_err_max
 
-			dT .= clamp.(dT, -damping.*T, damping.*T)
+			#dT .= clamp.(dT, -damping.*T, damping.*T)
 		end
 
 		converged, new_damping = evaluate_iteration!(
@@ -250,6 +263,12 @@ function atmosphere(; T_eff, logg, eos, opacity,
 			chi_max=maximum(chi, dims=1), chi_min=minimum(chi, dims=1), #chi_scat_max=maximum(chi_scat, dims=1), chi_scat_min=minimum(chi_scat, dims=1),
 			kwargs...
 		)
+
+		# Damping of temperature corrections
+		for i in 1:length(dT)
+			scale = (log10(τ[i]) > -1.0) ? tcmxb_inv : tcmxu_inv
+			dT[i] = dT[i] / sqrt(1.0 + (scale * dT[i] / T[i])^2)
+		end
 
 		if new_damping != damping
 			@verbose_info 2 "Increasing damping to $(new_damping) (from $(damping))."
@@ -264,7 +283,14 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		T .+= dT
 		T = clamp.(T, 10, 1e12)
 		#force_adiabatic_bottom!(T, P, eos, n_force=2)
+		P_old .= P
 		@optionalTiming hydrostatic_time update_hydrostatic!(P, ρ, z, T, P_turb, P_rad, τ, eos=eos, logg=logg)
+		for n in eachindex(P)
+            dP_frac = abs(P[n] - P_old[n]) / P_old[n]
+            if dP_frac > pcrmax
+                P[n] = P_old[n] + (P[n] - P_old[n]) / sqrt(1.0 + (pcrmax_inv * dP_frac)^2)
+            end
+        end
 	end
 
     length(r) == 1 ? r[1] : r
