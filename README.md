@@ -39,7 +39,7 @@ models = atmosphere(
 	τ=10 .^range(-6.0, 2.0, length=100), # optical depth grid
 	α_MLT=1.5,                           # Mixing-length parameter
 	maxiter=20,                          # maximum number of iterations
-	damping=0.1,                         # relative dT step size limit.
+	damping=0.01,                         # relative dT step size limit.
 	feutrier=true,                       # use the feutrier solver (recommended)
 	use_threads=false,                   # use the approximate Feutrier method 
     save_every=1,                        # save every `save_every` snapshot
