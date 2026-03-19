@@ -20,10 +20,10 @@ using TSO
 
 # make sure to load the tables on the T-rho grid!
 eos = reload("path/to/eos_table_T.hdf5")
-opa_binned = extended(reload("path/to/opacity_table_T.hdf5"))
+opa_binned = reload("path/to/opacity_table_T.hdf5")) |> extended
 
 # or alternatively load a un-binned table
-opa_unbinned = extended(reload("path/to/unbinned_table.hdf5", mmap=true))
+opa_unbinned = reload("path/to/unbinned_table.hdf5", mmap=true) |> extended
 
 # you can also ignore the source function for un-binned tables by using TSO.MiniOpacityTable
 opa_unbinned_mini = reload(TSO.MiniOpacityTable, "path/to/unbinned_table.hdf5")
