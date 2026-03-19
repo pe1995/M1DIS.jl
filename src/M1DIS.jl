@@ -11,6 +11,7 @@ using FastGaussQuadrature
 using LinearAlgebra
 using SparseArrays
 
+include("_data_structure.jl")
 include("_timing.jl")
 include("_feutrier.jl")
 include("_constants.jl")

@@ -36,264 +36,235 @@ Compute a M1DIS atmosphere iteratively based on the given binned opacity table, 
 - `result`: M1DIS.jl atmosphere or array of M1DIS.jl atmospheres (in MUST.Box format consistent with DISPATCH).
 """
 function atmosphere(; T_eff, logg, eos, opacity, 
-	τ=10 .^range(-6.0, 2.0, length=100), 
-	α_MLT=1.5, 
-	maxiter=20,
-	damping=0.01, 
-	v_mac=0.0,
-	T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, F_irradiation=nothing,
-	T=nothing, ρ=nothing, P=nothing, z=nothing, 
-	feutrier=true,
-	use_threads=false,
-	scattering_opacity=nothing,
-	target_flux=nothing,
-	kwargs...)	
+    τ=10 .^range(-6.0, 2.0, length=100), 
+    α_MLT=1.5, 
+    maxiter=20,
+    damping=0.01, 
+    v_mac=0.0,
+    T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, F_irradiation=nothing,
+    T=nothing, ρ=nothing, P=nothing, z=nothing, 
+    feutrier=true,
+    use_threads=false,
+    scattering_opacity=nothing,
+    target_flux=nothing,
+    kwargs...)  
 
-	@optionalTiming initialization_time begin
-		# input opacities and EoS
-		eos = if typeof(eos) <: TSO.ExtendedEoS
-			@assert !TSO.is_internal_energy(eos.eos)
-			eos
-		else
-			@assert !TSO.is_internal_energy(@axed(eos))
+    @optionalTiming initialization_time begin
+        # --- EoS & Opacity Setup ---
+        eos = if typeof(eos) <: TSO.ExtendedEoS
+            @assert !TSO.is_internal_energy(eos.eos)
+            eos
+        else
+            @assert !TSO.is_internal_energy(@axed(eos))
 			eos = TSO.extended(eos)
-			TSO.add_thermodynamics!(eos)
-
-			eos
-		end
-		
-		opacity = if typeof(opacity) <: TSO.SqOpacity
-			o = TSO.ExtendedOpacity(opa=opacity)
-			@verbose_warn 2 "Opacity was passed without wrapping it into an ExtendedOpacity. This is not recommended, as it will be guessed if the table is binned or not."
-			@verbose_warn 2 "The guess is: $(o.binned ? "binned" : "not binned")"
-			@verbose_warn 2 "If this is not true, please pass the opacity as: `TSO.ExtendedOpacity(opa=opaccity, binned=binned)`"
-			o
-		else
-			opacity
-		end
-		
-		@assert typeof(opacity) <: Union{TSO.ExtendedOpacity, TSO.MiniOpacityTable} "Opacity must be an ExtendedOpacity or MiniOpacityTable."
-		
-		if opacity.binned
-			@assert typeof(opacity) <: TSO.ExtendedOpacity "Binned opacities must use ExtendedOpacity to provide the source function. MiniOpacityTable cannot be binned."
-		end
-		
-		if !opacity.binned
-			use_threads = true
+            TSO.add_thermodynamics!(eos)
+            eos
 		end
 
-		if opacity.binned && (typeof(opacity) <: TSO.ExtendedOpacity)
-			if !haskey(opacity.extensions, :dS_dT)
-				TSO.gradients!(TSO.table(eos), opacity)
-			end
-		end
-
-		# scattering opacity
-		if !isnothing(scattering_opacity)
-			if !(typeof(scattering_opacity) <: TSO.MiniOpacityTable)
-				error("Scattering opacity must be of type MiniOpacityTable. $(typeof(scattering_opacity))")
-			end
-			@info "Running with scattering treatment."
-		end
-
-		# if no atmosphere is provided, compute an initial gray atmosphere
-		τ = deepcopy(τ)
-		T, ρ, P, z = if isnothing(T) 
-			initial_atmosphere(τ, T_eff=T_eff, logg=logg, eos=eos)
-		else
-			deepcopy(T), deepcopy(ρ), deepcopy(P), deepcopy(z)
-		end
-		
-		J, F_rad, g_rad, P_rad = fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0)
-		F_conv, v_conv, g_turb, P_turb, P_old = fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0), fill!(similar(T), 0.0)
-		dFconv_dT = fill!(similar(T), 0.0)
-		dT = fill!(similar(T), 0.0)
-		F_target = isnothing(target_flux) ? σ_SB * T_eff^4 : target_flux
-		teff_target = isnothing(target_flux) ? T_eff : (target_flux / σ_SB) ^ 0.25
-		F_total = fill!(similar(T), 0.0)
-		F_err_rel = fill!(similar(T), 0.0)
-		μ_angles, μ_weights = generate_mu_grid(4)
-
-		# check for irradiation and compute it
-		Irr = isnothing(d_irradiation) ? nothing : irradiate(eos, opacity, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
-
-		# initialize the Feutrier RT solver storage arrays
-		chi, chi_ref, S, dSdT, chi_scat, atm = if feutrier
-			@optionalTiming prepare_opacities_time begin
-				chi, chi_ref, S, dSdT = if opacity.binned
-					compute_opacities(eos, opacity, T, ρ)
-				else
-					compute_opacities_chunked(eos, opacity, T, ρ)
-				end
-
-				chi_scat, _, _, _ = if !isnothing(scattering_opacity)
-					compute_opacities_chunked(eos, scattering_opacity, T, ρ, opacity_only=true)
-				else
-					nothing, nothing, nothing, nothing
-				end
-			end
-			@optionalTiming allocate_feutrier_time begin
-				atm = Atmosphere(
-					T_eff=teff_target, z=z, 
-					tau=τ, rho=ρ, Temp=T, 
-					F_conv=F_conv, dFconv_dT=dFconv_dT,
-					mu=μ_angles, w_mu=μ_weights, 
-					chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT, I_top=Irr, chi_scat=chi_scat
-				)
-			end
-			chi, chi_ref, S, dSdT, chi_scat, atm
-		else
-			nothing, nothing, nothing, nothing, nothing
-		end
-		
-		@verbose_info 2 "================================= M1DIS ================================="
-		
-		r = []
-		if (typeof(opacity) <: TSO.MiniOpacityTable)
-			@verbose_info 2 """
-			Running M1DIS with MiniOpacityTable. 
-			This causes the source function and its derivative to be 
-			computed on the fly to save memory.
-			This means the source function is always assumed to be the Planck function.
-			"""
-		end
-		
-		if !opacity.binned
-			@verbose_info 2 """
-			Running M1DIS with unbinned opacity table.
-			Forcing `use_threads=true` to handle the large number of frequency points.
-			"""
-		end
-
-		if use_threads
-			@verbose_info 1 "Running approximate Feutrier RT with $(Base.Threads.nthreads()) threads."
-		end
-
-		@verbose_info 2 "========================================================================="
-		@verbose_info 1 "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
-	end
-	flux_err_max_prev = Inf
-	stabilizer_stage = 3
-	base_damping = damping
-
-	# Define MARCS-standard thresholds (in % change)
-	tcrmaxsrf = damping # 1% max change for upper layers
-	tcrmaxbot = damping * 5.0 # 5% max change for bottom 5 layers
-	pcrmax = 0.5
-
-	tcmxu_inv = 1.0 / tcrmaxsrf
-	tcmxb_inv = 1.0 / tcrmaxbot
-	pcrmax_inv = 1.0 / pcrmax
-	
-
-	@optionalTiming relaxation_time for iter in 1:maxiter
-		# compute convective quantities (MLT)
-		@optionalTiming mixing_length_time update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5)
-		#@optionalTiming mixing_length_time update_mixing_length_marcs!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P, ρ, τ, eos, exp10(logg); alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5)
-
-		if stabilizer_stage == 3
-			for n in 2:length(F_conv)
-				if (F_conv[n-1] > 0.0) && (F_conv[n] < F_conv[n-1])
-					F_conv[n] = F_conv[n-1]
-					v_conv[n] = v_conv[n-1]
-					P_turb[n] = P_turb[n-1]
-					dFconv_dT[n] = dFconv_dT[n-1]
-				end
-			end
-			fconv_stabilizer!(F_conv, passes=1)
-			fconv_stabilizer!(v_conv, passes=1)
-			fconv_stabilizer!(P_turb, passes=1)
-			fconv_stabilizer!(dFconv_dT, passes=1)
-		elseif stabilizer_stage == 2
-			for n in 2:length(F_conv)
-				if (F_conv[n-1] > 0.0) && (dFconv_dT[n] < dFconv_dT[n-1])
-					dFconv_dT[n] = dFconv_dT[n-1]
-					P_turb[n] = P_turb[n-1]
-				end
-			end
-			fconv_stabilizer!(dFconv_dT, passes=1)
-			fconv_stabilizer!(P_turb, passes=1)
-		end
-
-		if flux_err_max_prev > 50.0
-			stabilizer_stage = 3
-		elseif flux_err_max_prev > 10
-			stabilizer_stage = 2
-		else
-			stabilizer_stage = 1
-		end
-        
-		@optionalTiming radiation_transfer_time begin
-			if opacity.binned
- 				@optionalTiming compute_opacities_time compute_opacities!(chi, chi_ref, S, dSdT, eos, opacity, T, ρ)
-			else
- 				@optionalTiming compute_opacities_time compute_opacities_chunked!(chi, chi_ref, S, dSdT, eos, opacity, T, ρ)
-			end
-
-			if !isnothing(scattering_opacity)
-				@optionalTiming compute_opacities_time compute_opacities_chunked!(chi_scat, nothing, nothing, nothing, eos, scattering_opacity, T, ρ)
-			end
-
-			@optionalTiming update_atmosphere_time update!(atm; tau=τ, rho=ρ, Temp=T, F_conv=F_conv, dFconv_dT=dFconv_dT, chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT, chi_scat=chi_scat)
-			
-			@optionalTiming solve_RT_time if !use_threads
-				solve_gustafsson!(atm, include_dT=true)
-			else
-				solve_approximate!(atm)
-			end
-
-			J .= atm.J_bol
-			F_rad .= atm.F_bol
-			g_rad .= atm.g_rad
-			P_rad .= atm.P_rad
-			dT .= atm.dT
-
-			# Update tracking for MLT stabilization
-            F_total .= atm.F_bol .+ atm.F_conv
-			F_err_rel .= (F_total .- F_target) ./ F_target
-            flux_err_max = maximum(abs.(F_err_rel))
-			flux_err_max_prev = flux_err_max
-
-			#dT .= clamp.(dT, -damping.*T, damping.*T)
-		end
-
-		converged, new_damping = evaluate_iteration!(
-			r, iter, maxiter, F_target, dT, τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, T_eff, logg, eos, damping; 
-			dFconv_dT=dFconv_dT, J=J, g_turb=g_turb, g_rad=g_rad, P_turb=P_turb, P_rad=P_rad, F_err_rel=F_err_rel, Q_rad=atm.Q_rad,
-			chi_max=maximum(chi, dims=1), chi_min=minimum(chi, dims=1), #chi_scat_max=maximum(chi_scat, dims=1), chi_scat_min=minimum(chi_scat, dims=1),
-			kwargs...
-		)
-
-		# Damping of temperature corrections
-		for i in 1:length(dT)
-			scale = (log10(τ[i]) > -1.0) ? tcmxb_inv : tcmxu_inv
-			dT[i] = dT[i] / sqrt(1.0 + (scale * dT[i] / T[i])^2)
-		end
-
-		if new_damping != damping
-			@verbose_info 2 "Increasing damping to $(new_damping) (from $(damping))."
-			damping = new_damping
-		end
-
-		if converged 
-			@verbose_info 1 "Atmosphere converged."
-			break
-		end
-
-		T .+= dT
-		T = clamp.(T, 10, 1e12)
-		#force_adiabatic_bottom!(T, P, eos, n_force=2)
-		P_old .= P
-		@optionalTiming hydrostatic_time update_hydrostatic!(P, ρ, z, T, P_turb, P_rad, τ, eos=eos, logg=logg)
-		for n in eachindex(P)
-            dP_frac = abs(P[n] - P_old[n]) / P_old[n]
-            if dP_frac > pcrmax
-                P[n] = P_old[n] + (P[n] - P_old[n]) / sqrt(1.0 + (pcrmax_inv * dP_frac)^2)
-            end
+        opacity = if typeof(opacity) <: TSO.SqOpacity
+            o = TSO.ExtendedOpacity(opa=opacity)
+            @verbose_warn 2 "Opacity was passed without wrapping it into an ExtendedOpacity. Guessing: $(o.binned ? "binned" : "not binned")"
+            o
+        else
+            opacity
         end
-	end
+        
+        @assert typeof(opacity) <: Union{TSO.ExtendedOpacity, TSO.MiniOpacityTable} "Opacity must be an ExtendedOpacity or MiniOpacityTable."
+        if opacity.binned
+            @assert typeof(opacity) <: TSO.ExtendedOpacity "Binned opacities must use ExtendedOpacity."
+            if !haskey(opacity.extensions, :dS_dT)
+                TSO.gradients!(TSO.table(eos), opacity)
+            end
+        else
+            use_threads = true
+        end
 
-    length(r) == 1 ? r[1] : r
+        if !isnothing(scattering_opacity)
+            @assert typeof(scattering_opacity) <: TSO.MiniOpacityTable "Scattering opacity must be MiniOpacityTable."
+            @info "Running with scattering treatment."
+        end
+
+        # --- Initial State ---
+        τ = deepcopy(τ)
+        T, ρ, P, z = if isnothing(T) 
+            initial_atmosphere(τ, T_eff=T_eff, logg=logg, eos=eos)
+        else
+            deepcopy(T), deepcopy(ρ), deepcopy(P), deepcopy(z)
+        end
+        
+        F_target = isnothing(target_flux) ? σ_SB * T_eff^4 : target_flux
+		teff_target = isnothing(target_flux) ? T_eff : (target_flux / σ_SB) ^ 0.25
+        μ_angles, μ_weights = generate_mu_grid(4)
+        Irr = isnothing(d_irradiation) ? nothing : irradiate(eos, opacity, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
+
+        # --- Pre-compute initial opacities to bootstrap the Atmosphere object ---
+		@optionalTiming prepare_opacities_time begin
+			chi, chi_ref, S, dSdT, chi_scat = if feutrier
+				c, c_ref, s_val, dsdt_val = opacity.binned ? compute_opacities(eos, opacity, T, ρ) : compute_opacities_chunked(eos, opacity, T, ρ)
+				c_scat = !isnothing(scattering_opacity) ? compute_opacities_chunked(eos, scattering_opacity, T, ρ, opacity_only=true)[1] : nothing
+				c, c_ref, s_val, dsdt_val, c_scat
+			else
+				nothing, nothing, nothing, nothing, nothing
+			end
+		end
+
+		# --- Master Storage Initialization ---
+        atm = Atmosphere(
+            T_eff=teff_target, z=z, tau=τ, rho=ρ, Temp=T, P_gas=P,
+            mu=μ_angles, w_mu=μ_weights, 
+            chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT, I_top=Irr, chi_scat=chi_scat
+        )
+        
+        @verbose_info 2 "================================= M1DIS ================================="
+        if typeof(opacity) <: TSO.MiniOpacityTable
+            @verbose_info 2 "Running M1DIS with MiniOpacityTable. Source function is computed on the fly."
+        end
+        if !opacity.binned
+            @verbose_info 2 "Running M1DIS with unbinned opacity table. Forcing use_threads=true."
+		end
+        if use_threads
+            @verbose_info 1 "Running approximate Feutrier RT with $(Base.Threads.nthreads()) threads."
+        end
+        @verbose_info 2 "========================================================================="
+        @verbose_info 1 "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
+    end
+	
+	flux_err_max_prev = Inf
+    stabilizer_stage = 3
+
+    # MARCS-standard thresholds
+    tcmxu_inv = 1.0 / damping 
+	tcmxb_inv = 1.0 / (damping * 5.0)
+    r = []
+
+    @optionalTiming relaxation_time for iter in 1:maxiter
+        
+		# MLT
+        @optionalTiming mixing_length_time begin
+            update_mixing_length!(
+                atm.F_conv, 
+				atm.v_conv, 
+				atm.P_rad, 
+				atm.P_turb, 
+                atm.dFconv_dT, 
+                atm.Temp, 
+				atm.P_gas, 
+				atm.rho, 
+				atm.tau, 
+                eos, 
+				exp10(logg); 
+                alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5
+            )
+        end
+
+        # Stabilizer 
+        if stabilizer_stage == 3
+            for n in 2:length(atm.F_conv)
+                if (atm.F_conv[n-1] > 0.0) && (atm.F_conv[n] < atm.F_conv[n-1])
+                    atm.F_conv[n] = atm.F_conv[n-1]
+                    atm.v_conv[n] = atm.v_conv[n-1]
+                    atm.P_turb[n] = atm.P_turb[n-1]
+                    atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
+                end
+            end
+            smooth_array!(atm.F_conv, passes=1)
+            smooth_array!(atm.v_conv, passes=1)
+            smooth_array!(atm.P_turb, passes=1)
+            smooth_array!(atm.dFconv_dT, passes=1)
+        elseif stabilizer_stage == 2
+            for n in 2:length(atm.F_conv)
+                if (atm.F_conv[n-1] > 0.0) && (atm.dFconv_dT[n] < atm.dFconv_dT[n-1])
+                    atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
+                    atm.P_turb[n] = atm.P_turb[n-1]
+                end
+            end
+            smooth_array!(atm.dFconv_dT, passes=1)
+            smooth_array!(atm.P_turb, passes=1)
+        end
+
+        stabilizer_stage = (flux_err_max_prev > 50.0) ? 3 : ((flux_err_max_prev > 10.0) ? 2 : 1)
+        
+		# Radiative Transfer
+        @optionalTiming radiation_transfer_time begin
+            @optionalTiming compute_opacities_time if opacity.binned
+                compute_opacities!(atm.chi, atm.chi_ref, atm.B, atm.dBdT, eos, opacity, atm.Temp, atm.rho)
+            else
+                compute_opacities_chunked!(atm.chi, atm.chi_ref, atm.B, atm.dBdT, eos, opacity, atm.Temp, atm.rho)
+            end
+
+            if !isnothing(scattering_opacity)
+                @optionalTiming compute_opacities_time compute_opacities_chunked!(atm.chi_scat, nothing, nothing, nothing, eos, scattering_opacity, atm.Temp, atm.rho)
+            end
+
+            @optionalTiming update_atmosphere_time update!(atm)
+            
+            @optionalTiming solve_RT_time if !use_threads
+                solve_gustafsson!(atm, include_dT=true)
+            else
+                solve_approximate!(atm)
+            end
+
+            # Update flux errors inside atm (Staggered Flux sum)
+            atm.F_total .= atm.F_rad .+ atm.F_conv
+            atm.F_err_rel .= (atm.F_total .- F_target) ./ F_target
+            flux_err_max_prev = maximum(abs.(atm.F_err_rel))
+        end
+
+		# Damping
+        for i in 1:length(atm.dT)
+            scale = (log10(atm.tau[i]) > -1.0) ? tcmxb_inv : tcmxu_inv
+            atm.dT[i] = atm.dT[i] / sqrt(1.0 + (scale * atm.dT[i] / atm.Temp[i])^2)
+        end
+
+        # Evaluation
+        converged = evaluate_iteration!(
+            r, iter, maxiter, F_target, 
+            atm.dT, 
+			atm.tau, 
+			atm.z, 
+			atm.Temp, 
+			atm.rho, 
+			atm.P_gas, 
+            atm.F_rad, 
+			atm.F_conv, 
+			atm.dFconv_dT, 
+            T_eff, 
+			logg, 
+			eos, 
+			damping; 
+            J=atm.J_bol, 
+			g_rad=atm.g_rad, 
+			P_turb=atm.P_turb, 
+			P_rad=atm.P_rad, 
+            F_err_rel=atm.F_err_rel, 
+			Q_rad=atm.Q_rad,
+            chi_max=maximum(atm.chi, dims=1), chi_min=minimum(atm.chi, dims=1),
+            kwargs...
+        )
+
+        if converged 
+            @verbose_info 1 "Atmosphere converged."
+            break
+        end
+
+        # Apply corrections & Hydrostatic Equilibrium
+        atm.Temp .+= atm.dT
+        atm.Temp .= clamp.(atm.Temp, 10, 1e12)
+        
+        @optionalTiming hydrostatic_time update_hydrostatic!(
+            atm.P_gas, 
+			atm.rho, 
+			atm.z, 
+			atm.Temp, 
+			atm.P_turb, 
+			atm.P_rad, 
+			atm.tau, 
+            eos=eos, 
+			logg=logg
+        )
+    end
+
+    return length(r) == 1 ? r[1] : r
 end
 
 # ============================================================================
@@ -333,23 +304,25 @@ function evaluate_iteration!(result,
 	F_target, dT, 
 	τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg, eos, damping; 
 	dt_tolerance_rel=0.0001, flux_tolerance_rel=0.01, save_every=1, kwargs...)
-	# store the atmosphere every `save_every` iterations
+	
+    # store the atmosphere every `save_every` iterations
 	store = save_every > 0 ? ((iter%save_every == 0) | (iter == maxiter)) : false
     F_total = F_rad .+ F_conv
 	flux_err_max = maximum(abs.(F_total[2:end-1] .- F_target)) / F_target
 	dt_err_max = maximum(abs.(dT[2:end-1] ./ T[2:end-1]))
-	sinf = TSO.@sprintf("%4d | %16.4f | %14.4f | %10.1f K\n", 
-			iter, flux_err_max*100, dt_err_max*100, maximum(abs.(dT[2:end-1])))
+	
+    sinf = TSO.@sprintf(
+        "%4d | %16.4f | %14.4f | %10.1f K\n", 
+		iter, flux_err_max*100, dt_err_max*100, maximum(abs.(dT[2:end-1]))
+    )
 	@verbose_info 1 sinf
-
-	new_damping = damping #flux_err_max < 0.05 ? min(damping * 1.05, 0.25) : damping
 
 	converged = (dt_err_max<dt_tolerance_rel) | (flux_err_max<flux_tolerance_rel)
 	if converged | store
 		append!(result, [m1disBox(τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, dT, teff, logg, eos; kwargs...)])
 	end
 
-	converged, new_damping
+	converged
 end
 
 # ============================================================================
@@ -363,7 +336,6 @@ m1disBox(τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, dT, teff, logg, eos; kwargs.
     yy = zeros(size(zz))
 
 	τ_new = deepcopy(τ)
-	#update_τ_grid!(τ_new; T=T, ρ=ρ, z=z, eos=eos.eos)
 
     d = Dict(
         :τ_ross=>reshape(τ_new, 1, 1, :) |> deepcopy,

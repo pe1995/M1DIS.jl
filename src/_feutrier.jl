@@ -1,34 +1,6 @@
 # ==============================================================================
 # Data structures
 # ==============================================================================
-mutable struct Atmosphere{T <: AbstractFloat}
-    T_eff::T              # Effective Temperature [K] 
-    z::Vector{T}          # Height (Size: D)
-    tau::Vector{T}        # Reference optical depth (Size: D)
-    tau_lambda::Matrix{T} # Reference optical depth (Size: Nf, D)
-    rho::Vector{T}        # Density [g/cm^3] (Size: D)
-    Temp::Vector{T}       # Temperature (Size: D)
-    mu::Vector{T}         # Angle cosines (Size: Na)
-    w_mu::Vector{T}       # Angle weights (Normalized to sum=1)
-    #w_lambda::Vector{T}   # Frequency Bin weights (Size: Nf)
-    chi::Matrix{T}        # Opacity (Nf x D)
-    chi_scat::Union{Matrix{T}, Nothing}   # Scattering opacity (Nf x D)
-    chi_ref::Vector{T}    # Reference opacity (Size: D)
-    B::Matrix{T}          # Planck function (Nf x D)
-    dBdT::Matrix{T}       # Derivative of B (Nf x D)
-    F_conv::Vector{T}     # Convective Flux (Size: D) 
-    dFconv::Vector{T}     # Spatial Derivative dF_conv/dtau (Size: D) 
-    dFconv_dT::Vector{T}  # Partial derivative dF_conv/dT (Size: D) 
-    eta::Matrix{T}        # Opacity ratio chi / chi_ref
-    I_top::Vector{T}      # External Irradiation (Size: Nf)
-    J_bol::Vector{T}      # Bolometric Mean Intensity (Size: D)
-    F_bol::Vector{T}      # Bolometric Flux (Size: D)
-    g_rad::Vector{T}      # Radiative Acceleration (Size: D) [cm/s^2] 
-    P_rad::Vector{T}      # Radiative Pressure (Size: D) [dyne/cm^2]
-    dT::Vector{T}         # Temperature Correction (Size: D)
-    Q_rad::Vector{T}      # Radiative Heating [erg/cm^3/s] (Size: D)
-    J_raw                 # Specific Intensity J(mu) (Nf x Na x D)
-end
 
 struct Packer{T}
     Nf::Int
@@ -45,137 +17,6 @@ end
 # ==============================================================================
 # Initialization
 # ==============================================================================
-
-function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Temp::Vector{T}, 
-                    F_conv::Vector{T}, dFconv_dT::Vector{T},
-                    mu::Vector{T}, w_mu::Vector{T}, 
-                    #w_lambda::Vector{T},
-                    chi::Matrix{T}, chi_ref::Vector{T}, 
-                    B::Matrix{T}, dBdT::Matrix{T}, 
-                    I_top::Union{Vector{T}, Nothing}=nothing, chi_scat::Union{Matrix{T}, Nothing}=nothing) where T
-    D = length(tau)
-    Nf = size(chi, 1) 
-    Na = length(mu)
-    
-    # --- 1. Normalize Angle Weights ---
-    total_w_mu = sum(w_mu)
-    w_mu = (total_w_mu > 0) ? w_mu ./ total_w_mu : w_mu
-    
-    # --- 2. Eta ---
-    eta = zeros(T, Nf, D)
-    for d in 1:D
-        ref = max(chi_ref[d], 1e-30)
-        for f in 1:Nf
-            eta[f, d] = chi[f, d] / ref
-        end
-    end
-
-    # --- 3. Pre-compute Convective Flux Derivative (dF_conv / dtau) ---
-    dFconv = zeros(T, D)
-    for d in 1:D
-        if d == 1
-            dt = tau[2] - tau[1]
-            dFconv[d] = (F_conv[2] - F_conv[1]) / dt
-        elseif d == D
-            dt = tau[D] - tau[D-1]
-            dFconv[d] = (F_conv[D] - F_conv[D-1]) / dt
-        else
-            dt = tau[d+1] - tau[d-1]
-            dFconv[d] = (F_conv[d+1] - F_conv[d-1]) / dt
-        end
-    end
-
-    # --- 4. Compute tau_lambda ---
-    tau_lambda = zeros(T, Nf, D)
-    Threads.@threads for f in 1:Nf
-        compute_τ!(view(tau_lambda, f, :); z=z, ρκ=chi[f,:])
-    end
-    
-    I_top_val = isnothing(I_top) ? zeros(T, Nf) : I_top
-    chi_scat_val = isnothing(chi_scat) ? nothing : deepcopy(chi_scat)
-    
-    # --- 5. Allocation ---
-    J_raw_init = nothing #zeros(T, Nf, Na, D)
-    J_bol_init = zeros(T, D)
-    F_bol_init = zeros(T, D)
-    g_rad_init = zeros(T, D)
-    P_rad_init = zeros(T, D)
-    dT_init    = zeros(T, D)
-    Q_rad_init = zeros(T, D)
-    return Atmosphere{T}(T_eff, deepcopy(z), deepcopy(tau), tau_lambda, deepcopy(rho), deepcopy(Temp), 
-                         deepcopy(mu), deepcopy(w_mu), 
-                         deepcopy(chi), chi_scat_val, deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), 
-                         deepcopy(F_conv), dFconv, deepcopy(dFconv_dT), 
-                         eta, I_top_val, J_bol_init, F_bol_init, g_rad_init, P_rad_init, dT_init, Q_rad_init, J_raw_init)
-end
-
-function update!(atm::Atmosphere{T}; kwargs...) where T
-    dirty_chi = false
-    dirty_chi_ref = false
-    dirty_F_conv = false
-    dirty_tau = false
-    dirty_w_mu = false
-    for (k, v) in kwargs
-        if hasfield(Atmosphere, k)
-            field_val = getfield(atm, k)
-            
-            if isa(field_val, AbstractArray) && !isnothing(field_val)
-                copyto!(field_val, v)
-            else
-                setfield!(atm, k, v)
-            end
-
-            if k === :chi; dirty_chi = true; end
-            if k === :chi_ref; dirty_chi_ref = true; end
-            if k === :F_conv; dirty_F_conv = true; end
-            if k === :tau; dirty_tau = true; end
-            if k === :w_mu; dirty_w_mu = true; end
-            if k === :I_top && !isnothing(v)
-                 copyto!(atm.I_top, v)
-            end
-        end
-    end
-
-    D = length(atm.tau)
-    Nf = size(atm.chi, 1)
-
-    if dirty_chi || dirty_chi_ref
-        @inbounds for d in 1:D
-            ref = max(atm.chi_ref[d], 1e-30)
-            atm.eta[:, d] = atm.chi[:, d] ./ ref
-        end
-    end
-
-    if dirty_F_conv || dirty_tau
-        @inbounds for d in 1:D
-            if d == 1
-                dt = atm.tau[2] - atm.tau[1]
-                atm.dFconv[d] = (atm.F_conv[2] - atm.F_conv[1]) / dt
-            elseif d == D
-                dt = atm.tau[D] - atm.tau[D-1]
-                atm.dFconv[d] = (atm.F_conv[D] - atm.F_conv[D-1]) / dt
-            else
-                dt = atm.tau[d+1] - atm.tau[d-1]
-                atm.dFconv[d] = (atm.F_conv[d+1] - atm.F_conv[d-1]) / dt
-            end
-        end
-    end
-
-    if dirty_chi || dirty_tau 
-        Threads.@threads for f in 1:Nf
-             compute_τ!(view(atm.tau_lambda, f, :); z=atm.z, ρκ=view(atm.chi, f, :))
-        end
-    end
-    
-    if dirty_w_mu
-        total = sum(atm.w_mu)
-        if total > 0
-            atm.w_mu ./= total
-        end
-    end
-
-    return nothing
-end
 
 function Packer(atm::Atmosphere{T}) where T
     Nf = size(atm.chi, 1) 
@@ -328,7 +169,7 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_ja
     D = length(atm.tau)
     Nf = size(atm.chi, 1)
     
-    fill!(atm.J_bol, 0.0); fill!(atm.F_bol, 0.0); fill!(atm.g_rad, 0.0); fill!(atm.P_rad, 0.0)
+    fill!(atm.J_bol, 0.0); fill!(atm.F_rad, 0.0); fill!(atm.g_rad, 0.0); fill!(atm.P_rad, 0.0)
     fill!(RE_res, 0.0); fill!(RE_jac, 0.0)
     fill!(K_rad_diag, 0.0); fill!(K_rad_prev, 0.0)
     
@@ -352,7 +193,7 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_ja
         (J_p, F_p, RE_r, RE_j, K_d, K_p, g_p, P_p) = fetch(t)::NTuple{8, Vector{T}}
         
         atm.J_bol   .+= J_p
-        atm.F_bol   .+= F_p
+        atm.F_rad   .+= F_p
         RE_res      .+= RE_r
         RE_jac      .+= RE_j
         K_rad_diag  .+= K_d
@@ -602,7 +443,7 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, 
             RHS[d] = RE_res[d]
         else
             # --- Flux Conservation ---
-            F_curr = atm.F_bol[d] + atm.F_conv[d]
+            F_curr = atm.F_rad[d] + atm.F_conv[d]
             RHS[d] = F_target - F_curr
             
             # 1. Convection Terms
@@ -713,7 +554,7 @@ function compute_flux!(atm::Atmosphere{T}) where T
     D = length(atm.tau); Nf = size(atm.chi, 1); Na = length(atm.mu)
     c_light = 2.99792458e10
     
-    fill!(atm.F_bol, 0.0); fill!(atm.g_rad, 0.0); fill!(atm.P_rad, 0.0)
+    fill!(atm.F_rad, 0.0); fill!(atm.g_rad, 0.0); fill!(atm.P_rad, 0.0)
     
     for f in 1:Nf
         w_f = 1 #atm.w_lambda[f]
@@ -743,7 +584,7 @@ function compute_flux!(atm::Atmosphere{T}) where T
                 end
                 
                 flux = ang_f * (dJ / dt)
-                atm.F_bol[d] += flux
+                atm.F_rad[d] += flux
                 atm.g_rad[d] += flux * atm.chi[f, d]
                 atm.P_rad[d] += (ang_f / c_light) * atm.J_raw[f, a, d]
             end
