@@ -158,6 +158,14 @@ function atmosphere(; T_eff, logg, eos, opacity,
         end
 
         # Stabilizer 
+        stabilizer_stage = if (flux_err_max_prev > 50.0) 
+            3
+        elseif (flux_err_max_prev > 1.0) 
+            2
+        else
+            1
+        end
+
         if stabilizer_stage == 3
             for n in 2:length(atm.F_conv)
                 if (atm.F_conv[n-1] > 0.0) && (atm.F_conv[n] < atm.F_conv[n-1])
@@ -182,7 +190,6 @@ function atmosphere(; T_eff, logg, eos, opacity,
             smooth_array!(atm.P_turb, passes=1)
         end
 
-        stabilizer_stage = (flux_err_max_prev > 50.0) ? 3 : ((flux_err_max_prev > 10.0) ? 2 : 1)
         
 		# Radiative Transfer
         @optionalTiming radiation_transfer_time begin
