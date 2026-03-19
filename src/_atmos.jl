@@ -134,7 +134,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
     # MARCS-standard thresholds
     tcmxu_inv = 1.0 / damping 
-	tcmxb_inv = 1.0 / (damping * 5.0)
+	#tcmxb_inv = 1.0 / (damping * 3.0)
     r = []
 
     @optionalTiming relaxation_time for iter in 1:maxiter
@@ -158,9 +158,9 @@ function atmosphere(; T_eff, logg, eos, opacity,
         end
 
         # Stabilizer 
-        stabilizer_stage = if (flux_err_max_prev > 50.0) 
+        stabilizer_stage = if (flux_err_max_prev > 50.0)
             3
-        elseif (flux_err_max_prev > 1.0) 
+        elseif (flux_err_max_prev > 1.0)
             2
         else
             1
@@ -168,7 +168,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
         if stabilizer_stage == 3
             for n in 2:length(atm.F_conv)
-                if (atm.F_conv[n-1] > 0.0) && (atm.F_conv[n] < atm.F_conv[n-1])
+                if ((atm.F_conv[n-1] > 0.0) && (atm.F_conv[n] < atm.F_conv[n-1]))
                     atm.F_conv[n] = atm.F_conv[n-1]
                     atm.v_conv[n] = atm.v_conv[n-1]
                     atm.P_turb[n] = atm.P_turb[n-1]
@@ -181,7 +181,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
             smooth_array!(atm.dFconv_dT, passes=1)
         elseif stabilizer_stage == 2
             for n in 2:length(atm.F_conv)
-                if (atm.F_conv[n-1] > 0.0) && (atm.dFconv_dT[n] < atm.dFconv_dT[n-1])
+                if ((atm.dFconv_dT[n-1] > 0.0) && (atm.dFconv_dT[n] < atm.dFconv_dT[n-1]))
                     atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
                     atm.P_turb[n] = atm.P_turb[n-1]
                 end
@@ -219,7 +219,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
 		# Damping
         for i in 1:length(atm.dT)
-            scale = (log10(atm.tau[i]) > -1.0) ? tcmxb_inv : tcmxu_inv
+            scale = tcmxu_inv # (log10(atm.tau[i]) > -1.0) ? tcmxb_inv : tcmxu_inv
             atm.dT[i] = atm.dT[i] / sqrt(1.0 + (scale * atm.dT[i] / atm.Temp[i])^2)
         end
 

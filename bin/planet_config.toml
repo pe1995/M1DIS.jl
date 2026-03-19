@@ -87,7 +87,7 @@ mini = false
 use_threads = true
 
 # include scattering opacity separately from true absorption opacity
-scattering = false
+scattering = true
 
 # ==============================================================================
 # Optical depth grid
@@ -100,7 +100,7 @@ tau_min = -7.0
 tau_max = 2.0
 
 # Number of optical depth points
-n_tau = 200
+n_tau = 300
 
 # ==============================================================================
 # Solver Parameters (Optional)
