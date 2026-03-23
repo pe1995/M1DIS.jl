@@ -45,9 +45,12 @@ function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha
     xi = max(xi, 1e-32)
 
     v_real = v_scale * xi
-    if pbeta > 0.0
-        v_max = sqrt(0.5 * P_local / (pbeta * exp(lnrho_local)))
-        v_real = min(v_real, v_max)
+    v_real = if pbeta > 0.0
+        v_max = sqrt(0.75 * P_local / (pbeta * exp(lnrho_local)))
+        #(v_real^-8 + v_max^-8)^(-1/8)
+        min(v_real, v_max)
+    else
+        v_real
     end
 
     Flux = (0.5 * alpha_mlt) * (exp(lnrho_local) * Cp * T_local) * v_scale * xi^3
@@ -84,7 +87,7 @@ function calc_mlt_local_marcs(T_local, P_local, ∇_local, eos_extended, g_surf,
     
     v_real = vvmlt(a_in, b_in, c_in)
     v_limited = if pbeta > 0.0
-        v_max = sqrt(0.5 * P_local / (pbeta * ρ_local))
+        v_max = sqrt(0.75 * P_local / (pbeta * ρ_local))
         min(v_real, v_max)
     else
         v_real
@@ -97,13 +100,23 @@ function calc_mlt_local_marcs(T_local, P_local, ∇_local, eos_extended, g_surf,
     return Flux, v_limited
 end
 
-"""
+#="""
     mlt(T, P, ∇, eos, g, alpha_mlt, P_rad, P_turb)
 
 Compute MLT parameters F_conv and v_conv based on Gustafsson et al. (1970).
+This method uses the convective efficiency computation from Kippenhahn & Weigert (1990).
 """
-mlt(args...; kwargs...) = calc_mlt_local(args...; kwargs...)
-#mlt(args...; kwargs...) = calc_mlt_local_marcs(args...; kwargs...)
+mlt(args...; kwargs...) = calc_mlt_local(args...; kwargs...)=#
+
+
+#="""
+    mlt(T, P, ∇, eos, g, alpha_mlt, P_rad, P_turb)
+
+Compute MLT parameters F_conv and v_conv based on Gustafsson et al. (1970).
+This method uses the convective efficiency computation from MARCS.
+"""
+mlt(args...; kwargs...) = calc_mlt_local_marcs(args...; kwargs...)=#
+
 
 function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_gas, ρ, τ_ross, eos_extended, g_surf; 
     alpha_mlt=1.5, Teff=5777.0, v_mac=0.0, pbeta=1.0)
@@ -167,7 +180,7 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
     v_conv[1] = v_conv[2]
     
     # Turbulent Pressure
-    P_turb .= ρ .* (pbeta .* v_conv .^ 2 .+ v_mac .^ 2)
+    P_turb .= 0.25 .* ρ .* (pbeta .* v_conv .^ 2 .+ v_mac .^ 2) .+ 0.75 .* P_turb_prev 
 end
 
 # ============================================================================

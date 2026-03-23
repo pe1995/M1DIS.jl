@@ -160,7 +160,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
         # Stabilizer 
         stabilizer_stage = if (flux_err_max_prev > 50.0)
             3
-        elseif (flux_err_max_prev > 0.1)
+        elseif (flux_err_max_prev > 1.0)
             2
         else
             1
