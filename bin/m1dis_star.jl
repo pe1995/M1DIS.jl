@@ -76,6 +76,10 @@ function parse_commandline()
             help = "Mixing length parameter"
             arg_type = Float64
             default = convert(Float64, get(c, "alpha_MLT", 1.5))
+        "--pbeta"
+            help = "Parameter for turbulent pressure. 0.0 turns off turbulent pressure."
+            arg_type = Float64
+            default = convert(Float64, get(c, "pbeta", 1.0))
         "--eos_dir"
             help = "Path to the directory containing the Equation of State and Opacity table files (required either via CLI or config)"
             default = get(c, "eos_dir", "")
@@ -219,6 +223,7 @@ function main()
         logg = args["logg"],
         #v_mac = args["vmic"],
         α_MLT = args["alpha_MLT"],
+        pbeta = args["pbeta"],
         maxiter = args["maxiter"],
         eos = eos_complete,
         opacity = opa_complete,

@@ -26,6 +26,9 @@ logg = 4.44
 # Mixing length parameter
 alpha_MLT = 1.5
 
+# Parameter for turbulent pressure. 0.0 turns off turbulent pressure.
+pbeta = 1.0
+
 # ==============================================================================
 # Chemical composition
 # ==============================================================================

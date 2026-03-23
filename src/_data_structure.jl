@@ -137,3 +137,25 @@ function update!(atm::Atmosphere{T}; sync_opacities::Bool=true, sync_geometry::B
 
     return nothing
 end
+
+# ============================================================================
+# Compute formation height
+# ============================================================================
+
+function formation_height(atm::M1DIS.Atmosphere; closest=true)
+    lgt = log10.(atm.tau)
+    fh = similar(atm.tau_lambda, size(atm.tau_lambda, 1))
+
+    if closest
+        for l in axes(atm.tau_lambda, 1)
+            idx = argmin(abs.(atm.tau_lambda[l, :] .- 1.0))
+            fh[l] = -lgt[idx]
+        end
+    else
+        for l in axes(atm.tau_lambda, 1)
+            fh[l] = -MUST.linear_interpolation(log10.(atm.tau_lambda[l, :]), lgt, extrapolation_bc=MUST.Line())(0.0)
+        end
+    end
+   
+    fh
+end

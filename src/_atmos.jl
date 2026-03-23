@@ -41,6 +41,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
     maxiter=20,
     damping=0.01, 
     v_mac=0.0,
+    pbeta=1.0,
     T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, F_irradiation=nothing,
     T=nothing, ρ=nothing, P=nothing, z=nothing, 
     feutrier=true,
@@ -134,7 +135,6 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
     # MARCS-standard thresholds
     tcmxu_inv = 1.0 / damping 
-	#tcmxb_inv = 1.0 / (damping * 3.0)
     r = []
 
     @optionalTiming relaxation_time for iter in 1:maxiter
@@ -153,14 +153,14 @@ function atmosphere(; T_eff, logg, eos, opacity,
 				atm.tau, 
                 eos, 
 				exp10(logg); 
-                alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5
+                alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5, pbeta=pbeta
             )
         end
 
         # Stabilizer 
         stabilizer_stage = if (flux_err_max_prev > 50.0)
             3
-        elseif (flux_err_max_prev > 1.0)
+        elseif (flux_err_max_prev > 0.1)
             2
         else
             1
@@ -206,7 +206,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
             @optionalTiming update_atmosphere_time update!(atm)
             
             @optionalTiming solve_RT_time if !use_threads
-                solve_gustafsson!(atm, include_dT=true)
+                solve_gustafsson!(atm)
             else
                 solve_approximate!(atm)
             end
@@ -285,13 +285,9 @@ function initial_atmosphere(τ_grid; T_eff, logg, eos)
 	ρ_initial = similar(T_initial)
 	P_initial = similar(T_initial)
 	z_initial = similar(T_initial)
-	#g_rad = similar(T_initial)
-	#g_turb = similar(T_initial)
 	P_rad = similar(T_initial)
 	P_turb = similar(T_initial)
 
-	#g_rad .= 0.0
-	#g_turb .= 0.0
 	P_rad .= 0.0
 	P_turb .= 0.0
 	update_hydrostatic!(

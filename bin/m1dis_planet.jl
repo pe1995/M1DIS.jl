@@ -90,6 +90,10 @@ function parse_commandline()
             help = "Mixing length parameter"
             arg_type = Float64
             default = convert(Float64, get(c, "alpha_MLT", 1.5))
+        "--pbeta"
+            help = "Parameter for turbulent pressure. 0.0 turns off turbulent pressure."
+            arg_type = Float64
+            default = convert(Float64, get(c, "pbeta", 1.0))
         "--feh"
             help = "Metallicity [Fe/H]"
             arg_type = Float64
@@ -299,6 +303,7 @@ function main()
         logg = logg_planet,
         #v_mac = args["vmic"],
         α_MLT = args["alpha_MLT"],
+        pbeta = args["pbeta"],
         maxiter = args["maxiter"],
         eos = eos_complete,
         opacity = opa_complete,

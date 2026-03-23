@@ -43,6 +43,9 @@ td = 1.5
 # Mixing length parameter
 alpha_MLT = 1.5
 
+# Parameter for turbulent pressure. 0.0 turns off turbulent pressure.
+pbeta = 1.0
+
 # File with irradiation flux as a function of wavelength (in Å). 
 # Format: first column wavelength, second column flux.
 # Will be interpolated to the internal grid of the opacity table.

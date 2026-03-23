@@ -80,7 +80,7 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
             push!(rows, row); push!(cols, idx_J(i,d)); push!(vals, B_diag)
             if A != 0; push!(rows, row); push!(cols, idx_J(i,d-1)); push!(vals, A); end
             if C != 0; push!(rows, row); push!(cols, idx_J(i,d+1)); push!(vals, C); end
-            if include_dT != 0; push!(rows, row); push!(cols, idx_T(d)); push!(vals, -src_fac * dB); end
+            if include_dT; push!(rows, row); push!(cols, idx_T(d)); push!(vals, -src_fac * dB); end
 
             RHS[row] = src_fac * B + ext_fac * atm.I_top[f]
         end
@@ -151,7 +151,7 @@ end
 # Dagger-based approximate solver
 # ==============================================================================
 
-function solve_approximate!(atm::Atmosphere{T}) where T
+function solve_approximate!(atm::Atmosphere{T}; include_dT::Bool=true) where T
     D = length(atm.tau)
     sigma_SB = 5.670374419e-5
     F_target = sigma_SB * atm.T_eff^4
@@ -162,7 +162,7 @@ function solve_approximate!(atm::Atmosphere{T}) where T
     K_rad_diag = zeros(T, D)
     K_rad_prev = zeros(T, D)
     compute_formal_sol_dagger!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev)
-    solve_T_correction_approximate!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev, F_target)
+    include_dT && solve_T_correction_approximate!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev, F_target)
 end
 
 function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}) where T
@@ -435,7 +435,7 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, 
     @inbounds for d in 1:D
         # Use RE only if convection has safely died (<xx % of F_target) and we are near the surface
         is_pure_rad = (atm.F_conv[d] < 1e-4 * F_target)
-        if is_pure_rad && (log10(atm.tau[d]) < 0.0)
+        if is_pure_rad && (log10(atm.tau[d]) < -1.0)
             # Use Radiative Equilibrium
             diag_val = -RE_jac[d]
             diag_val = max(diag_val, 1e-30)

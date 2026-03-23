@@ -2,18 +2,19 @@
 # MLT computation (1) of convective quantities
 # ============================================================================
 
-"""
-    update_mixing_length!(F_conv, v_conv, g_turb, dFconv_dT, T, P_gas, ρ, τ_ross, eos_extended, g_surf; alpha_mlt=1.5, Teff=5777.0)
+function vvmlt(a::Float64, b::Float64, c::Float64)
+    d = 0.5 / (b * c)
+    e = a^2 / (a + d + sqrt(d * (2.0 * a + d)))
+    return sqrt(b * e)
+end
 
-Compute MLT parameters F_conv and g_turb based on Gustafsson et al. (1970).
-"""
-function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha_mlt, P_rad_local, P_turb_local)
+function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha_mlt, P_rad_local, P_turb_local; pbeta=1.0)
     # 1. Use ONLY Gas + Rad pressure for the scale height (MARCS hscale)
     P_gas_rad = max(P_local - P_turb_local, 1e-30)
     lnpgas_local = log(max(P_local - P_rad_local - P_turb_local, 1e-30))
     lnt_local = log(T_local)
 
-    lnrho_local, lnκ_ross, Cp, Q, ∇ₐ, χr, χt = sample(eos_extended, (:lnRho,:lnRoss, :cₚ, :Q, :∇ₐ, :χᵨ, :χₜ), lnpgas_local, lnt_local)
+    lnrho_local, lnκ_ross, Cp, Q, ∇ₐ = sample(eos_extended, (:lnRho,:lnRoss, :cₚ, :Q, :∇ₐ), lnpgas_local, lnt_local)
     κ_ross = exp(lnκ_ross)
     Hp = P_gas_rad / (exp(lnrho_local) * g_surf)
 
@@ -22,8 +23,8 @@ function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha
         return 0.0, 0.0
     end
     
-    Γ₁_approx = abs(χr / (1 - χt * ∇ₐ))
-    c_sound = sqrt(Γ₁_approx * P_local / exp(lnrho_local))
+    #Γ₁_approx = abs(χr / (1 - χt * ∇ₐ))
+    #c_sound = sqrt(Γ₁_approx * P_local / exp(lnrho_local))
     v_scale = alpha_mlt * sqrt(g_surf * Q * Hp / 8.0)
     
     numerator = 24.0 * sqrt(2.0) * σ_SB * T_local^3
@@ -31,12 +32,12 @@ function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha
     U = numerator / denominator
 
     # Solve cubic for efficiency factor xi
-    # 2Uξ³ + ξ² + Uξ - (∇ - ∇ad) = 0
+    # 9/8 Uξ³ + ξ² + 2Uξ - (∇ - ∇ad) = 0 (Kippenhahn & Weigert 1990)
     xi = 0.5
     for _ in 1:500
         xi_sq = xi^2
-        f_val = 2.0 * U * xi_sq * xi + xi_sq + U * xi - super_adi
-        df_dz = 6.0 * U * xi_sq + 2.0 * xi + U
+        f_val = 9.0/8.0 * U * xi_sq * xi + xi_sq + 2.0*U * xi - super_adi
+        df_dz = 27.0/8.0 * U * xi_sq + 2.0 * xi + 2.0*U
         dxi = f_val / df_dz
         xi -= dxi
         if abs(dxi) < 1e-32 * xi; break; end
@@ -44,17 +45,65 @@ function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha
     xi = max(xi, 1e-32)
 
     v_real = v_scale * xi
-    v_real = min(v_real, sqrt(0.5 * P_local / exp(lnrho_local)))
-
-    #ratio = v_real / c_sound
-    #soft_factor = (1.0 + ratio^4)^0.25
-    #v_real = v_real / soft_factor
-    #xi = xi / soft_factor
+    if pbeta > 0.0
+        v_max = sqrt(0.5 * P_local / (pbeta * exp(lnrho_local)))
+        v_real = min(v_real, v_max)
+    end
 
     Flux = (0.5 * alpha_mlt) * (exp(lnrho_local) * Cp * T_local) * v_scale * xi^3
     
     return Flux, v_real
 end
+
+function calc_mlt_local_marcs(T_local, P_local, ∇_local, eos_extended, g_surf, alpha_mlt, P_rad_local, P_turb_local; py=0.076, pny=8.0, pbeta=1.0)
+    P_gas_local = max(P_local - P_rad_local - P_turb_local, 1e-30)
+    lnpgas_local = log(P_gas_local)
+    lnt_local = log(T_local)
+
+    lnrho_local, lnκ_ross, Cp, Q, ∇ₐ = sample(eos_extended, (:lnRho,:lnRoss, :cₚ, :Q, :∇ₐ), lnpgas_local, lnt_local)
+    
+    super_adi = ∇_local - ∇ₐ
+    if super_adi <= 1e-32
+        return 0.0, 0.0
+    end
+
+    κ_ross = exp(lnκ_ross)
+    ρ_local = exp(lnrho_local)
+    
+    Hp = (P_gas_local + P_rad_local) / (ρ_local * g_surf)
+    
+    omega = alpha_mlt * Hp * ρ_local * κ_ross
+    y_val = py * omega^2
+    theta = omega / (1.0 + y_val)
+    
+    gamma_marcs_abs = (Cp * ρ_local) / (8.0 * σ_SB * T_local^3 * theta)
+    
+    a_in = super_adi
+    b_in = g_surf * Hp * max(Q, 0.0) * alpha_mlt^2 / pny
+    c_in = gamma_marcs_abs^2 
+    
+    v_real = vvmlt(a_in, b_in, c_in)
+    v_limited = if pbeta > 0.0
+        v_max = sqrt(0.5 * P_local / (pbeta * ρ_local))
+        min(v_real, v_max)
+    else
+        v_real
+    end
+
+    gg = gamma_marcs_abs * v_real
+    dd = (gg / (1.0 + gg)) * super_adi
+    Flux = (0.5 * Cp * ρ_local * alpha_mlt * T_local) * v_real * dd
+    
+    return Flux, v_limited
+end
+
+"""
+    mlt(T, P, ∇, eos, g, alpha_mlt, P_rad, P_turb)
+
+Compute MLT parameters F_conv and v_conv based on Gustafsson et al. (1970).
+"""
+mlt(args...; kwargs...) = calc_mlt_local(args...; kwargs...)
+#mlt(args...; kwargs...) = calc_mlt_local_marcs(args...; kwargs...)
 
 function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_gas, ρ, τ_ross, eos_extended, g_surf; 
     alpha_mlt=1.5, Teff=5777.0, v_mac=0.0, pbeta=1.0)
@@ -75,7 +124,7 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
         P_rad_nm1 = P_rad[n-1]
         P_tot_nm1 = P_gas[n-1] + P_rad_nm1 + P_turb_prev[n-1]
 
-        # Calculate Gradient (Strictly Backward Difference for stability, exactly like MARCS)
+        # Calculate Gradient 
         dlnP = log(P_tot_n / P_tot_nm1)
         if abs(dlnP) < 1e-32
             continue
@@ -83,8 +132,8 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
         dlnT = log(T[n] / T[n-1])
         ∇_base = dlnT / dlnP
         
-        # Base Flux (Make sure calc_mlt_local accepts pbeta)
-        F_base, v_base = calc_mlt_local(T[n], P_tot_n, ∇_base, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n])
+        # Base Flux 
+        F_base, v_base = mlt(T[n], P_tot_n, ∇_base, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n]; pbeta=pbeta)
         F_conv[n] = F_base
         v_conv[n] = v_base
 
@@ -93,15 +142,15 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
         T_pert = T[n] + delta_T
         ∇_pert = log(T_pert / T[n-1]) / dlnP
         
-        F_pert, _ = calc_mlt_local(T_pert, P_tot_n, ∇_pert, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n])
+        F_pert, _ = mlt(T_pert, P_tot_n, ∇_pert, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n]; pbeta=pbeta)
         
-        # Stability fix (Gustafsson et al.)
+        # Stability fix 
         if F_base <= 1e-10
             b = 0.005 
             T_recipe = T[n] * (1.0 + b)
             ∇_recipe = log(T_recipe / T[n-1]) / dlnP
             
-            F_recipe, _ = calc_mlt_local(T_recipe, P_tot_n, ∇_recipe, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n])
+            F_recipe, _ = mlt(T_recipe, P_tot_n, ∇_recipe, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n]; pbeta=pbeta)
             
             if F_recipe > 1e-10
                 dFconv_dT[n] = (F_recipe) / (T_recipe - T[n])
@@ -119,8 +168,6 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
     
     # Turbulent Pressure
     P_turb .= ρ .* (pbeta .* v_conv .^ 2 .+ v_mac .^ 2)
-    #P_turb .= min.(ρ .* (pbeta .* v_conv .^ 2 .+ v_mac .^ 2), P_gas .+ P_rad)
-    #P_turb .= 0.5 .* ρ .* (v_conv .^ 2 .+ v_mac .^ 2)
 end
 
 # ============================================================================

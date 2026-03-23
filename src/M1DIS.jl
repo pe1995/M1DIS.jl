@@ -20,6 +20,7 @@ include("_hydro.jl")
 include("_opacities.jl")
 include("_MLT.jl")
 include("_atmos.jl")
+include("_from_box.jl")
 
 export atmosphere, save!, activate_timing!, deactivate_timing!, start_timing!, end_timing!
 
