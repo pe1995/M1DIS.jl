@@ -11,6 +11,10 @@ Pkg.add(url="https://github.com/pe1995/M1DIS.jl")
 ```
 
 Or clone this repository and just do `Pkg.instantiate()` within. If you want to use the command line tools, I recommend cloning instead of installing through the REPL.
+```bash
+git clone https://github.com/pe1995/M1DIS.jl.git
+julia --project="./M1DIS.jl" -e 'using Pkg; Pkg.instantiate()'
+```
 
 # Microphysics
 After the intstallation is done, you need to load an opacity table that was generated for `M3DIS`. `M1DIS.jl` is compatible with binned as well as unbinned opacity tables. For this, the `TSO.jl` package is required. Luckily `M1DIS.jl` already contains this package, so you can simply use its functionality 
@@ -20,10 +24,10 @@ using TSO
 
 # make sure to load the tables on the T-rho grid!
 eos = reload("path/to/eos_table_T.hdf5")
-opa_binned = extended(reload("path/to/opacity_table_T.hdf5"))
+opa_binned = reload("path/to/opacity_table_T.hdf5")) |> extended
 
 # or alternatively load a un-binned table
-opa_unbinned = extended(reload("path/to/unbinned_table.hdf5", mmap=true))
+opa_unbinned = reload("path/to/unbinned_table.hdf5", mmap=true) |> extended
 
 # you can also ignore the source function for un-binned tables by using TSO.MiniOpacityTable
 opa_unbinned_mini = reload(TSO.MiniOpacityTable, "path/to/unbinned_table.hdf5")
@@ -39,7 +43,7 @@ models = atmosphere(
 	τ=10 .^range(-6.0, 2.0, length=100), # optical depth grid
 	α_MLT=1.5,                           # Mixing-length parameter
 	maxiter=20,                          # maximum number of iterations
-	damping=0.1,                         # relative dT step size limit.
+	damping=0.01,                         # relative dT step size limit.
 	feutrier=true,                       # use the feutrier solver (recommended)
 	use_threads=false,                   # use the approximate Feutrier method 
     save_every=1,                        # save every `save_every` snapshot
