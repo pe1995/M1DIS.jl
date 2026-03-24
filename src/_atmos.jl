@@ -180,14 +180,14 @@ function atmosphere(; T_eff, logg, eos, opacity,
             smooth_array!(atm.P_turb, passes=1)
             smooth_array!(atm.dFconv_dT, passes=1)
         elseif stabilizer_stage == 2
-            for n in 2:length(atm.F_conv)
+            #=for n in 2:length(atm.F_conv)
                 if ((atm.dFconv_dT[n-1] > 0.0) && (atm.dFconv_dT[n] < atm.dFconv_dT[n-1]))
                     atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
                     atm.P_turb[n] = atm.P_turb[n-1]
                 end
             end
             smooth_array!(atm.dFconv_dT, passes=1)
-            smooth_array!(atm.P_turb, passes=1)
+            smooth_array!(atm.P_turb, passes=1)=#
         end
 
         
@@ -306,7 +306,7 @@ function evaluate_iteration!(result,
 	iter, maxiter, 
 	F_target, dT, 
 	τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg, eos, damping; 
-	dt_tolerance_rel=0.0001, flux_tolerance_rel=0.01, save_every=1, kwargs...)
+	dt_tolerance_rel=0.00001, flux_tolerance_rel=0.01, save_every=1, kwargs...)
 	
     # store the atmosphere every `save_every` iterations
 	store = save_every > 0 ? ((iter%save_every == 0) | (iter == maxiter)) : false

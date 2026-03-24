@@ -46,7 +46,7 @@ function calc_mlt_local(T_local, P_local, ∇_local, eos_extended, g_surf, alpha
 
     v_real = v_scale * xi
     v_real = if pbeta > 0.0
-        v_max = sqrt(0.75 * P_local / (pbeta * exp(lnrho_local)))
+        v_max = sqrt(0.5 * P_local / (pbeta * exp(lnrho_local)))
         #(v_real^-8 + v_max^-8)^(-1/8)
         min(v_real, v_max)
     else
@@ -87,7 +87,7 @@ function calc_mlt_local_marcs(T_local, P_local, ∇_local, eos_extended, g_surf,
     
     v_real = vvmlt(a_in, b_in, c_in)
     v_limited = if pbeta > 0.0
-        v_max = sqrt(0.75 * P_local / (pbeta * ρ_local))
+        v_max = sqrt(0.5 * P_local / (pbeta * ρ_local))
         min(v_real, v_max)
     else
         v_real
@@ -150,21 +150,21 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
         F_pert, _ = mlt(T_pert, P_tot_n, ∇_pert, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n]; pbeta=pbeta)
         
         # Stability fix (Gustafsson et al. 1970)
-        if F_base <= 1e-10
-            b = 0.005 
-            T_recipe = T[n] * (1.0 + b)
-            ∇_recipe = log(T_recipe / T[n-1]) / dlnP
-            
-            F_recipe, _ = mlt(T_recipe, P_tot_n, ∇_recipe, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n]; pbeta=pbeta)
-            
-            if F_recipe > 1e-10
-                dFconv_dT[n] = (F_recipe) / (T_recipe - T[n])
-            else
-                dFconv_dT[n] = 0.0
-            end
-        else
+        #if F_base <= 1e-10
+        #    b = 0.005 
+        #    T_recipe = T[n] * (1.0 + b)
+        #    ∇_recipe = log(T_recipe / T[n-1]) / dlnP
+        #    
+        #    F_recipe, _ = mlt(T_recipe, P_tot_n, ∇_recipe, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n]; pbeta=pbeta)
+        #    
+        #    if F_recipe > 1e-10
+        #        dFconv_dT[n] = (F_recipe) / (T_recipe - T[n])
+        #    else
+        #        dFconv_dT[n] = 0.0
+        #    end
+        #else
             dFconv_dT[n] = (F_pert - F_base) / delta_T
-        end
+        #end
     end
     
     F_conv[1] = F_conv[2]
@@ -172,7 +172,9 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
     v_conv[1] = v_conv[2]
     
     # Turbulent Pressure
-    P_turb .= 0.25 .* ρ .* (pbeta .* v_conv .^ 2 .+ v_mac .^ 2) .+ 0.75 .* P_turb_prev 
+    P_turb .= ρ .* (pbeta .* v_conv .^ 2 .+ v_mac .^ 2)
+    m = P_turb .!= 0.0
+    P_turb[m] .= 0.8 .* P_turb_prev[m] .+ 0.2 .* P_turb[m]
 end
 
 # ============================================================================
