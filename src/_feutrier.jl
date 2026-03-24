@@ -510,8 +510,8 @@ function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
         tau_slab = dt_plus / mu
         tau_top  = (atm.tau[1] * atm.eta[f, 1]) / mu
         
-        E_slab = (tau_slab < 0.1) ? 1.0 - tau_slab*(1.0 - 0.5*tau_slab) : exp(-tau_slab)
-        E_top  = (tau_top < 0.1)  ? 1.0 - tau_top *(1.0 - 0.5*tau_top)  : exp(-tau_top)
+        E_slab = (tau_slab < 0.01) ? 1.0 - tau_slab*(1.0 - 0.5*tau_slab) : exp(-tau_slab)
+        E_top  = (tau_top < 0.01)  ? 1.0 - tau_top *(1.0 - 0.5*tau_top)  : exp(-tau_top)
         
         term_top = 2.0 - E_top * (1.0 + E_slab)
         
