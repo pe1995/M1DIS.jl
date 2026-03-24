@@ -1,6 +1,6 @@
 name = "M1DIS"
 uuid = "7c40254d-53b2-4e6c-8b18-b05db208bd5f"
-version = "1.6.0"
+version = "1.6.1"
 authors = ["Philipp Eitner <eitner@mpia.de> and contributors"]
 
 [deps]

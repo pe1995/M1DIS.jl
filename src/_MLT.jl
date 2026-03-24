@@ -1,5 +1,5 @@
 # ============================================================================
-# MLT computation (1) of convective quantities
+# MLT computation of convective flux and velocity
 # ============================================================================
 
 function vvmlt(a::Float64, b::Float64, c::Float64)
@@ -100,23 +100,17 @@ function calc_mlt_local_marcs(T_local, P_local, ∇_local, eos_extended, g_surf,
     return Flux, v_limited
 end
 
-#="""
+"""
     mlt(T, P, ∇, eos, g, alpha_mlt, P_rad, P_turb)
 
 Compute MLT parameters F_conv and v_conv based on Gustafsson et al. (1970).
-This method uses the convective efficiency computation from Kippenhahn & Weigert (1990).
+This method uses the convective efficiency computation from MARCS (use_marcs=true) or Kippenhahn & Weigert (1990) (use_marcs=false).
 """
-mlt(args...; kwargs...) = calc_mlt_local(args...; kwargs...)=#
+mlt(args...; use_marcs=true, kwargs...) = use_marcs ? calc_mlt_local_marcs(args...; kwargs...) : calc_mlt_local(args...; kwargs...)
 
-
-#="""
-    mlt(T, P, ∇, eos, g, alpha_mlt, P_rad, P_turb)
-
-Compute MLT parameters F_conv and v_conv based on Gustafsson et al. (1970).
-This method uses the convective efficiency computation from MARCS.
-"""
-mlt(args...; kwargs...) = calc_mlt_local_marcs(args...; kwargs...)=#
-
+# ============================================================================
+# MLT update of convective quantities
+# ============================================================================
 
 function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_gas, ρ, τ_ross, eos_extended, g_surf; 
     alpha_mlt=1.5, Teff=5777.0, v_mac=0.0, pbeta=1.0)
@@ -124,7 +118,6 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
     n_depth = length(T)
     P_turb_prev = copy(P_turb)
 
-    # Reset outputs
     fill!(F_conv, 0.0)
     fill!(v_conv, 0.0)
     fill!(P_turb, 0.0)
@@ -154,10 +147,9 @@ function update_mixing_length!(F_conv, v_conv, P_rad, P_turb, dFconv_dT, T, P_ga
         delta_T = 1e-3 * T[n]
         T_pert = T[n] + delta_T
         ∇_pert = log(T_pert / T[n-1]) / dlnP
-        
         F_pert, _ = mlt(T_pert, P_tot_n, ∇_pert, eos_extended, g_surf, alpha_mlt, P_rad_n, P_turb_prev[n]; pbeta=pbeta)
         
-        # Stability fix 
+        # Stability fix (Gustafsson et al. 1970)
         if F_base <= 1e-10
             b = 0.005 
             T_recipe = T[n] * (1.0 + b)
