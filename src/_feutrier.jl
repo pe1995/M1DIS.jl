@@ -431,22 +431,35 @@ function solve_T_correction_approximate_blended!(atm::Atmosphere{T}, RE_res::Vec
     rows, cols, vals = Int[], Int[], T[]
     RHS = zeros(T, D)
     
-    # --- Tuning Parameters ---
-    log_tau_trans = -1.0  
+    # --- 1. Dynamic Transition Depth ---
+    d_conv_top = findfirst(f -> f > 0.01 * F_target, atm.F_conv)
+    
+    if d_conv_top === nothing || d_conv_top == 1
+        log_tau_trans = -2.0 
+    else
+        log_tau_trans = max(-2.0, min(-0.25, log10(atm.tau[d_conv_top]) - 0.2))
+    end
+    
     steepness = 10.0      
     
-    # Find the crossover index to calculate our safe scale factor
-    d_cross = argmin(abs.(log10.(atm.tau) .- log_tau_trans))
-    
-    diag_RE_cross = max(-RE_jac[d_cross], 1e-30)
-    diag_FC_cross = K_rad_diag[d_cross] + atm.dFconv_dT[d_cross]
-    C_scale = diag_RE_cross / (abs(diag_FC_cross) + 1e-30)
+    # --- 2. Calculate safe Global Scale ---
+    d_scale = argmin(abs.(log10.(atm.tau) .- 0.0))
+    diag_RE_scale = max(-RE_jac[d_scale], 1e-30)
+    diag_FC_scale = K_rad_diag[d_scale] + atm.dFconv_dT[d_scale]
+    C_scale = diag_RE_scale / (abs(diag_FC_scale) + 1e-30)
         
     @inbounds for d in 1:D
-        # --- Sharp Sigmoid Weighting ---
-        # w -> 1.0 when log_tau << log_tau_trans (Surface / RE dominated)
-        # w -> 0.0 when log_tau >> log_tau_trans (Deep / FC dominated)
-        w = 1.0 / (1.0 + exp(steepness * (log10(atm.tau[d]) - log_tau_trans)))
+        log_t = log10(atm.tau[d])
+        
+        # --- 3. Sigmoid Weighting with STRICT Truncation ---
+        arg = clamp(steepness * (log_t - log_tau_trans), -50.0, 50.0)
+        w = 1.0 / (1.0 + exp(arg))
+        
+        if w < 1e-12
+            w = 0.0
+        elseif w > (1.0 - 1e-12)
+            w = 1.0
+        end
         
         # --- Radiative Equilibrium (RE) ---
         diag_RE = max(-RE_jac[d], 1e-30)
@@ -464,14 +477,15 @@ function solve_T_correction_approximate_blended!(atm::Atmosphere{T}, RE_res::Vec
         val_Conv_p = (d > 1) ? -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d] : zero(T)
         prev_FC    = val_Rad_p + val_Conv_p
         
-        # --- Safely Blend the Equations ---
         W_RE = w
         W_FC = (1.0 - w) * C_scale 
         
         push!(rows, d); push!(cols, d); push!(vals, W_RE * diag_RE + W_FC * diag_FC)
+        
         if d > 1
             push!(rows, d); push!(cols, d-1); push!(vals, W_FC * prev_FC)
         end
+        
         RHS[d] = W_RE * rhs_RE + W_FC * rhs_FC
     end
     
