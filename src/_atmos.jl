@@ -127,7 +127,12 @@ function atmosphere(; T_eff, logg, eos, opacity,
             @verbose_info 1 "Running approximate Feutrier RT with $(Base.Threads.nthreads()) threads."
         end
         @verbose_info 2 "========================================================================="
-        @verbose_info 1 "iteration | relative flux error (max) | relative T error (max) | ΔT (max)" 
+        #verbose_info 1 "iteration | ΔF/F (max, %) | log(τ) of max. ΔF/F | ΔT/T (max, %) | ΔT (max, K)" 
+        sinf = TSO.@sprintf(
+            "%s | %s | %s | %s | %s\n__________________________________________________________________________________\n", 
+            "iteration", "ΔF/F (max, %)", "log(τ) of max. ΔF/F", "ΔT/T (max, %)", "ΔT (max, K)"
+        )
+        @verbose_info 1 sinf
     end
 	
 	flux_err_max_prev = Inf
@@ -135,6 +140,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
     # MARCS-standard thresholds
     tcmxu_inv = 1.0 / damping 
+    tcmxu_top_inv = 1.0 / (damping * 5.0) 
     r = []
 
     @optionalTiming relaxation_time for iter in 1:maxiter
@@ -159,11 +165,11 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
         # Stabilizer 
         stabilizer_stage = if (flux_err_max_prev > 50.0)
-            3
+            stabilizer_stage > 3 ? 3 : stabilizer_stage
         elseif (flux_err_max_prev > 1.0)
-            2
+            stabilizer_stage > 2 ? 2 : stabilizer_stage
         else
-            1
+            stabilizer_stage > 1 ? 1 : stabilizer_stage
         end
 
         if stabilizer_stage == 3
@@ -219,7 +225,8 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
 		# Damping
         for i in 1:length(atm.dT)
-            scale = tcmxu_inv # (log10(atm.tau[i]) > -1.0) ? tcmxb_inv : tcmxu_inv
+            #scale = log10(atm.tau[i]) < -1.0 ? tcmxu_top_inv : tcmxu_inv
+            scale = tcmxu_inv
             atm.dT[i] = atm.dT[i] / sqrt(1.0 + (scale * atm.dT[i] / atm.Temp[i])^2)
         end
 
@@ -306,21 +313,24 @@ function evaluate_iteration!(result,
 	iter, maxiter, 
 	F_target, dT, 
 	τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg, eos, damping; 
-	dt_tolerance_rel=0.00001, flux_tolerance_rel=0.01, save_every=1, kwargs...)
+	dt_tolerance_rel=0.00001, dt_tolerance=0.1, flux_tolerance_rel=0.01, save_every=1, kwargs...)
 	
     # store the atmosphere every `save_every` iterations
 	store = save_every > 0 ? ((iter%save_every == 0) | (iter == maxiter)) : false
     F_total = F_rad .+ F_conv
-	flux_err_max = maximum(abs.(F_total[2:end-1] .- F_target)) / F_target
-	dt_err_max = maximum(abs.(dT[2:end-1] ./ T[2:end-1]))
+	flux_err_max = maximum(abs.(F_total .- F_target)) / F_target
+    f_amax = argmax(abs.(F_total .- F_target))
+	dt_err_max = maximum(abs.(dT ./ T))
+	dt_err_max_abs = maximum(abs.(dT))
 	
     sinf = TSO.@sprintf(
-        "%4d | %16.4f | %14.4f | %10.1f K\n", 
-		iter, flux_err_max*100, dt_err_max*100, maximum(abs.(dT[2:end-1]))
+        "%4d | %16.4f %% | %6.2f | %8.4f %% | %6.1f K\n", 
+		iter, flux_err_max*100, log10(τ[f_amax]), dt_err_max*100, dt_err_max_abs
     )
 	@verbose_info 1 sinf
 
-	converged = (dt_err_max<dt_tolerance_rel) | (flux_err_max<flux_tolerance_rel)
+	#converged = (dt_err_max<dt_tolerance_rel) | (flux_err_max<flux_tolerance_rel)
+	converged = (dt_err_max_abs<dt_tolerance) | (flux_err_max<flux_tolerance_rel)
 	if converged | store
 		append!(result, [m1disBox(τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, dT, teff, logg, eos; kwargs...)])
 	end
