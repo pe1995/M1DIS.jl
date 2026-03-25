@@ -162,7 +162,7 @@ function solve_approximate!(atm::Atmosphere{T}; include_dT::Bool=true) where T
     K_rad_diag = zeros(T, D)
     K_rad_prev = zeros(T, D)
     compute_formal_sol_dagger!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev)
-    include_dT && solve_T_correction_approximate!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev, F_target)
+    include_dT && solve_T_correction_approximate_blended!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev, F_target)
 end
 
 function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}) where T
@@ -387,7 +387,6 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
                         
                         k_d_sum += w_plus * diff_plus * dB_col[d] + w_minus * diff_minus * dB_col[d]
                         k_p_sum += w_minus * (-diff_minus * dB_col[d-1])
-                        # The plus contribution (d+1) from dJ_plus is ignored in K_rad matrix because it's approximately tri-diagonal but we fold it away
                     end
                 end
                 
@@ -425,6 +424,59 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     end
     
     return (J_part, F_part, RE_res, RE_jac, K_rad_diag, K_rad_prev, g_rad_part, P_rad_part)
+end
+
+function solve_T_correction_approximate_blended!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}, F_target::T) where T
+    D = length(atm.tau)
+    rows, cols, vals = Int[], Int[], T[]
+    RHS = zeros(T, D)
+    
+    # --- Tuning Parameters ---
+    log_tau_trans = -1.0  
+    steepness = 10.0      
+    
+    # Find the crossover index to calculate our safe scale factor
+    d_cross = argmin(abs.(log10.(atm.tau) .- log_tau_trans))
+    
+    diag_RE_cross = max(-RE_jac[d_cross], 1e-30)
+    diag_FC_cross = K_rad_diag[d_cross] + atm.dFconv_dT[d_cross]
+    C_scale = diag_RE_cross / (abs(diag_FC_cross) + 1e-30)
+        
+    @inbounds for d in 1:D
+        # --- Sharp Sigmoid Weighting ---
+        # w -> 1.0 when log_tau << log_tau_trans (Surface / RE dominated)
+        # w -> 0.0 when log_tau >> log_tau_trans (Deep / FC dominated)
+        w = 1.0 / (1.0 + exp(steepness * (log10(atm.tau[d]) - log_tau_trans)))
+        
+        # --- Radiative Equilibrium (RE) ---
+        diag_RE = max(-RE_jac[d], 1e-30)
+        rhs_RE  = RE_res[d]
+
+        # --- Flux Conservation (FC) ---
+        F_curr = atm.F_rad[d] + atm.F_conv[d]
+        rhs_FC = F_target - F_curr
+        
+        val_Rad_d  = K_rad_diag[d]
+        val_Conv_d = atm.dFconv_dT[d]
+        diag_FC    = val_Rad_d + val_Conv_d
+        
+        val_Rad_p  = (d > 1) ? K_rad_prev[d] : zero(T)
+        val_Conv_p = (d > 1) ? -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d] : zero(T)
+        prev_FC    = val_Rad_p + val_Conv_p
+        
+        # --- Safely Blend the Equations ---
+        W_RE = w
+        W_FC = (1.0 - w) * C_scale 
+        
+        push!(rows, d); push!(cols, d); push!(vals, W_RE * diag_RE + W_FC * diag_FC)
+        if d > 1
+            push!(rows, d); push!(cols, d-1); push!(vals, W_FC * prev_FC)
+        end
+        RHS[d] = W_RE * rhs_RE + W_FC * rhs_FC
+    end
+    
+    J_mat = sparse(rows, cols, vals, D, D)
+    atm.dT .= J_mat \ RHS
 end
 
 function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}, F_target::T) where T
