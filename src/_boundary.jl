@@ -15,14 +15,10 @@ function lnP_boundary(T_top, g_eff_top, eos, τ_top; maxiter=100, tol=1e-8, P_gu
     function calc_f(lp)
         lnρ, lnκ_ross = sample(eos, (:lnRho, :lnRoss), lp, lnT)
         
-        # Compute opacity pressure dependence alpha = d(ln κ) / d(ln P)
         lp_eps = lp + 0.001
         _, lnκ_eps = sample(eos, (:lnRho, :lnRoss), lp_eps, lnT)
         alpha = (lnκ_eps - lnκ_ross) / 0.001
-        alpha = clamp(alpha, -0.5, 2.5) # ensure stability
-        
-        # The exact integral of dP = g/kappa dtau when kappa ~ P^alpha 
-        # is P = (1 + alpha) * g * tau / kappa(P)
+        alpha = clamp(alpha, -0.5, 2.5) 
         return lp + lnκ_ross - C - log(1.0 + alpha)
     end
     
@@ -95,7 +91,7 @@ function force_adiabatic_bottom!(T, P, eos_extended; n_force=5)
         T[i] = T[i-1] * exp(∇_ad * dlnP)
         
         if T[i] < T[i-1]
-             T[i] = T[i-1] + 1e-4 # Tiny increment fallback
+             T[i] = T[i-1] + 1e-4 
         end
     end
 end
@@ -107,7 +103,6 @@ end
 function irradiate(eos, opa::TSO.ExtendedOpacity, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
     rho_min, rho_max = TSO.limits(TSO.table(eos), 2)
     rho_irr = exp((rho_max + rho_min) / 2)
-    #S = isnothing(F_irradiation) ? lookup(TSO.table(eos), opa.opa, :src, Float64(log(rho_irr)), Float64(log(T_irradiation))) : F_irradiation
     S = if isnothing(F_irradiation)
         sample(eos, opa, (:src,), Float64(log(rho_irr)), Float64(log(T_irradiation)))[1] 
     else
