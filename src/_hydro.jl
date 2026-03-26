@@ -39,7 +39,7 @@ function update_hydrostatic!(P_gas, ρ, z, T, P_turb, P_rad, τ_grid; eos, logg)
 
     τ_top = τ_grid[1]
     T_top = T[1]
-    lnP_top = lnP_boundary(T_top, g_const, eos, τ_top)
+    lnP_top = lnP_boundary(T_top, g_const, eos, τ_top, P_guess=max(1e-4, P_gas[1]))
     u0 = [log(exp(lnP_top) + P_rad[1] + P_turb[1])]
     tspan = (τ_grid[1], τ_grid[end])
 
@@ -72,7 +72,7 @@ function update_z_grid!(z; T, ρ, τ, eos)
     @inbounds for i in 1:(length(z)-1)
         T_mid = 0.5 * (T[i] + T[i+1])
         ρ_mid = 0.5 * (ρ[i] + ρ[i+1])
-        κ_R = exp(lookup(eos, :lnRoss, log(ρ_mid), log(T_mid)))
+        κ_R = exp(sample(eos, (:lnRoss,), log(ρ_mid), log(T_mid))[1])
         dτ = τ[i+1] - τ[i]
         dz = dτ / (κ_R * ρ_mid)
         z[i+1] = z[i] + dz

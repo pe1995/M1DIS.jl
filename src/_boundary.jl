@@ -8,27 +8,73 @@
 Compute the upper boundary condition pressure iteratively from the temperature and optical depth,
 assuming that P(z=0) = 0 and the pressure varies linearly until τ_top.
 """
-function lnP_boundary(T_top, g_eff_top, eos, τ_top; maxiter=200, tol=1e-8, P_guess=1e-4)
-    lnP = log(P_guess) 
-	lnT = log(T_top)
-    for _ in 1:maxiter
-        #lnρ = TSO.extended_lookup(eos, :lnRho, lnP, lnT)
-        #κ = exp(TSO.extended_lookup(eos, :lnRoss, lnρ, lnT))
-        lnρ, lnκ_ross = sample(eos, (:lnRho, :lnRoss), lnP, lnT)
-        κ = exp(lnκ_ross)
-
-        P_new = g_eff_top * τ_top / κ
-        lnP_new = log(P_new)
-
-        if abs(lnP_new - lnP) < tol
-            return lnP_new
-        end
-
-        lnP = 0.5*(lnP + lnP_new)
+function lnP_boundary(T_top, g_eff_top, eos, τ_top; maxiter=100, tol=1e-8, P_guess=1e-4)
+    lnT = log(T_top)
+    C = log(g_eff_top * τ_top)
+    
+    function calc_f(lp)
+        lnρ, lnκ_ross = sample(eos, (:lnRho, :lnRoss), lp, lnT)
+        
+        # Compute opacity pressure dependence alpha = d(ln κ) / d(ln P)
+        lp_eps = lp + 0.001
+        _, lnκ_eps = sample(eos, (:lnRho, :lnRoss), lp_eps, lnT)
+        alpha = (lnκ_eps - lnκ_ross) / 0.001
+        alpha = clamp(alpha, -0.5, 2.5) # ensure stability
+        
+        # The exact integral of dP = g/kappa dtau when kappa ~ P^alpha 
+        # is P = (1 + alpha) * g * tau / kappa(P)
+        return lp + lnκ_ross - C - log(1.0 + alpha)
     end
-
-    @verbose_warn 1 "Top pressure did not converge after $(maxiter) iterations; using last iterate"
-    return lnP
+    
+    lp = log(P_guess)
+    f = calc_f(lp)
+    if abs(f) < tol
+        return lp
+    end
+    
+    # Bracket the root
+    lp1, f1 = lp, f
+    lp2, f2 = lp, f
+    
+    step = 2.0
+    for _ in 1:50
+        if f1 > 0
+            lp1 -= step
+            f1 = calc_f(lp1)
+        end
+        if f2 < 0
+            lp2 += step
+            f2 = calc_f(lp2)
+        end
+        if f1 < 0 && f2 > 0
+            break
+        end
+        step *= 1.5
+    end
+    
+    if f1 > 0 || f2 < 0
+        @verbose_warn 1 "Could not bracket the root in lnP_boundary (f1=$f1, f2=$f2)"
+        return lp
+    end
+    
+    # Bisection
+    for i in 1:maxiter
+        lp_mid = 0.5 * (lp1 + lp2)
+        f_mid = calc_f(lp_mid)
+        
+        if abs(f_mid) < tol || (lp2 - lp1) < tol
+            return lp_mid
+        end
+        
+        if f_mid < 0
+            lp1, f1 = lp_mid, f_mid
+        else
+            lp2, f2 = lp_mid, f_mid
+        end
+    end
+    
+    @verbose_warn 1 "Top pressure did not converge after $(maxiter) bisection iterations; using last iterate"
+    return 0.5 * (lp1 + lp2)
 end
 
 # ============================================================================
@@ -67,12 +113,12 @@ function irradiate(eos, opa::TSO.ExtendedOpacity, T_irradiation, R_irradiation, 
     else
         F_irradiation
     end
-    S .* (R_irradiation ./ d_irradiation) .^2 .* opa.weights 
+    S .* (R_irradiation ./ d_irradiation) .^2 .* opa.weights ./ 4.0
 end
 
 function irradiate(eos, opa::TSO.MiniOpacityTable, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
     # the mini table does not contain source function, so we need to compute it on the fly
     lf = TSO.lookup_variable(opa, :src)
     S = isnothing(F_irradiation) ? lf.(Float64(T_irradiation), eachindex(opa.opacity.λ)) : F_irradiation
-    S .* (R_irradiation ./ d_irradiation) .^2 .* opa.weights 
+    S .* (R_irradiation ./ d_irradiation) .^2 .* opa.weights ./ 4.0
 end

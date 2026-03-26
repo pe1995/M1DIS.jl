@@ -169,7 +169,7 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_ja
     D = length(atm.tau)
     Nf = size(atm.chi, 1)
     
-    fill!(atm.J_bol, 0.0); fill!(atm.F_rad, 0.0); fill!(atm.g_rad, 0.0); fill!(atm.P_rad, 0.0)
+    fill!(atm.J_bol, 0.0); fill!(atm.F_rad, 0.0); fill!(atm.g_rad, 0.0); fill!(atm.P_rad, 0.0); fill!(atm.Q_rad, 0.0)
     fill!(RE_res, 0.0); fill!(RE_jac, 0.0)
     fill!(K_rad_diag, 0.0); fill!(K_rad_prev, 0.0)
     
@@ -256,6 +256,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     chi_col = zeros(T, D)
     B_col   = zeros(T, D)
     dB_col  = zeros(T, D)
+    dchidT_col = zeros(T, D)
     
     J_nu = zeros(T, Na, D)
     L_nu = zeros(T, D)
@@ -267,11 +268,11 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     j_sum_new = zeros(T, D) 
 
     do_scattering = !isnothing(atm.chi_scat)
-    max_scat_iter = !do_scattering ? 1 : 50
+    max_scat_iter = !do_scattering ? 1 : 100
     tol = 1e-2
     
     @inbounds for f in f_start:f_end
-        
+        dchidT_col .= view(atm.dchidT, f, :)
         chi_col .= view(atm.chi, f, :)
         B_col   .= view(atm.B, f, :)
         dB_col  .= view(atm.dBdT, f, :)
@@ -359,7 +360,11 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
             
             term = w_f * (chi_col[d] - sig_col[d])
             RE_res[d] += term * (j_sum - B_col[d])
-            RE_jac[d] += term * (L_nu[d] - 1.0) * dB_col[d]
+
+            jac_J = term * (L_nu[d] - 1.0) * dB_col[d]
+            jac_opacity = w_f * dchidT_col[d] * (j_sum - B_col[d])
+            RE_jac[d] += jac_J + jac_opacity
+            #RE_jac[d] += jac_J
             
             flux_sum = 0.0
             J_sum = 0.0
@@ -426,23 +431,24 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     return (J_part, F_part, RE_res, RE_jac, K_rad_diag, K_rad_prev, g_rad_part, P_rad_part)
 end
 
+# ==============================================================================
+# Estimate temperature correction for the approximate solver
+# ==============================================================================
+
 function solve_T_correction_approximate_blended!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}, F_target::T) where T
     D = length(atm.tau)
     rows, cols, vals = Int[], Int[], T[]
     RHS = zeros(T, D)
     
-    # --- 1. Dynamic Transition Depth ---
     d_conv_top = findfirst(f -> f > 0.01 * F_target, atm.F_conv)
-    
-    if d_conv_top === nothing || d_conv_top == 1
-        log_tau_trans = -2.0 
+    log_tau_trans = if d_conv_top === nothing || d_conv_top == 1
+        -2.0 
     else
-        log_tau_trans = max(-2.0, min(-0.25, log10(atm.tau[d_conv_top]) - 0.2))
+        max(-2.0, min(0.0, log10(atm.tau[d_conv_top]) - 1.0))
     end
+    steepness = 10.0
     
-    steepness = 10.0      
-    
-    # --- 2. Calculate safe Global Scale ---
+    # Global Scale 
     d_scale = argmin(abs.(log10.(atm.tau) .- 0.0))
     diag_RE_scale = max(-RE_jac[d_scale], 1e-30)
     diag_FC_scale = K_rad_diag[d_scale] + atm.dFconv_dT[d_scale]
@@ -451,7 +457,7 @@ function solve_T_correction_approximate_blended!(atm::Atmosphere{T}, RE_res::Vec
     @inbounds for d in 1:D
         log_t = log10(atm.tau[d])
         
-        # --- 3. Sigmoid Weighting with STRICT Truncation ---
+        # Sigmoid Weighting
         arg = clamp(steepness * (log_t - log_tau_trans), -50.0, 50.0)
         w = 1.0 / (1.0 + exp(arg))
         
@@ -461,11 +467,11 @@ function solve_T_correction_approximate_blended!(atm::Atmosphere{T}, RE_res::Vec
             w = 1.0
         end
         
-        # --- Radiative Equilibrium (RE) ---
+        # Radiative Equilibrium (RE)
         diag_RE = max(-RE_jac[d], 1e-30)
         rhs_RE  = RE_res[d]
 
-        # --- Flux Conservation (FC) ---
+        # Flux Conservation (FC)
         F_curr = atm.F_rad[d] + atm.F_conv[d]
         rhs_FC = F_target - F_curr
         
@@ -491,6 +497,80 @@ function solve_T_correction_approximate_blended!(atm::Atmosphere{T}, RE_res::Vec
     
     J_mat = sparse(rows, cols, vals, D, D)
     atm.dT .= J_mat \ RHS
+end
+
+function solve_T_correction_approximate_dtblended!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}, F_target::T) where T
+    D = length(atm.tau)
+
+    # ---------------------------------------------------------
+    # Weights
+    # ---------------------------------------------------------
+    d_conv_top = findfirst(f -> f > 1e-4 * F_target, atm.F_conv)
+    if d_conv_top === nothing || d_conv_top == 1
+        log_tau_trans = -1.0 
+    else
+        log_tau_trans = max(-1.5, min(0.0, log10(atm.tau[d_conv_top]) - 1.0))
+    end
+    steepness = 10.0      
+
+    w_blend = zeros(T, D)
+    @inbounds for d in 1:D
+        log_t = log10(atm.tau[d])
+        arg = clamp(steepness * (log_t - log_tau_trans), -50.0, 50.0)
+        w = 1.0 / (1.0 + exp(arg))
+        
+        # Enforce exact boundaries
+        if log_t < -2.0 || w > (1.0 - 1e-12)
+            w = 1.0
+        elseif d == D || w < 1e-12
+            w = 0.0
+        end
+        w_blend[d] = w
+    end
+
+    # ---------------------------------------------------------
+    # Radiative Equilibrium (RE) Correction
+    # ---------------------------------------------------------
+    dT_RE = zeros(T, D)
+    @inbounds for d in 1:D
+        diag_val = max(-RE_jac[d], 1e-30)
+        dT_RE[d] = RE_res[d] / diag_val
+    end
+
+    # ---------------------------------------------------------
+    # Flux Conservation (FC) Correction
+    # ---------------------------------------------------------
+    rows_FC, cols_FC, vals_FC = Int[], Int[], T[]
+    RHS_FC = zeros(T, D)
+    
+    @inbounds for d in 1:D
+        diag_FC = K_rad_diag[d] + atm.dFconv_dT[d]
+        
+        if w_blend[d] > 0.999 || abs(diag_FC) < 1e-30
+            push!(rows_FC, d); push!(cols_FC, d); push!(vals_FC, 1.0)
+            RHS_FC[d] = dT_RE[d]
+        else
+            F_curr = atm.F_rad[d] + atm.F_conv[d]
+            RHS_FC[d] = F_target - F_curr
+            
+            val_Conv_d  = atm.dFconv_dT[d]
+            val_Conv_p  = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
+            val_Rad_d = K_rad_diag[d]
+            val_Rad_p = K_rad_prev[d]
+
+            push!(rows_FC, d); push!(cols_FC, d); push!(vals_FC, val_Rad_d + val_Conv_d)
+            
+            if d > 1
+                push!(rows_FC, d); push!(cols_FC, d-1); push!(vals_FC, val_Rad_p + val_Conv_p)
+            end
+        end
+    end
+    
+    J_mat_FC = sparse(rows_FC, cols_FC, vals_FC, D, D)
+    dT_FC = J_mat_FC \ RHS_FC
+
+    # Blend the corrections smoothly
+    atm.dT .= w_blend .* dT_RE .+ (1.0 .- w_blend) .* dT_FC
 end
 
 function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}, F_target::T) where T

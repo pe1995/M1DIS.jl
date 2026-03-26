@@ -12,7 +12,7 @@ function Atmosphere(b::MUST.Box, eos, opacity; scattering=nothing, T_eff=b.param
     Pg = reshape(b.data[:Pg], :)
     
     μ_angles, μ_weights = generate_mu_grid(4)
-    chi, chi_ref, S, dSdT = opacity.binned ? compute_opacities(eos, opacity, T, ρ) : compute_opacities_chunked(eos, opacity, T, ρ)
+    chi, chi_ref, S, dSdT, dchidT = opacity.binned ? compute_opacities(eos, opacity, T, ρ) : compute_opacities_chunked(eos, opacity, T, ρ)
 	chi_scat  = !isnothing(scattering) ? compute_opacities_chunked(eos, scattering, T, ρ, opacity_only=true)[1] : nothing
 
     a = Atmosphere(
@@ -28,7 +28,8 @@ function Atmosphere(b::MUST.Box, eos, opacity; scattering=nothing, T_eff=b.param
         chi_scat=chi_scat,
         chi_ref=chi_ref, 
         B=S, 
-        dBdT=dSdT
+        dBdT=dSdT,
+        dchidT=dchidT
     )
     #update!(a, sync_opacities=true, sync_geometry=true, sync_angles=true)
     return a

@@ -100,12 +100,12 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
         # --- Pre-compute initial opacities to bootstrap the Atmosphere object ---
 		@optionalTiming prepare_opacities_time begin
-			chi, chi_ref, S, dSdT, chi_scat = if feutrier
-				c, c_ref, s_val, dsdt_val = opacity.binned ? compute_opacities(eos, opacity, T, ρ) : compute_opacities_chunked(eos, opacity, T, ρ)
+			chi, chi_ref, S, dSdT, dchidT, chi_scat = if feutrier
+				c, c_ref, s_val, dsdt_val, dchidt_val = opacity.binned ? compute_opacities(eos, opacity, T, ρ) : compute_opacities_chunked(eos, opacity, T, ρ)
 				c_scat = !isnothing(scattering_opacity) ? compute_opacities_chunked(eos, scattering_opacity, T, ρ, opacity_only=true)[1] : nothing
-				c, c_ref, s_val, dsdt_val, c_scat
+				c, c_ref, s_val, dsdt_val, dchidt_val, c_scat
 			else
-				nothing, nothing, nothing, nothing, nothing
+				nothing, nothing, nothing, nothing, nothing, nothing
 			end
 		end
 
@@ -113,7 +113,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
         atm = Atmosphere(
             T_eff=teff_target, z=z, tau=τ, rho=ρ, Temp=T, P_gas=P,
             mu=μ_angles, w_mu=μ_weights, 
-            chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT, I_top=Irr, chi_scat=chi_scat
+            chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT, dchidT=dchidT, I_top=Irr, chi_scat=chi_scat
         )
         
         @verbose_info 2 "================================= M1DIS ================================="
@@ -200,17 +200,16 @@ function atmosphere(; T_eff, logg, eos, opacity,
 		# Radiative Transfer
         @optionalTiming radiation_transfer_time begin
             @optionalTiming compute_opacities_time if opacity.binned
-                compute_opacities!(atm.chi, atm.chi_ref, atm.B, atm.dBdT, eos, opacity, atm.Temp, atm.rho)
+                compute_opacities!(atm.chi, atm.chi_ref, atm.B, atm.dBdT, atm.dchidT, eos, opacity, atm.Temp, atm.rho)
             else
-                compute_opacities_chunked!(atm.chi, atm.chi_ref, atm.B, atm.dBdT, eos, opacity, atm.Temp, atm.rho)
+                compute_opacities_chunked!(atm.chi, atm.chi_ref, atm.B, atm.dBdT, atm.dchidT, eos, opacity, atm.Temp, atm.rho)
             end
 
             if !isnothing(scattering_opacity)
-                @optionalTiming compute_opacities_time compute_opacities_chunked!(atm.chi_scat, nothing, nothing, nothing, eos, scattering_opacity, atm.Temp, atm.rho)
+                @optionalTiming compute_opacities_time compute_opacities_chunked!(atm.chi_scat, nothing, nothing, nothing, nothing, eos, scattering_opacity, atm.Temp, atm.rho)
             end
 
             @optionalTiming update_atmosphere_time update!(atm)
-            
             @optionalTiming solve_RT_time if !use_threads
                 solve_gustafsson!(atm)
             else
@@ -295,6 +294,9 @@ function initial_atmosphere(τ_grid; T_eff, logg, eos)
 	P_rad = similar(T_initial)
 	P_turb = similar(T_initial)
 
+    z_initial .= 0.0
+    ρ_initial .= 0.0
+	P_initial .= 0.0
 	P_rad .= 0.0
 	P_turb .= 0.0
 	update_hydrostatic!(
@@ -324,7 +326,7 @@ function evaluate_iteration!(result,
 	dt_err_max_abs = maximum(abs.(dT))
 	
     sinf = TSO.@sprintf(
-        "%4d | %16.4f %% | %6.2f | %8.4f %% | %6.1f K\n", 
+        "%4d | %20.4f %% | %6.2f | %8.4f %% | %6.1f K\n", 
 		iter, flux_err_max*100, log10(τ[f_amax]), dt_err_max*100, dt_err_max_abs
     )
 	@verbose_info 1 sinf

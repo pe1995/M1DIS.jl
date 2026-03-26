@@ -20,6 +20,7 @@ mutable struct Atmosphere{T <: AbstractFloat}
     chi_ref::Vector{T}    # Reference opacity (Size: D)
     B::Matrix{T}          # Planck function (Nf x D)
     dBdT::Matrix{T}       # Derivative of B (Nf x D)
+    dchidT::Matrix{T}     # Derivative of opacity (Nf x D)
     eta::Matrix{T}        # Opacity ratio chi / chi_ref
     I_top::Vector{T}      # External Irradiation (Size: Nf)
     
@@ -47,7 +48,7 @@ end
 function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Temp::Vector{T}, P_gas::Vector{T},
                     mu::Vector{T}, w_mu::Vector{T}, 
                     chi::Matrix{T}, chi_ref::Vector{T}, 
-					B::Matrix{T}, dBdT::Matrix{T}, 
+					B::Matrix{T}, dBdT::Matrix{T}, dchidT::Matrix{T},
 					I_top::Union{Vector{T}, Nothing}=nothing, chi_scat::Union{Matrix{T}, Nothing}=nothing) where T
     D = length(tau)
     Nf = size(chi, 1) 
@@ -99,7 +100,7 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
     return Atmosphere{T}(
         T_eff, deepcopy(z), deepcopy(tau), tau_lambda, deepcopy(rho), deepcopy(Temp), deepcopy(P_gas),
         deepcopy(mu), w_mu_norm, 
-        deepcopy(chi), chi_scat_val, deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), eta, I_top_val, 
+        deepcopy(chi), chi_scat_val, deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), deepcopy(dchidT), eta, I_top_val, 
         F_conv, dFconv_dT, v_conv, P_turb,
         J_bol, F_bol, F_rad, g_rad, P_rad, Q_rad, J_raw_init,
         dT, F_total, F_err_rel
