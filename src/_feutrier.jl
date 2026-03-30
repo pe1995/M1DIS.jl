@@ -255,6 +255,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     j_sum_new = zeros(T, D) 
     tau_lambda_col = zeros(T, D)
     L_nu = zeros(T, D)
+    J_history = zeros(T, D, 4)
 
     do_scattering = !isnothing(atm.chi_scat)
     max_scat_iter = !do_scattering ? 1 : 100
@@ -278,10 +279,13 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
         J_old .= B_col
         
         # lambda iterations
-        lambda_formal_solution!(atm, f, max_scat_iter, tol, do_scattering,
-                                eps_col, B_col, J_old, S_col,
-                                J_nu, j_sum_new, L_nu,
-                                tri_dl, tri_d, tri_du, tri_rhs, tri_sol)
+        lambda_formal_solution!(
+            atm, f, max_scat_iter, tol, do_scattering,
+            eps_col, B_col, J_old, S_col,
+            J_nu, j_sum_new, L_nu,
+            tri_dl, tri_d, tri_du, tri_rhs, tri_sol,
+            J_history
+        )
         
         w_f = 1 #atm.w_lambda[f]
         
@@ -645,7 +649,6 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true) where T
     end
 
     if include_dT
-        # Add convective flux Jacobian to Schur complement (only for FC equations d > 1)
         for d in 2:D
             schur[d, d] += atm.dFconv_dT[d]
             if d > 1
@@ -653,15 +656,22 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true) where T
             end
         end
 
-        # RHS: flux deficit
         RHS = zeros(T, D)
         for d in 1:D
             if d == 1
-                # Use Radiative Equilibrium constraint at exactly the top boundary
                 RHS[1] = -RE_res_total[1]
             else
                 RHS[d] = F_target - atm.F_rad[d] - atm.F_conv[d]
             end
+        end
+
+        if abs(schur[1, 1]) < 1e-12
+            for j in 1:D
+                schur[1, j] = 0.0
+            end
+            schur[1, 1] = 1.0
+            schur[1, 2] = -1.0
+            RHS[1] = atm.Temp[2] - atm.Temp[1] 
         end
 
         atm.dT .= schur \ RHS
@@ -700,6 +710,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     J_old     = zeros(T, D)
     j_sum_new = zeros(T, D)
     tau_lambda_col = zeros(T, D)
+    J_history = zeros(T, D, 4)
 
     # VEF working arrays
     J_mean  = zeros(T, D)
@@ -744,10 +755,13 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
         # -------------------------------------------------------
         # Feutrier formal solution
         # -------------------------------------------------------
-        lambda_formal_solution!(atm, f, max_scat_iter, tol, do_scattering,
-                                eps_col, B_col, J_old, S_col,
-                                J_nu, j_sum_new, L_nu,
-                                tri_dl, tri_d, tri_du, tri_rhs, tri_sol)
+        lambda_formal_solution!(
+            atm, f, max_scat_iter, tol, do_scattering,
+            eps_col, B_col, J_old, S_col,
+            J_nu, j_sum_new, L_nu,
+            tri_dl, tri_d, tri_du, tri_rhs, tri_sol,
+            J_history
+        )
 
         # -------------------------------------------------------
         # Compute angle-averaged moments: J, K, H (flux)
@@ -778,22 +792,25 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                 ang = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
                 dJ, dt = 0.0, 1.0
                 if d == 1
+                    dt = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-60)
                     dJ = J_nu[a, 2] - J_nu[a, 1]
-                    dt = tau_lambda_col[2] - tau_lambda_col[1]
                 elseif d == D
+                    dt = max(tau_lambda_col[D] - tau_lambda_col[D-1], 1e-60)
                     dJ = J_nu[a, D] - J_nu[a, D-1]
-                    dt = tau_lambda_col[D] - tau_lambda_col[D-1]
                 else
-                    dt_plus  = tau_lambda_col[d+1] - tau_lambda_col[d]
-                    dt_minus = tau_lambda_col[d]   - tau_lambda_col[d-1]
+                    dt_plus  = max(tau_lambda_col[d+1] - tau_lambda_col[d], 1e-60)
+                    dt_minus = max(tau_lambda_col[d]   - tau_lambda_col[d-1], 1e-60)
+                    
                     w_plus  = dt_minus / (dt_plus + dt_minus)
                     w_minus = dt_plus  / (dt_plus + dt_minus)
+                    
                     dJ_plus  = (J_nu[a, d+1] - J_nu[a, d]) / dt_plus
                     dJ_minus = (J_nu[a, d] - J_nu[a, d-1]) / dt_minus
+                    
                     dJ = w_plus * dJ_plus + w_minus * dJ_minus
                     dt = 1.0
                 end
-                flux_sum += ang * (dJ / max(dt, 1e-20))
+                flux_sum += ang * (dJ / dt)
             end
             F_part[d]     += flux_sum
             g_rad_part[d] += flux_sum * chi_col[d]
@@ -824,14 +841,12 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
 
         # -------------------------------------------------------
         # Build VEF moment equation tridiagonal A_ν
-        #    d²(f δJ)/dτ²_ν - ε δJ = -ε dB/dT δT
-        #    → A δJ = -C δT  where C = diag(ε dB/dT)
         # -------------------------------------------------------
         fill!(vef_dl, 0.0)
         fill!(vef_d,  0.0)
         fill!(vef_du, 0.0)
 
-        # Surface (d=1)
+        # Surface 
         begin
             dt1 = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
             # Surface Eddington factor h = H/J
@@ -846,7 +861,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             vef_du[1] = 2.0*f_edd[2]/(dt1*dt1)
         end
 
-        # Interior (d=2..D-1)
+        # Interior 
         for d in 2:D-1
             dtm = max(tau_lambda_col[d]   - tau_lambda_col[d-1], 1e-30)
             dtp = max(tau_lambda_col[d+1] - tau_lambda_col[d],   1e-30)
@@ -857,61 +872,45 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             vef_du[d] = f_edd[d+1] / (dtp * dtc)
         end
 
-        # Bottom (d=D): diffusion BC, J=B → δJ = dB/dT δT
+        # Bottom: diffusion BC, J=B → δJ = dB/dT δT
         vef_d[D] = 1.0
 
         # -------------------------------------------------------
         # Schur complement accumulation
-        #    Constraint: FC everywhere
-        #    δF_rad(d) = 4π Σ_ν d(f δJ)/dτ at depth d
-        #    with δJ = -A⁻¹ C δT
-        #
-        #    Factorize A once per frequency. For each column d': 
-        #    solve A x = e_{d'} directly, scale by C_{d'},
-        #    apply D_ν (first-derivative operator), accumulate into schur
         # -------------------------------------------------------
         factorize_tridiagonal!(vef_dl, vef_d, vef_du)
 
         for dp in 1:D
-            # Coupling coefficient C_{d'} = ε_{d'} dB_{d'}/dT
-            # Exception: at D, C_D = dB_D/dT (diffusion BC)
             C_dp = (dp < D) ? eps_col[dp] * dB_col[dp] : dB_col[dp]
             if abs(C_dp) < 1e-30
                 continue
             end
 
-            # Extract column dp of A⁻¹ into vef_sol
             invert_tridiagonal_column!(vef_sol, dp, vef_dl, vef_d, vef_du)
 
             neg_C = -C_dp
+            neg_C_4pi = 4π * neg_C
 
-            # Compute f * δJ first
-            for d in 1:D
+            @inbounds @simd for d in 1:D
                 f_vef[d] = f_edd[d] * vef_sol[d]
             end
 
-            # Apply D_ν (first derivative of f·δJ in τ_ν) and accumulate using precalculated weights
-            for d in 1:D
-                if d == 1
-                    # --- RADIATIVE EQUILIBRIUM AT BOUNDARY ---
-                    # RE_res_1 = sum_f w_f * kabs_1 * (J_1 - B_1)
-                    # Jacobian wrt T_{dp}:  w_f * kabs_1 * ( dJ_1/dT_{dp} - \delta_{1, dp} dB_1/dT_1 )
-                    
-                    kabs_1 = chi_col[1] - sig_col[1]
-                    dJ_1_dTdp = neg_C * vef_sol[1]
-                    diag_dB_dT = (dp == 1) ? dB_col[1] : 0.0
-                    
-                    # Store exact RE derivative in row 1
-                    schur_part[1, dp] += kabs_1 * (dJ_1_dTdp - diag_dB_dT)
-                elseif d == D
-                    dfdJ = (f_vef[D] - f_vef[D-1]) * schur_dt_inv[D]
-                    schur_part[D, dp] += 4π * neg_C * dfdJ
-                else
+            @inbounds begin
+                kabs_1 = chi_col[1] - sig_col[1]
+                dJ_1_dTdp = neg_C * vef_sol[1]
+                diag_dB_dT = (dp == 1) ? dB_col[1] : 0.0
+                
+                schur_part[1, dp] += kabs_1 * (dJ_1_dTdp - diag_dB_dT)
+
+                @simd for d in 2:D-1
                     grad_p = (f_vef[d+1] - f_vef[d]) * schur_dtp_inv[d]
                     grad_m = (f_vef[d] - f_vef[d-1]) * schur_dtm_inv[d]
                     dfdJ = schur_wp[d] * grad_p + schur_wm[d] * grad_m
-                    schur_part[d, dp] += 4π * neg_C * dfdJ
+                    schur_part[d, dp] += neg_C_4pi * dfdJ
                 end
+
+                dfdJ_D = (f_vef[D] - f_vef[D-1]) * schur_dt_inv[D]
+                schur_part[D, dp] += neg_C_4pi * dfdJ_D
             end
         end
     end
@@ -926,9 +925,8 @@ end
 function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int, tol::Float64, do_scattering::Bool,
                                  eps_col::Vector{T}, B_col::Vector{T}, J_old::Vector{T}, S_col::Vector{T},
                                  J_nu::Matrix{T}, j_sum_new::Vector{T}, L_nu::Vector{T},
-                                 tri_dl::Vector{T}, tri_d::Vector{T}, tri_du::Vector{T}, tri_rhs::Vector{T}, tri_sol::Vector{T}) where T
+                                 tri_dl::Vector{T}, tri_d::Vector{T}, tri_du::Vector{T}, tri_rhs::Vector{T}, tri_sol::Vector{T}, J_history::Matrix{T}) where T
     D, Na = length(atm.tau), length(atm.mu)
-    J_history = zeros(T, D, 4)
 
     for iter in 1:max_scat_iter
         S_col .= eps_col .* B_col .+ (1.0 .- eps_col) .* J_old
@@ -1104,9 +1102,11 @@ function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
     elseif d == D # Diffusion BC 
         (0.0, 1.0, 0.0, 1.0, 0.0) 
     else
-        denom = 0.5 * dt_minus * dt_plus * (dt_minus + dt_plus)
-        A = -(mu_sq / denom) * dt_plus
-        C = -(mu_sq / denom) * dt_minus
+        dtm_safe = max(dt_minus, 1e-30)
+        dtp_safe = max(dt_plus, 1e-30)
+        
+        A = -mu_sq / (0.5 * dtm_safe * (dtm_safe + dtp_safe))
+        C = -mu_sq / (0.5 * dtp_safe * (dtm_safe + dtp_safe))
         diag = 1.0 - A - C 
         (A, diag, C, 1.0, 0.0)
     end
@@ -1118,24 +1118,25 @@ end
 
 function solve_tridiagonal!(x::Vector{T}, dl::Vector{T}, d::Vector{T}, du::Vector{T}, r::Vector{T}) where T
     N = length(d)
-    
     @inbounds begin
-        # Forward Elimination
-        inv_d1 = 1.0 / d[1]
+        piv1 = abs(d[1]) < 1e-60 ? (sign(d[1]) >= 0 ? 1e-60 : -1e-60) : d[1]
+        inv_d1 = 1.0 / piv1
         du[1] *= inv_d1
         r[1]  *= inv_d1
         
         for i in 2:N
-            pivot_inv = 1.0 / (d[i] - dl[i] * du[i-1])
+            pivot = d[i] - dl[i] * du[i-1]
+            if abs(pivot) < 1e-60
+                pivot = sign(pivot) >= 0 ? 1e-60 : -1e-60
+            end
+            pivot_inv = 1.0 / pivot
             
             if i < N
                 du[i] *= pivot_inv
             end
-            
             r[i] = (r[i] - dl[i] * r[i-1]) * pivot_inv
         end
         
-        # Back Substitution
         x[N] = r[N]
         for i in N-1:-1:1
             x[i] = r[i] - du[i] * x[i+1]
@@ -1146,16 +1147,21 @@ end
 function factorize_tridiagonal!(dl::Vector{T}, d::Vector{T}, du::Vector{T}) where T
     N = length(d)
     @inbounds begin
-        inv_d1 = 1.0 / d[1]
+        piv1 = abs(d[1]) < 1e-60 ? (sign(d[1]) >= 0 ? 1e-60 : -1e-60) : d[1]
+        inv_d1 = 1.0 / piv1
         du[1] *= inv_d1
-        d[1] = inv_d1 # save pivot
+        d[1] = inv_d1 
         
         for i in 2:N
-            pivot_inv = 1.0 / (d[i] - dl[i] * du[i-1])
+            pivot = d[i] - dl[i] * du[i-1]
+            if abs(pivot) < 1e-60
+                pivot = sign(pivot) >= 0 ? 1e-60 : -1e-60
+            end
+            pivot_inv = 1.0 / pivot
             if i < N
                 du[i] *= pivot_inv
             end
-            d[i] = pivot_inv # save pivot
+            d[i] = pivot_inv 
         end
     end
 end

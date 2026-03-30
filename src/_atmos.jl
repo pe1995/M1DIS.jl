@@ -216,7 +216,13 @@ function atmosphere(; T_eff, logg, eos, opacity,
             @optionalTiming solve_RT_time if solver == :gustafsson
                 solve_gustafsson!(atm)
             elseif solver == :vef
-                solve_VEF!(atm)
+                try
+                    solve_VEF!(atm)
+                catch e
+                    @warn "VEF solver failed (singular or invalid). Running approximate solver."
+                    damping = 0.01
+                    solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
+                end
             else
                 solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
             end
