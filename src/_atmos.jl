@@ -48,6 +48,9 @@ function atmosphere(; T_eff, logg, eos, opacity,
     use_threads=false,
     scattering_opacity=nothing,
     target_flux=nothing,
+    steepness=15.0,
+    tau_trans=-2.0,
+    solver=:vef,
     kwargs...)  
 
     @optionalTiming initialization_time begin
@@ -124,7 +127,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
             @verbose_info 2 "Running M1DIS with unbinned opacity table. Forcing use_threads=true."
 		end
         if use_threads
-            @verbose_info 1 "Running approximate Feutrier RT with $(Base.Threads.nthreads()) threads."
+            @verbose_info 1 "Running RT solver:$(solver) with $(Base.Threads.nthreads()) threads."
         end
         @verbose_info 2 "========================================================================="
         #verbose_info 1 "iteration | ΔF/F (max, %) | log(τ) of max. ΔF/F | ΔT/T (max, %) | ΔT (max, K)" 
@@ -159,7 +162,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 				atm.tau, 
                 eos, 
 				exp10(logg); 
-                alpha_mlt=α_MLT, Teff=T_eff, v_mac=v_mac*1e5, pbeta=pbeta
+                alpha_mlt=α_MLT, Teff=teff_target, v_mac=v_mac*1e5, pbeta=pbeta
             )
         end
 
@@ -186,14 +189,14 @@ function atmosphere(; T_eff, logg, eos, opacity,
             smooth_array!(atm.P_turb, passes=1)
             smooth_array!(atm.dFconv_dT, passes=1)
         elseif stabilizer_stage == 2
-            #=for n in 2:length(atm.F_conv)
+            for n in 2:length(atm.F_conv)
                 if ((atm.dFconv_dT[n-1] > 0.0) && (atm.dFconv_dT[n] < atm.dFconv_dT[n-1]))
                     atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
                     atm.P_turb[n] = atm.P_turb[n-1]
                 end
             end
             smooth_array!(atm.dFconv_dT, passes=1)
-            smooth_array!(atm.P_turb, passes=1)=#
+            smooth_array!(atm.P_turb, passes=1)
         end
 
         
@@ -210,10 +213,12 @@ function atmosphere(; T_eff, logg, eos, opacity,
             end
 
             @optionalTiming update_atmosphere_time update!(atm)
-            @optionalTiming solve_RT_time if !use_threads
+            @optionalTiming solve_RT_time if solver == :gustafsson
                 solve_gustafsson!(atm)
+            elseif solver == :vef
+                solve_VEF!(atm)
             else
-                solve_approximate!(atm)
+                solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
             end
 
             # Update flux errors inside atm (Staggered Flux sum)
@@ -315,7 +320,7 @@ function evaluate_iteration!(result,
 	iter, maxiter, 
 	F_target, dT, 
 	τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg, eos, damping; 
-	dt_tolerance_rel=0.00001, dt_tolerance=0.1, flux_tolerance_rel=0.01, save_every=1, kwargs...)
+	dt_tolerance_rel=0.00001, dt_tolerance=0.0001, flux_tolerance_rel=0.01, save_every=1, kwargs...)
 	
     # store the atmosphere every `save_every` iterations
 	store = save_every > 0 ? ((iter%save_every == 0) | (iter == maxiter)) : false
@@ -326,7 +331,7 @@ function evaluate_iteration!(result,
 	dt_err_max_abs = maximum(abs.(dT))
 	
     sinf = TSO.@sprintf(
-        "%4d | %20.4f %% | %6.2f | %8.4f %% | %6.1f K\n", 
+        "%4d | %20.4f %% | %6.2f | %8.4f %% | %9.4f K\n", 
 		iter, flux_err_max*100, log10(τ[f_amax]), dt_err_max*100, dt_err_max_abs
     )
 	@verbose_info 1 sinf
