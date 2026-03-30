@@ -222,67 +222,6 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_ja
     end
 end
 
-function solve_tridiagonal!(x::Vector{T}, dl::Vector{T}, d::Vector{T}, du::Vector{T}, r::Vector{T}) where T
-    N = length(d)
-    
-    @inbounds begin
-        # Forward Elimination
-        inv_d1 = 1.0 / d[1]
-        du[1] *= inv_d1
-        r[1]  *= inv_d1
-        
-        for i in 2:N
-            pivot_inv = 1.0 / (d[i] - dl[i] * du[i-1])
-            
-            if i < N
-                du[i] *= pivot_inv
-            end
-            
-            r[i] = (r[i] - dl[i] * r[i-1]) * pivot_inv
-        end
-        
-        # Back Substitution
-        x[N] = r[N]
-        for i in N-1:-1:1
-            x[i] = r[i] - du[i] * x[i+1]
-        end
-    end
-end
-
-function factorize_tridiagonal!(dl::Vector{T}, d::Vector{T}, du::Vector{T}) where T
-    N = length(d)
-    @inbounds begin
-        inv_d1 = 1.0 / d[1]
-        du[1] *= inv_d1
-        d[1] = inv_d1 # save pivot
-        
-        for i in 2:N
-            pivot_inv = 1.0 / (d[i] - dl[i] * du[i-1])
-            if i < N
-                du[i] *= pivot_inv
-            end
-            d[i] = pivot_inv # save pivot
-        end
-    end
-end
-
-function invert_tridiagonal_column!(x::Vector{T}, dp::Int, dl::Vector{T}, d_inv::Vector{T}, du::Vector{T}) where T
-    N = length(d_inv)
-    @inbounds begin
-        for i in 1:dp-1
-            x[i] = 0.0
-        end
-        x[dp] = d_inv[dp]
-        for i in dp+1:N
-            x[i] = (-dl[i] * x[i-1]) * d_inv[i]
-        end
-        for i in N-1:-1:1
-            x[i] = x[i] - du[i] * x[i+1]
-        end
-    end
-end
-
-
 function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) where T
     D, Na = length(atm.tau), length(atm.mu)
     
@@ -315,6 +254,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     J_old   = zeros(T, D) 
     j_sum_new = zeros(T, D) 
     tau_lambda_col = zeros(T, D)
+    L_nu = zeros(T, D)
 
     do_scattering = !isnothing(atm.chi_scat)
     max_scat_iter = !do_scattering ? 1 : 100
@@ -338,65 +278,10 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
         J_old .= B_col
         
         # lambda iterations
-        for iter in 1:max_scat_iter
-            S_col .= eps_col .* B_col .+ (1.0 .- eps_col) .* J_old
-            
-            fill!(L_nu, 0.0)
-            fill!(j_sum_new, 0.0)
-
-            for a in 1:Na
-                mu_sq  = atm.mu[a]^2
-                weight = atm.w_mu[a]
-                
-                (A, B, C, src_fac, ext_fac) = feutrier_coeffs_fast(atm, tau_lambda_col, f, 1, mu_sq)
-                tri_d[1]   = B
-                tri_du[1]  = C
-                tri_rhs[1] = src_fac * S_col[1] + ext_fac * atm.I_top[f]
-                
-                L_nu[1] += weight * (src_fac / B)
-
-                for d in 2:D-1
-                    (A, B, C, src_fac, ext_fac) = feutrier_coeffs_fast(atm, tau_lambda_col, f, d, mu_sq)
-                    tri_dl[d]  = A
-                    tri_d[d]   = B
-                    tri_du[d]  = C
-                    tri_rhs[d] = src_fac * S_col[d]
-                    
-                    L_nu[d] += weight * (src_fac / B)
-                end
-                
-                (A, B, C, src_fac, ext_fac) = feutrier_coeffs_fast(atm, tau_lambda_col, f, D, mu_sq)
-                tri_dl[D]  = A
-                tri_d[D]   = B
-                tri_rhs[D] = src_fac * S_col[D]
-                
-                L_nu[D] += weight * (src_fac / B)
-                
-                solve_tridiagonal!(tri_sol, tri_dl, tri_d, tri_du, tri_rhs)
-                
-                for d in 1:D
-                    J_nu[a, d] = tri_sol[d]
-                end
-            end
-
-            for d in 1:D
-                for a in 1:Na
-                    j_sum_new[d] += atm.w_mu[a] * J_nu[a, d]
-                end
-            end
-            
-            max_err = 0.0
-            for d in 1:D
-                err = abs(j_sum_new[d] - J_old[d]) / max(j_sum_new[d], 1e-20)
-                max_err = max(max_err, err)
-            end
-            
-            J_old .= j_sum_new
-            
-            if (max_err < tol) || (!do_scattering)
-                break 
-            end
-        end
+        lambda_formal_solution!(atm, f, max_scat_iter, tol, do_scattering,
+                                eps_col, B_col, J_old, S_col,
+                                J_nu, j_sum_new, L_nu,
+                                tri_dl, tri_d, tri_du, tri_rhs, tri_sol)
         
         w_f = 1 #atm.w_lambda[f]
         
@@ -834,6 +719,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     schur_wp      = zeros(T, D)
     schur_wm      = zeros(T, D)
     f_vef         = zeros(T, D)
+    L_nu          = zeros(T, D)
 
     do_scattering = !isnothing(atm.chi_scat)
     max_scat_iter = !do_scattering ? 1 : 100
@@ -858,51 +744,10 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
         # -------------------------------------------------------
         # Feutrier formal solution
         # -------------------------------------------------------
-        for iter in 1:max_scat_iter
-            S_col .= eps_col .* B_col .+ (1.0 .- eps_col) .* J_old
-
-            fill!(j_sum_new, 0.0)
-            for a in 1:Na
-                mu_sq  = atm.mu[a]^2
-                weight = atm.w_mu[a]
-
-                (A, B, C, src_fac, ext_fac) = feutrier_coeffs_fast(atm, tau_lambda_col, f, 1, mu_sq)
-                tri_d[1] = B; tri_du[1] = C
-                tri_rhs[1] = src_fac * S_col[1] + ext_fac * atm.I_top[f]
-
-                for d in 2:D-1
-                    (A, B, C, src_fac, ext_fac) = feutrier_coeffs_fast(atm, tau_lambda_col, f, d, mu_sq)
-                    tri_dl[d] = A; tri_d[d] = B; tri_du[d] = C
-                    tri_rhs[d] = src_fac * S_col[d]
-                end
-
-                (A, B, C, src_fac, ext_fac) = feutrier_coeffs_fast(atm, tau_lambda_col, f, D, mu_sq)
-                tri_dl[D] = A; tri_d[D] = B
-                tri_rhs[D] = src_fac * S_col[D]
-
-                solve_tridiagonal!(tri_sol, tri_dl, tri_d, tri_du, tri_rhs)
-                for d in 1:D
-                    J_nu[a, d] = tri_sol[d]
-                end
-            end
-
-            for d in 1:D
-                for a in 1:Na
-                    j_sum_new[d] += atm.w_mu[a] * J_nu[a, d]
-                end
-            end
-
-            max_err = 0.0
-            for d in 1:D
-                err = abs(j_sum_new[d] - J_old[d]) / max(j_sum_new[d], 1e-20)
-                max_err = max(max_err, err)
-            end
-            J_old .= j_sum_new
-
-            if (max_err < tol) || (!do_scattering)
-                break
-            end
-        end
+        lambda_formal_solution!(atm, f, max_scat_iter, tol, do_scattering,
+                                eps_col, B_col, J_old, S_col,
+                                J_nu, j_sum_new, L_nu,
+                                tri_dl, tri_d, tri_du, tri_rhs, tri_sol)
 
         # -------------------------------------------------------
         # Compute angle-averaged moments: J, K, H (flux)
@@ -1075,6 +920,135 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
 end
 
 # ==============================================================================
+# Core Lambda iteration
+# ==============================================================================
+
+function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int, tol::Float64, do_scattering::Bool,
+                                 eps_col::Vector{T}, B_col::Vector{T}, J_old::Vector{T}, S_col::Vector{T},
+                                 J_nu::Matrix{T}, j_sum_new::Vector{T}, L_nu::Vector{T},
+                                 tri_dl::Vector{T}, tri_d::Vector{T}, tri_du::Vector{T}, tri_rhs::Vector{T}, tri_sol::Vector{T}) where T
+    D, Na = length(atm.tau), length(atm.mu)
+    J_history = zeros(T, D, 4)
+
+    for iter in 1:max_scat_iter
+        S_col .= eps_col .* B_col .+ (1.0 .- eps_col) .* J_old
+        
+        fill!(L_nu, 0.0)
+        fill!(j_sum_new, 0.0)
+
+        for a in 1:Na
+            mu_sq  = atm.mu[a]^2
+            weight = atm.w_mu[a]
+            
+            (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, 1, mu_sq)
+            tri_d[1]   = B
+            tri_du[1]  = C
+            tri_rhs[1] = src_fac * S_col[1] + ext_fac * atm.I_top[f]
+            
+            L_nu[1] += weight * (src_fac / B)
+
+            for d in 2:D-1
+                (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, d, mu_sq)
+                tri_dl[d]  = A
+                tri_d[d]   = B
+                tri_du[d]  = C
+                tri_rhs[d] = src_fac * S_col[d]
+                
+                L_nu[d] += weight * (src_fac / B)
+            end
+            
+            (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, D, mu_sq)
+            tri_dl[D]  = A
+            tri_d[D]   = B
+            tri_rhs[D] = src_fac * S_col[D]
+            
+            L_nu[D] += weight * (src_fac / B)
+            
+            solve_tridiagonal!(tri_sol, tri_dl, tri_d, tri_du, tri_rhs)
+            
+            for d in 1:D
+                J_nu[a, d] = tri_sol[d]
+            end
+        end
+
+        for d in 1:D
+            for a in 1:Na
+                j_sum_new[d] += atm.w_mu[a] * J_nu[a, d]
+            end
+        end
+
+        # --- Ng Acceleration ---
+        # Shift history
+        for d in 1:D
+            J_history[d, 1] = J_history[d, 2]
+            J_history[d, 2] = J_history[d, 3]
+            J_history[d, 3] = J_history[d, 4]
+            J_history[d, 4] = j_sum_new[d]
+        end
+
+        if iter >= 4 && iter % 4 == 0
+            A11, A12, A22 = 0.0, 0.0, 0.0
+            B1, B2 = 0.0, 0.0
+            
+            for d in 1:D
+                x0 = J_history[d, 1]
+                x1 = J_history[d, 2]
+                x2 = J_history[d, 3]
+                x3 = J_history[d, 4]
+                
+                dx1 = x1 - x0
+                dx2 = x2 - x1
+                dx3 = x3 - x2
+                
+                d1 = dx3 - dx2
+                d2 = dx2 - dx1
+                
+                w = 1.0 / max(x3, 1e-30)
+                d1_w = d1 * w
+                d2_w = d2 * w
+                dx3_w = dx3 * w
+                
+                A11 += d1_w * d1_w
+                A12 += d1_w * d2_w
+                A22 += d2_w * d2_w
+                B1  += dx3_w * d1_w
+                B2  += dx3_w * d2_w
+            end
+            
+            det = A11 * A22 - A12 * A12
+            if abs(det) > 1e-15 * (A11 * A22 + 1e-30)
+                a1 = (A22 * B1 - A12 * B2) / det
+                a2 = (A11 * B2 - A12 * B1) / det
+                
+                for d in 1:D
+                    x1 = J_history[d, 2]
+                    x2 = J_history[d, 3]
+                    x3 = J_history[d, 4]
+                    j_extrap = (1.0 - a1 - a2) * x3 + a1 * x2 + a2 * x1
+                    if j_extrap > 0.0
+                        j_sum_new[d] = j_extrap
+                        J_history[d, 4] = j_extrap 
+                    end
+                end
+            end
+        end
+        # -----------------------
+        
+        max_err = 0.0
+        for d in 1:D
+            err = abs(j_sum_new[d] - J_old[d]) / max(j_sum_new[d], 1e-20)
+            max_err = max(max_err, err)
+        end
+        
+        J_old .= j_sum_new
+        
+        if (max_err < tol) || (!do_scattering)
+            break 
+        end
+    end
+end
+
+# ==============================================================================
 # Core Feutrier kernels
 # ==============================================================================
 
@@ -1138,34 +1112,67 @@ function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
     end
 end
 
-function feutrier_coeffs_fast(atm::Atmosphere{T}, tau_lambda_col::AbstractVector{T}, f::Int, d::Int, mu_sq::T) where T
-    D = length(atm.tau)
-    dt_minus = (d > 1) ? tau_lambda_col[d] - tau_lambda_col[d-1] : 0.0
-    dt_plus  = (d < D) ? tau_lambda_col[d+1] - tau_lambda_col[d] : 0.0
+# ==============================================================================
+# Matrix inversion
+# ==============================================================================
+
+function solve_tridiagonal!(x::Vector{T}, dl::Vector{T}, d::Vector{T}, du::Vector{T}, r::Vector{T}) where T
+    N = length(d)
     
-    if d == 1 # Estimate infalling radiation
-        mu = sqrt(mu_sq)
-        tau_slab = dt_plus / mu
-        tau_top  = (atm.tau[1] * atm.eta[f, 1]) / mu
+    @inbounds begin
+        # Forward Elimination
+        inv_d1 = 1.0 / d[1]
+        du[1] *= inv_d1
+        r[1]  *= inv_d1
         
-        E_slab = (tau_slab < 0.01) ? 1.0 - tau_slab*(1.0 - 0.5*tau_slab) : exp(-tau_slab)
-        E_top  = (tau_top < 0.01)  ? 1.0 - tau_top *(1.0 - 0.5*tau_top)  : exp(-tau_top)
+        for i in 2:N
+            pivot_inv = 1.0 / (d[i] - dl[i] * du[i-1])
+            
+            if i < N
+                du[i] *= pivot_inv
+            end
+            
+            r[i] = (r[i] - dl[i] * r[i-1]) * pivot_inv
+        end
         
-        term_top = 2.0 - E_top * (1.0 + E_slab)
+        # Back Substitution
+        x[N] = r[N]
+        for i in N-1:-1:1
+            x[i] = r[i] - du[i] * x[i+1]
+        end
+    end
+end
+
+function factorize_tridiagonal!(dl::Vector{T}, d::Vector{T}, du::Vector{T}) where T
+    N = length(d)
+    @inbounds begin
+        inv_d1 = 1.0 / d[1]
+        du[1] *= inv_d1
+        d[1] = inv_d1 # save pivot
         
-        diag = 1.0
-        off  = -E_slab
-        src  = 0.5 * (1.0 - E_slab) * term_top
-        ext  = 0.5 * E_top * (1.0 - E_slab^2)
-        (0.0, diag, off, src, ext)
-    elseif d == D # Diffusion BC 
-        (0.0, 1.0, 0.0, 1.0, 0.0) 
-    else
-        denom = 0.5 * dt_minus * dt_plus * (dt_minus + dt_plus)
-        A = -(mu_sq / denom) * dt_plus
-        C = -(mu_sq / denom) * dt_minus
-        diag = 1.0 - A - C 
-        (A, diag, C, 1.0, 0.0)
+        for i in 2:N
+            pivot_inv = 1.0 / (d[i] - dl[i] * du[i-1])
+            if i < N
+                du[i] *= pivot_inv
+            end
+            d[i] = pivot_inv # save pivot
+        end
+    end
+end
+
+function invert_tridiagonal_column!(x::Vector{T}, dp::Int, dl::Vector{T}, d_inv::Vector{T}, du::Vector{T}) where T
+    N = length(d_inv)
+    @inbounds begin
+        for i in 1:dp-1
+            x[i] = 0.0
+        end
+        x[dp] = d_inv[dp]
+        for i in dp+1:N
+            x[i] = (-dl[i] * x[i-1]) * d_inv[i]
+        end
+        for i in N-1:-1:1
+            x[i] = x[i] - du[i] * x[i+1]
+        end
     end
 end
 
