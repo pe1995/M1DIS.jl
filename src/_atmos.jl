@@ -130,7 +130,6 @@ function atmosphere(; T_eff, logg, eos, opacity,
             @verbose_info 1 "Running RT solver:$(solver) with $(Base.Threads.nthreads()) threads."
         end
         @verbose_info 2 "========================================================================="
-        #verbose_info 1 "iteration | ΔF/F (max, %) | log(τ) of max. ΔF/F | ΔT/T (max, %) | ΔT (max, K)" 
         sinf = TSO.@sprintf(
             "%s | %s | %s | %s | %s\n__________________________________________________________________________________\n", 
             "iteration", "ΔF/F (max, %)", "log(τ) of max. ΔF/F", "ΔT/T (max, %)", "ΔT (max, K)"
@@ -139,6 +138,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
     end
 	
 	flux_err_max_prev = Inf
+	flux_err_max_curr = Inf
     stabilizer_stage = 3
 
     # MARCS-standard thresholds
@@ -166,39 +166,40 @@ function atmosphere(; T_eff, logg, eos, opacity,
             )
         end
 
-        # Stabilizer 
-        stabilizer_stage = if (flux_err_max_prev > 50.0)
-            stabilizer_stage > 3 ? 3 : stabilizer_stage
-        elseif (flux_err_max_prev > 1.0)
-            stabilizer_stage > 2 ? 2 : stabilizer_stage
-        else
-            stabilizer_stage > 1 ? 1 : stabilizer_stage
-        end
-
-        if stabilizer_stage == 3
-            for n in 2:length(atm.F_conv)
-                if ((atm.F_conv[n-1] > 0.0) && (atm.F_conv[n] < atm.F_conv[n-1]))
-                    atm.F_conv[n] = atm.F_conv[n-1]
-                    atm.v_conv[n] = atm.v_conv[n-1]
-                    atm.P_turb[n] = atm.P_turb[n-1]
-                    atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
-                end
+        # Stabilizer for the approximate solver
+        if solver==:approximate
+            stabilizer_stage = if (flux_err_max_prev > 50.0)
+                stabilizer_stage > 3 ? 3 : stabilizer_stage
+            elseif (flux_err_max_prev > 1.0)
+                stabilizer_stage > 2 ? 2 : stabilizer_stage
+            else
+                stabilizer_stage > 1 ? 1 : stabilizer_stage
             end
-            smooth_array!(atm.F_conv, passes=1)
-            smooth_array!(atm.v_conv, passes=1)
-            smooth_array!(atm.P_turb, passes=1)
-            smooth_array!(atm.dFconv_dT, passes=1)
-        elseif stabilizer_stage == 2
-            for n in 2:length(atm.F_conv)
-                if ((atm.dFconv_dT[n-1] > 0.0) && (atm.dFconv_dT[n] < atm.dFconv_dT[n-1]))
-                    atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
-                    atm.P_turb[n] = atm.P_turb[n-1]
-                end
-            end
-            smooth_array!(atm.dFconv_dT, passes=1)
-            smooth_array!(atm.P_turb, passes=1)
-        end
 
+            if stabilizer_stage == 3
+                for n in 2:length(atm.F_conv)
+                    if ((atm.F_conv[n-1] > 0.0) && (atm.F_conv[n] < atm.F_conv[n-1]))
+                        atm.F_conv[n] = atm.F_conv[n-1]
+                        atm.v_conv[n] = atm.v_conv[n-1]
+                        atm.P_turb[n] = atm.P_turb[n-1]
+                        atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
+                    end
+                end
+                smooth_array!(atm.F_conv, passes=1)
+                smooth_array!(atm.v_conv, passes=1)
+                smooth_array!(atm.P_turb, passes=1)
+                smooth_array!(atm.dFconv_dT, passes=1)
+            elseif stabilizer_stage == 2
+                for n in 2:length(atm.F_conv)
+                    if ((atm.dFconv_dT[n-1] > 0.0) && (atm.dFconv_dT[n] < atm.dFconv_dT[n-1]))
+                        atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
+                        atm.P_turb[n] = atm.P_turb[n-1]
+                    end
+                end
+                smooth_array!(atm.dFconv_dT, passes=1)
+                smooth_array!(atm.P_turb, passes=1)
+            end
+        end
         
 		# Radiative Transfer
         @optionalTiming radiation_transfer_time begin
@@ -216,13 +217,13 @@ function atmosphere(; T_eff, logg, eos, opacity,
             @optionalTiming solve_RT_time if solver == :gustafsson
                 solve_gustafsson!(atm)
             elseif solver == :vef
-                try
+                #try
                     solve_VEF!(atm)
-                catch e
-                    @warn "VEF solver failed (singular or invalid). Running approximate solver."
-                    damping = 0.01
-                    solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
-                end
+                #catch e
+                #    @warn "VEF solver failed (singular or invalid). Running approximate solver."
+                #    damping = 0.01
+                #    solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
+                #end
             else
                 solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
             end
@@ -230,14 +231,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
             # Update flux errors inside atm (Staggered Flux sum)
             atm.F_total .= atm.F_rad .+ atm.F_conv
             atm.F_err_rel .= (atm.F_total .- F_target) ./ F_target
-            flux_err_max_prev = maximum(abs.(atm.F_err_rel))
-        end
-
-		# Damping
-        for i in 1:length(atm.dT)
-            #scale = log10(atm.tau[i]) < -1.0 ? tcmxu_top_inv : tcmxu_inv
-            scale = tcmxu_inv
-            atm.dT[i] = atm.dT[i] / sqrt(1.0 + (scale * atm.dT[i] / atm.Temp[i])^2)
+            flux_err_max_curr = maximum(abs.(atm.F_err_rel))
         end
 
         # Evaluation
@@ -270,6 +264,13 @@ function atmosphere(; T_eff, logg, eos, opacity,
             @verbose_info 1 "Atmosphere converged."
             break
         end
+
+        # Damping
+        for i in 1:length(atm.dT)
+            scale = flux_err_max_curr > flux_err_max_prev ? tcmxu_inv * 10.0 : tcmxu_inv
+            atm.dT[i] = atm.dT[i] / sqrt(1.0 + (scale * atm.dT[i] / atm.Temp[i])^2)
+        end
+        flux_err_max_prev = flux_err_max_curr
 
         # Apply corrections & Hydrostatic Equilibrium
         atm.Temp .+= atm.dT
@@ -326,18 +327,18 @@ function evaluate_iteration!(result,
 	iter, maxiter, 
 	F_target, dT, 
 	τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg, eos, damping; 
-	dt_tolerance_rel=0.00001, dt_tolerance=0.0001, flux_tolerance_rel=0.01, save_every=1, kwargs...)
+	dt_tolerance_rel=0.00001, dt_tolerance=0.005, flux_tolerance_rel=0.01, save_every=1, kwargs...)
 	
     # store the atmosphere every `save_every` iterations
 	store = save_every > 0 ? ((iter%save_every == 0) | (iter == maxiter)) : false
     F_total = F_rad .+ F_conv
-	flux_err_max = maximum(abs.(F_total .- F_target)) / F_target
+	flux_err_max = maximum(abs.(F_total .- F_target) / F_target)
     f_amax = argmax(abs.(F_total .- F_target))
 	dt_err_max = maximum(abs.(dT ./ T))
 	dt_err_max_abs = maximum(abs.(dT))
 	
     sinf = TSO.@sprintf(
-        "%4d | %20.4f %% | %6.2f | %8.4f %% | %9.4f K\n", 
+        "%4d | %20.4f %% | %6.2f | %10.4f %% | %11.4f K\n", 
 		iter, flux_err_max*100, log10(τ[f_amax]), dt_err_max*100, dt_err_max_abs
     )
 	@verbose_info 1 sinf

@@ -43,13 +43,15 @@ mutable struct Atmosphere{T <: AbstractFloat}
     dT::Vector{T}         # Temperature Correction (Size: D)
     F_total::Vector{T}    # Total Flux = F_rad + F_conv (Size: D)
     F_err_rel::Vector{T}  # Relative Flux Error (Size: D)
+    irrad_iso::Bool       # Isotropic irradiation
+    irrad_mu::T           # Direction cosine of incident radiation
 end
 
 function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Temp::Vector{T}, P_gas::Vector{T},
                     mu::Vector{T}, w_mu::Vector{T}, 
                     chi::Matrix{T}, chi_ref::Vector{T}, 
 					B::Matrix{T}, dBdT::Matrix{T}, dchidT::Matrix{T},
-					I_top::Union{Vector{T}, Nothing}=nothing, chi_scat::Union{Matrix{T}, Nothing}=nothing) where T
+					I_top::Union{Vector{T}, Nothing}=nothing, chi_scat::Union{Matrix{T}, Nothing}=nothing, irrad_iso::Bool=false, irrad_mu::T=1.0/sqrt(3.0)) where T
     D = length(tau)
     Nf = size(chi, 1) 
     Na = length(mu)
@@ -103,7 +105,7 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
         deepcopy(chi), chi_scat_val, deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), deepcopy(dchidT), eta, I_top_val, 
         F_conv, dFconv_dT, v_conv, P_turb,
         J_bol, F_bol, F_rad, g_rad, P_rad, Q_rad, J_raw_init,
-        dT, F_total, F_err_rel
+        dT, F_total, F_err_rel, irrad_iso, irrad_mu
     )
 end
 

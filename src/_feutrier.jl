@@ -258,8 +258,8 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     J_history = zeros(T, D, 4)
 
     do_scattering = !isnothing(atm.chi_scat)
-    max_scat_iter = !do_scattering ? 1 : 100
-    tol = 1e-2
+    max_scat_iter = !do_scattering ? 1 : 500
+    tol = 1e-5
     
     @inbounds for f in f_start:f_end
         dchidT_col .= view(atm.dchidT, f, :)
@@ -500,7 +500,7 @@ function solve_T_correction_VEF!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::
     @inbounds for d in 1:D
         K_bol = atm.P_rad[d] * c_light / (4π)
         J_d   = max(atm.J_bol[d], 1e-30)
-        f_edd[d] = clamp(K_bol / J_d, 0.05, 0.5)
+        f_edd[d] = K_bol / J_d
     end
 
     # ---------------------------------------------------------
@@ -598,7 +598,7 @@ function solve_T_correction_VEF!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::
 end
 
 # ==============================================================================
-# Full per-frequency VEF solver (Rybicki Schur complement)
+# Full VEF solver
 # ==============================================================================
 
 function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true) where T
@@ -610,7 +610,6 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true) where T
     fill!(atm.J_bol, 0.0); fill!(atm.F_rad, 0.0)
     fill!(atm.g_rad, 0.0); fill!(atm.P_rad, 0.0); fill!(atm.Q_rad, 0.0)
 
-    # Schur complement matrix (D×D) and RHS
     schur = zeros(T, D, D)
     RE_res_total = zeros(T, D)
 
@@ -682,17 +681,14 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     D, Na = length(atm.tau), length(atm.mu)
     c_light = 2.99792458e10
 
-    # Physics accumulators
     J_part     = zeros(T, D)
     F_part     = zeros(T, D)
     RE_res     = zeros(T, D)
     g_rad_part = zeros(T, D)
     P_rad_part = zeros(T, D)
 
-    # VEF Schur complement accumulator (D×D)
     schur_part = zeros(T, D, D)
 
-    # Feutrier working arrays
     tri_dl  = zeros(T, D)
     tri_d   = zeros(T, D)
     tri_du  = zeros(T, D)
@@ -712,7 +708,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     tau_lambda_col = zeros(T, D)
     J_history = zeros(T, D, 4)
 
-    # VEF working arrays
     J_mean  = zeros(T, D)
     K_mean  = zeros(T, D)
     f_edd   = zeros(T, D)
@@ -722,8 +717,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     vef_rhs = zeros(T, D)
     vef_sol = zeros(T, D)
     inv_col = zeros(T, D)
-    
-    # Pre-calculated derivative coefficients
     schur_dt_inv  = zeros(T, D)
     schur_dtp_inv = zeros(T, D)
     schur_dtm_inv = zeros(T, D)
@@ -733,8 +726,8 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     L_nu          = zeros(T, D)
 
     do_scattering = !isnothing(atm.chi_scat)
-    max_scat_iter = !do_scattering ? 1 : 100
-    tol = 1e-2
+    max_scat_iter = !do_scattering ? 1 : 500
+    tol = 1e-5
 
     @inbounds for f in f_start:f_end
         chi_col .= view(atm.chi, f, :)
@@ -820,7 +813,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
         # Eddington factor f = K / J
         # -------------------------------------------------------
         for d in 1:D
-            f_edd[d] = clamp(K_mean[d] / max(J_mean[d], 1e-30), 0.01, 1.0)
+            f_edd[d] = K_mean[d] / max(J_mean[d], 1e-30)
         end
 
         # Precalculate Schur derivative coefficients
@@ -855,7 +848,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                 H_surf += atm.w_mu[a] * atm.mu[a]^2 * (J_nu[a, 2] - J_nu[a, 1]) / dt1
             end
             h_surf = H_surf / max(J_mean[1], 1e-30)
-            h_surf = clamp(h_surf, 0.0, 2.0)
 
             vef_d[1]  = -2.0*(f_edd[1] + h_surf*dt1)/(dt1*dt1) - eps_col[1]
             vef_du[1] = 2.0*f_edd[2]/(dt1*dt1)
@@ -975,8 +967,9 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
             end
         end
 
-        # --- Ng Acceleration ---
-        # Shift history
+        # --------------------------------------------------------------------
+        # Ng Acceleration
+        # --------------------------------------------------------------------
         for d in 1:D
             J_history[d, 1] = J_history[d, 2]
             J_history[d, 2] = J_history[d, 3]
@@ -984,7 +977,7 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
             J_history[d, 4] = j_sum_new[d]
         end
 
-        if iter >= 4 && iter % 4 == 0
+        if (iter >= 4) && (iter % 4 == 0)
             A11, A12, A22 = 0.0, 0.0, 0.0
             B1, B2 = 0.0, 0.0
             
@@ -1030,7 +1023,7 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
                 end
             end
         end
-        # -----------------------
+        # --------------------------------------------------------------------
         
         max_err = 0.0
         for d in 1:D
@@ -1042,6 +1035,10 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
         
         if (max_err < tol) || (!do_scattering)
             break 
+        end
+
+        if iter == max_scat_iter
+            @warn "Feutrier solver did not converge for frequency $f. Max error: $max_err"
         end
     end
 end
