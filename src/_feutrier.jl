@@ -151,7 +151,7 @@ end
 # Dagger-based approximate solver
 # ==============================================================================
 
-function solve_approximate!(atm::Atmosphere{T}; include_dT::Bool=true, steepness=15.0, tau_trans=-2.0, use_vef::Bool=false) where T
+function solve_approximate!(atm::Atmosphere{T}; include_dT::Bool=true, steepness=15.0, tau_trans=-2.0) where T
     D = length(atm.tau)
     sigma_SB = 5.670374419e-5
     F_target = sigma_SB * atm.T_eff^4
@@ -165,11 +165,7 @@ function solve_approximate!(atm::Atmosphere{T}; include_dT::Bool=true, steepness
     kappa_bol = zeros(T, D)
     compute_formal_sol_dagger!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev, dBdT_bol, kappa_bol)
     if include_dT
-        if use_vef
-            solve_T_correction_VEF!(atm, RE_res, RE_jac, dBdT_bol, kappa_bol, F_target)
-        else
-            solve_T_correction_approximate_blended!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev, F_target; steepness=steepness, tau_trans=tau_trans)
-        end
+        solve_T_correction_approximate_blended!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev, F_target; steepness=steepness, tau_trans=tau_trans)
     end
 end
 
@@ -487,116 +483,6 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, 
     atm.dT .= J_mat \ RHS
 end
 
-function solve_T_correction_VEF!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, dBdT_bol_raw::Vector{T}, kappa_bol_raw::Vector{T}, F_target::T) where T
-    D = length(atm.tau)
-    c_light = 2.99792458e10
-
-    # ---------------------------------------------------------
-    # 1. Compute frequency-integrated Eddington factor f = K / J
-    # ---------------------------------------------------------
-    # P_rad = (4π/c) * Σ w_mu μ² J_ν  →  K = P_rad * c / (4π)
-    # J_bol = Σ w_mu J_ν
-    f_edd = zeros(T, D)
-    @inbounds for d in 1:D
-        K_bol = atm.P_rad[d] * c_light / (4π)
-        J_d   = max(atm.J_bol[d], 1e-30)
-        f_edd[d] = K_bol / J_d
-    end
-
-    # ---------------------------------------------------------
-    # 2. Normalize pre-accumulated dB/dT by total absorption opacity
-    #    (sums were accumulated in parallel by process_frequency_chunk)
-    # ---------------------------------------------------------
-    dBdT_bol = zeros(T, D)
-    @inbounds for d in 1:D
-        dBdT_bol[d] = dBdT_bol_raw[d] / max(kappa_bol_raw[d], 1e-30)
-    end
-
-    # ---------------------------------------------------------
-    # 3. Build tridiagonal system for δT 
-    #
-    # The Eddington flux equation:
-    #   F_rad(d) ≈ -4π · d(f·J)/dτ_ref  
-    #
-    # In the diffusion limit J → B, so δF/δT involves d(f·dB/dT·δT)/dτ.
-    # We use the reference optical depth τ (Ross) for the derivative.
-    #
-    # Surface: RE condition (J = B → heating = cooling = 0)
-    # Interior: Flux conservation with Eddington factor coupling
-    # ---------------------------------------------------------
-    dl  = zeros(T, D)  # sub-diagonal
-    dd  = zeros(T, D)  # diagonal
-    du  = zeros(T, D)  # super-diagonal
-    RHS = zeros(T, D)
-    dT  = zeros(T, D)
-
-    # --- Surface: use RE ---
-    dd[1]  = max(-RE_jac[1], 1e-30)
-    RHS[1] = RE_res[1]
-
-    # --- Interior: Eddington-flux conservation ---
-    @inbounds for d in 2:D
-        F_curr = atm.F_rad[d] + atm.F_conv[d]
-
-        if d < D
-            dtau_p = atm.tau[d+1] - atm.tau[d]
-            dtau_m = atm.tau[d]   - atm.tau[d-1]
-
-            # Radiative flux Jacobian from finite-difference of 4π·f·dB/dT / dτ
-            # Using the same 3-point stencil structure:
-            #   δF/δT_{d+1} ≈ 4π · f_{d+1/2} · dBdT_{d+1} / dτ_+
-            #   δF/δT_{d}   ≈ -4π · (f_{d+1/2}/dτ_+ + f_{d-1/2}/dτ_-)  · dBdT_d  
-            #   δF/δT_{d-1} ≈ 4π · f_{d-1/2} · dBdT_{d-1} / dτ_-
-            f_plus  = 0.5 * (f_edd[d] + f_edd[d+1])
-            f_minus = 0.5 * (f_edd[d-1] + f_edd[d])
-
-            coeff_p = 4π * f_plus  / max(dtau_p, 1e-20)
-            coeff_m = 4π * f_minus / max(dtau_m, 1e-20)
-
-            rad_diag = -(coeff_p + coeff_m) * dBdT_bol[d]
-            rad_prev = coeff_m * dBdT_bol[d-1]
-            rad_next = coeff_p * dBdT_bol[d+1]
-
-            # Convective flux Jacobian
-            conv_diag  = atm.dFconv_dT[d]
-            conv_prev  = -(atm.Temp[d] / max(atm.Temp[d-1], 1.0)) * atm.dFconv_dT[d]
-
-            dd[d]  = rad_diag + conv_diag
-            dl[d]  = rad_prev + conv_prev
-            du[d]  = rad_next
-        else
-            # Bottom boundary: simple two-point
-            dtau_m = atm.tau[D] - atm.tau[D-1]
-            f_minus = 0.5 * (f_edd[D-1] + f_edd[D])
-            coeff_m = 4π * f_minus / max(dtau_m, 1e-20)
-
-            rad_diag = -coeff_m * dBdT_bol[D]
-            rad_prev = coeff_m * dBdT_bol[D-1]
-
-            conv_diag = atm.dFconv_dT[D]
-            conv_prev = -(atm.Temp[D] / max(atm.Temp[D-1], 1.0)) * atm.dFconv_dT[D]
-
-            dd[D] = rad_diag + conv_diag
-            dl[D] = rad_prev + conv_prev
-        end
-
-        RHS[d] = F_target - F_curr
-    end
-
-    # Guard against zero diagonal
-    @inbounds for d in 1:D
-        if abs(dd[d]) < 1e-30
-            dd[d] = 1e-30
-        end
-    end
-
-    # ---------------------------------------------------------
-    # 4. Solve tridiagonal system
-    # ---------------------------------------------------------
-    solve_tridiagonal!(dT, dl, dd, du, RHS)
-    atm.dT .= dT
-end
-
 # ==============================================================================
 # Full VEF solver
 # ==============================================================================
@@ -880,7 +766,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
 
             invert_tridiagonal_column!(vef_sol, dp, vef_dl, vef_d, vef_du)
 
-            neg_C = -C_dp
+            neg_C = (dp == D) ? C_dp : -C_dp
             neg_C_4pi = 4π * neg_C
 
             @inbounds @simd for d in 1:D
