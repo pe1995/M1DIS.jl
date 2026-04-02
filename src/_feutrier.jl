@@ -244,6 +244,10 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     J_nu = zeros(T, Na, D)
     L_nu = zeros(T, D)
 
+    J_ini_col = zeros(T, D)
+    F_ini_col = zeros(T, D)
+    K_ini_col = zeros(T, D)
+
     sig_col = zeros(T, D) 
     S_col   = zeros(T, D) 
     eps_col = zeros(T, D) 
@@ -274,10 +278,28 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
         
         J_old .= B_col
         
+        # Analytic stellar beam calculation
+        mu_star = hasproperty(atm, :irrad_mu) ? atm.irrad_mu : 1.0 / sqrt(3.0) 
+        f_redist = 0.25 
+        
+        if atm.I_top[f] > 0.0
+            F_arriving = f_redist * π * atm.I_top[f]
+            @inbounds for d in 1:D
+                attenuation = exp(-tau_lambda_col[d] / mu_star)
+                J_ini_col[d] = (F_arriving / (4.0 * π * mu_star)) * attenuation
+                F_ini_col[d] = -F_arriving * attenuation
+                K_ini_col[d] = J_ini_col[d] * mu_star^2
+            end
+        else
+            fill!(J_ini_col, zero(T))
+            fill!(F_ini_col, zero(T))
+            fill!(K_ini_col, zero(T))
+        end
+        
         # lambda iterations
         lambda_formal_solution!(
             atm, f, max_scat_iter, tol, do_scattering,
-            eps_col, B_col, J_old, S_col,
+            eps_col, B_col, J_old, J_ini_col, S_col,
             J_nu, j_sum_new, L_nu,
             tri_dl, tri_d, tri_du, tri_rhs, tri_sol,
             J_history
@@ -291,11 +313,11 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
                 j_sum += atm.w_mu[a] * J_nu[a, d]
             end
             
-            J_part[d] += w_f * j_sum
+            J_part[d] += w_f * (j_sum + J_ini_col[d])
             
             kabs = chi_col[d] - sig_col[d]
             term = w_f * kabs
-            RE_res[d] += term * (j_sum - B_col[d])
+            RE_res[d] += term * (j_sum + J_ini_col[d] - B_col[d])
 
             # Accumulate absorption-weighted dB/dT for VEF
             kabs_pos = max(kabs, 0.0)
@@ -303,7 +325,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
             kappa_bol_part[d] += kabs_pos
 
             jac_J = term * (L_nu[d] - 1.0) * dB_col[d]
-            jac_opacity = w_f * dchidT_col[d] * (j_sum - B_col[d])
+            jac_opacity = w_f * dchidT_col[d] * (j_sum + J_ini_col[d]- B_col[d])
             
             # Prevent jac_opacity from making RE_jac positive or vanishingly small.
             # jac_J is always <= 0. We enforce the sum to be <= 0.1 * jac_J.
@@ -365,8 +387,8 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
                 flux_sum += ang * (dJ / max(dt, 1e-20))
             end
             P_rad_part[d] += J_sum
-            F_part[d]     += flux_sum
-            g_rad_part[d] += flux_sum * chi_col[d]
+            F_part[d]     += flux_sum + F_ini_col[d]
+            g_rad_part[d] += (flux_sum + F_ini_col[d]) * chi_col[d]
             K_rad_diag[d] += k_d_sum
             K_rad_prev[d] += k_p_sum
         end
@@ -611,6 +633,10 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     f_vef         = zeros(T, D)
     L_nu          = zeros(T, D)
 
+    J_ini_col = zeros(T, D)
+    F_ini_col = zeros(T, D)
+    K_ini_col = zeros(T, D)
+
     do_scattering = !isnothing(atm.chi_scat)
     max_scat_iter = !do_scattering ? 1 : 500
     tol = 1e-5
@@ -632,11 +658,31 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
         J_old .= B_col
 
         # -------------------------------------------------------
+        # Analytic Stellar Beam Calculation 
+        # -------------------------------------------------------
+        mu_star = hasproperty(atm, :irrad_mu) ? atm.irrad_mu : 1.0 / sqrt(3.0) 
+        f_redist = 0.25 
+        
+        if atm.I_top[f] > 0.0
+            F_arriving = f_redist * π * atm.I_top[f]
+            @inbounds for d in 1:D
+                attenuation = exp(-tau_lambda_col[d] / mu_star)
+                J_ini_col[d] = (F_arriving / (4.0 * π * mu_star)) * attenuation
+                F_ini_col[d] = -F_arriving * attenuation
+                K_ini_col[d] = J_ini_col[d] * mu_star^2
+            end
+        else
+            fill!(J_ini_col, zero(T))
+            fill!(F_ini_col, zero(T))
+            fill!(K_ini_col, zero(T))
+        end
+
+        # -------------------------------------------------------
         # Feutrier formal solution
         # -------------------------------------------------------
         lambda_formal_solution!(
             atm, f, max_scat_iter, tol, do_scattering,
-            eps_col, B_col, J_old, S_col,
+            eps_col, B_col, J_old, J_ini_col, S_col,
             J_nu, j_sum_new, L_nu,
             tri_dl, tri_d, tri_du, tri_rhs, tri_sol,
             J_history
@@ -656,16 +702,14 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                 j_sum += atm.w_mu[a] * J_nu[a, d]
                 k_sum += atm.w_mu[a] * atm.mu[a]^2 * J_nu[a, d]
             end
-            J_mean[d] = j_sum
-            K_mean[d] = k_sum
+            J_mean[d] = j_sum + J_ini_col[d]
+            K_mean[d] = k_sum + K_ini_col[d]
 
-            # Accumulate physics outputs
-            J_part[d] += w_f * j_sum
+            J_part[d] += w_f * J_mean[d]
             kabs = chi_col[d] - sig_col[d]
-            RE_res[d] += w_f * kabs * (j_sum - B_col[d])
-            P_rad_part[d] += (4π * w_f / c_light) * k_sum
+            RE_res[d] += w_f * kabs * (J_mean[d] - B_col[d])
+            P_rad_part[d] += (4π * w_f / c_light) * K_mean[d]
 
-            # Flux
             flux_sum = 0.0
             for a in 1:Na
                 ang = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
@@ -691,8 +735,8 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                 end
                 flux_sum += ang * (dJ / dt)
             end
-            F_part[d]     += flux_sum
-            g_rad_part[d] += flux_sum * chi_col[d]
+            F_part[d]     += flux_sum + F_ini_col[d]
+            g_rad_part[d] += (flux_sum + F_ini_col[d]) * chi_col[d]
         end
 
         # -------------------------------------------------------
@@ -801,13 +845,13 @@ end
 # ==============================================================================
 
 function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int, tol::Float64, do_scattering::Bool,
-                                 eps_col::Vector{T}, B_col::Vector{T}, J_old::Vector{T}, S_col::Vector{T},
+                                 eps_col::Vector{T}, B_col::Vector{T}, J_old::Vector{T}, J_ini_col::Vector{T}, S_col::Vector{T},
                                  J_nu::Matrix{T}, j_sum_new::Vector{T}, L_nu::Vector{T},
                                  tri_dl::Vector{T}, tri_d::Vector{T}, tri_du::Vector{T}, tri_rhs::Vector{T}, tri_sol::Vector{T}, J_history::Matrix{T}) where T
     D, Na = length(atm.tau), length(atm.mu)
 
     for iter in 1:max_scat_iter
-        S_col .= eps_col .* B_col .+ (1.0 .- eps_col) .* J_old
+        S_col .= eps_col .* B_col .+ (1.0 .- eps_col) .* (J_old .+ J_ini_col)
         
         fill!(L_nu, 0.0)
         fill!(j_sum_new, 0.0)
@@ -819,7 +863,7 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
             (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, 1, mu_sq)
             tri_d[1]   = B
             tri_du[1]  = C
-            tri_rhs[1] = src_fac * S_col[1] + ext_fac * atm.I_top[f]
+            tri_rhs[1] = src_fac * S_col[1]
             
             L_nu[1] += weight * (src_fac / B)
 
@@ -912,9 +956,22 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
         # --------------------------------------------------------------------
         
         max_err = 0.0
+        nan_detected = false
+        
         for d in 1:D
+            if isnan(j_sum_new[d]) || isinf(j_sum_new[d])
+                nan_detected = true
+                break
+            end
+            
             err = abs(j_sum_new[d] - J_old[d]) / max(j_sum_new[d], 1e-20)
             max_err = max(max_err, err)
+        end
+        
+        if nan_detected
+            #@warn "NaN or Inf detected in lambda iterations for frequency $f at iter $iter. Halting scattering and reverting to last safe state."
+            j_sum_new .= J_old  
+            break
         end
         
         J_old .= j_sum_new
@@ -923,9 +980,9 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
             break 
         end
 
-        if iter == max_scat_iter
-            @warn "Feutrier solver did not converge for frequency $f. Max error: $max_err"
-        end
+        #if iter == max_scat_iter
+        #    @warn "Feutrier solver did not converge for frequency $f. Max error: $max_err"
+        #end
     end
 end
 

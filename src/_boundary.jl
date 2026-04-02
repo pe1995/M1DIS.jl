@@ -106,14 +106,14 @@ function irradiate(eos, opa::TSO.ExtendedOpacity, T_irradiation, R_irradiation, 
     S = if isnothing(F_irradiation)
         sample(eos, opa, (:src,), Float64(log(rho_irr)), Float64(log(T_irradiation)))[1] 
     else
-        F_irradiation
+        F_irradiation ./ π
     end
-    S .* (R_irradiation ./ d_irradiation) .^2 .* opa.weights ./ (4π)
+    S .* (R_irradiation ./ d_irradiation) .^2 .* opa.weights 
 end
 
 function irradiate(eos, opa::TSO.MiniOpacityTable, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
     # the mini table does not contain source function, so we need to compute it on the fly
     lf = TSO.lookup_variable(opa, :src)
-    S = isnothing(F_irradiation) ? lf.(Float64(T_irradiation), eachindex(opa.opacity.λ)) : F_irradiation
-    S .* (R_irradiation ./ d_irradiation) .^2 .* opa.weights ./ (4π)
+    S = isnothing(F_irradiation) ? lf.(Float64(T_irradiation), eachindex(opa.opacity.λ)) : F_irradiation ./ π
+    S .* (R_irradiation ./ d_irradiation) .^2 .* opa.weights 
 end

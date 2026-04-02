@@ -275,12 +275,18 @@ function main()
     F_irr = if args["F_irradiation"] == ""
         nothing
     else
-        d = M1DIS.readdlm(args["F_irradiation"])
+        d = M1DIS.readdlm(args["F_irradiation"], comments=true)
         l = d[:, 1]
         F = d[:, 2]
         m = sortperm(l)
-        ip = M1DIS.linear_interpolation(l[m], F[m])
-        ip.(TSO.wavelength(opa_complete))
+
+        # the flux is given in units of erg/(s*cm^2*Hz)
+        # we need to convert it to erg/(s*cm^2*cm). Since l is in Angstrom, we do
+        lcm = l .* TSO.aa_to_cm
+        F_cm = F .* MUST.CLight ./ (lcm .^ 2)
+
+        ip = M1DIS.linear_interpolation(l[m], log.(F_cm[m]), extrapolation_bc=M1DIS.Flat())
+        exp.(ip.(TSO.wavelength(opa_complete)))
     end
 
     use_threads = (!args["binned"]) || (args["use_threads"])
@@ -307,6 +313,7 @@ function main()
         maxiter = args["maxiter"],
         eos = eos_complete,
         opacity = opa_complete,
+        #solver=:approximate,
         damping = args["damping"],
         τ = 10.0 .^ range(args["tau_min"], args["tau_max"], length=args["n_tau"]),
         use_threads = use_threads,
