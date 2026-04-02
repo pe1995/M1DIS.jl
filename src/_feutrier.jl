@@ -260,6 +260,8 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     do_scattering = !isnothing(atm.chi_scat)
     max_scat_iter = !do_scattering ? 1 : 500
     tol = 1e-5
+    mu_star = atm.irrad_mu
+    f_redist = 0.25 
     
     @inbounds for f in f_start:f_end
         dchidT_col .= view(atm.dchidT, f, :)
@@ -279,9 +281,6 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
         J_old .= B_col
         
         # Analytic stellar beam calculation
-        mu_star = hasproperty(atm, :irrad_mu) ? atm.irrad_mu : 1.0 / sqrt(3.0) 
-        f_redist = 0.25 
-        
         if atm.I_top[f] > 0.0
             F_arriving = f_redist * π * atm.I_top[f]
             @inbounds for d in 1:D
@@ -572,15 +571,6 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true) where T
             end
         end
 
-        if abs(schur[1, 1]) < 1e-12
-            for j in 1:D
-                schur[1, j] = 0.0
-            end
-            schur[1, 1] = 1.0
-            schur[1, 2] = -1.0
-            RHS[1] = atm.Temp[2] - atm.Temp[1] 
-        end
-
         atm.dT .= schur \ RHS
     end
 end
@@ -641,6 +631,9 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     max_scat_iter = !do_scattering ? 1 : 500
     tol = 1e-5
 
+    mu_star = atm.irrad_mu
+    f_redist = 0.25 
+
     @inbounds for f in f_start:f_end
         chi_col .= view(atm.chi, f, :)
         B_col   .= view(atm.B, f, :)
@@ -660,9 +653,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
         # -------------------------------------------------------
         # Analytic Stellar Beam Calculation 
         # -------------------------------------------------------
-        mu_star = hasproperty(atm, :irrad_mu) ? atm.irrad_mu : 1.0 / sqrt(3.0) 
-        f_redist = 0.25 
-        
         if atm.I_top[f] > 0.0
             F_arriving = f_redist * π * atm.I_top[f]
             @inbounds for d in 1:D
@@ -743,7 +733,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
         # Eddington factor f = K / J
         # -------------------------------------------------------
         for d in 1:D
-            f_edd[d] = K_mean[d] / max(J_mean[d], 1e-30)
+            f_edd[d] = max(K_mean[d] / max(J_mean[d], 1e-30), 1.0/3.0)
         end
 
         # Precalculate Schur derivative coefficients
@@ -774,10 +764,12 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             dt1 = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
             # Surface Eddington factor h = H/J
             H_surf = 0.0
+            j_sum_top = 0.0
             for a in 1:Na
                 H_surf += atm.w_mu[a] * atm.mu[a]^2 * (J_nu[a, 2] - J_nu[a, 1]) / dt1
+                j_sum_top += atm.w_mu[a] * J_nu[a, 1]
             end
-            h_surf = H_surf / max(J_mean[1], 1e-30)
+            h_surf = H_surf / max(j_sum_top, 1e-30)
 
             vef_d[1]  = -2.0*(f_edd[1] + h_surf*dt1)/(dt1*dt1) - eps_col[1]
             vef_du[1] = 2.0*f_edd[2]/(dt1*dt1)
@@ -860,7 +852,7 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
             mu_sq  = atm.mu[a]^2
             weight = atm.w_mu[a]
             
-            (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, 1, mu_sq)
+            (A, B, C, src_fac, _) = feutrier_coeffs(atm, f, 1, mu_sq)
             tri_d[1]   = B
             tri_du[1]  = C
             tri_rhs[1] = src_fac * S_col[1]
@@ -877,7 +869,7 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
                 L_nu[d] += weight * (src_fac / B)
             end
             
-            (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, D, mu_sq)
+            (A, B, C, src_fac, _) = feutrier_coeffs(atm, f, D, mu_sq)
             tri_dl[D]  = A
             tri_d[D]   = B
             tri_rhs[D] = src_fac * S_col[D]
@@ -1027,7 +1019,7 @@ function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
     if d == 1 # Estimate infalling radiation
         mu = sqrt(mu_sq)
         tau_slab = dt_plus / mu
-        tau_top  = (atm.tau[1] * atm.eta[f, 1]) / mu
+        tau_top  = atm.tau_lambda[f, 1] / mu
         
         E_slab = (tau_slab < 0.01) ? 1.0 - tau_slab*(1.0 - 0.5*tau_slab) : exp(-tau_slab)
         E_top  = (tau_top < 0.01)  ? 1.0 - tau_top *(1.0 - 0.5*tau_top)  : exp(-tau_top)
@@ -1040,7 +1032,8 @@ function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
         ext  = 0.5 * E_top * (1.0 - E_slab^2)
         (0.0, diag, off, src, ext)
     elseif d == D # Diffusion BC 
-        (0.0, 1.0, 0.0, 1.0, 0.0) 
+        (0.0, 1.0, 0.0, 1.0, 0.0)  # Diffusion BC 
+        #(-1.0, 1.0, 0.0, 0.0, 0.0) # von-Neumann BC
     else
         dtm_safe = max(dt_minus, 1e-30)
         dtp_safe = max(dt_plus, 1e-30)
