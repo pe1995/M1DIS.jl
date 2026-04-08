@@ -147,146 +147,150 @@ function atmosphere(; T_eff, logg, eos, opacity,
     r = []
 
     @optionalTiming relaxation_time for iter in 1:maxiter
-        
-		# MLT
-        @optionalTiming mixing_length_time begin
-            update_mixing_length!(
-                atm.F_conv, 
-				atm.v_conv, 
-				atm.P_rad, 
-				atm.P_turb, 
-                atm.dFconv_dT, 
+        try
+            # MLT
+            @optionalTiming mixing_length_time begin
+                update_mixing_length!(
+                    atm.F_conv, 
+                    atm.v_conv, 
+                    atm.P_rad, 
+                    atm.P_turb, 
+                    atm.dFconv_dT, 
+                    atm.Temp, 
+                    atm.P_gas, 
+                    atm.rho, 
+                    atm.tau, 
+                    eos, 
+                    exp10(logg); 
+                    alpha_mlt=α_MLT, Teff=teff_target, v_mac=v_mac*1e5, pbeta=pbeta
+                )
+            end
+
+            # Stabilizer for the approximate solver
+            if solver==:approximate
+                stabilizer_stage = if (flux_err_max_prev > 50.0)
+                    stabilizer_stage > 3 ? 3 : stabilizer_stage
+                elseif (flux_err_max_prev > 1.0)
+                    stabilizer_stage > 2 ? 2 : stabilizer_stage
+                else
+                    stabilizer_stage > 1 ? 1 : stabilizer_stage
+                end
+
+                if stabilizer_stage == 3
+                    for n in 2:length(atm.F_conv)
+                        if ((atm.F_conv[n-1] > 0.0) && (atm.F_conv[n] < atm.F_conv[n-1]))
+                            atm.F_conv[n] = atm.F_conv[n-1]
+                            atm.v_conv[n] = atm.v_conv[n-1]
+                            atm.P_turb[n] = atm.P_turb[n-1]
+                            atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
+                        end
+                    end
+                    smooth_array!(atm.F_conv, passes=1)
+                    smooth_array!(atm.v_conv, passes=1)
+                    smooth_array!(atm.P_turb, passes=1)
+                    smooth_array!(atm.dFconv_dT, passes=1)
+                elseif stabilizer_stage == 2
+                    for n in 2:length(atm.F_conv)
+                        if ((atm.dFconv_dT[n-1] > 0.0) && (atm.dFconv_dT[n] < atm.dFconv_dT[n-1]))
+                            atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
+                            atm.P_turb[n] = atm.P_turb[n-1]
+                        end
+                    end
+                    smooth_array!(atm.dFconv_dT, passes=1)
+                    smooth_array!(atm.P_turb, passes=1)
+                end
+            end
+            
+            # Radiative Transfer
+            @optionalTiming radiation_transfer_time begin
+                @optionalTiming compute_opacities_time if opacity.binned
+                    compute_opacities!(atm.chi, atm.chi_ref, atm.B, atm.dBdT, atm.dchidT, eos, opacity, atm.Temp, atm.rho)
+                else
+                    compute_opacities_chunked!(atm.chi, atm.chi_ref, atm.B, atm.dBdT, atm.dchidT, eos, opacity, atm.Temp, atm.rho)
+                end
+
+                if !isnothing(scattering_opacity)
+                    @optionalTiming compute_opacities_time compute_opacities_chunked!(atm.chi_scat, nothing, nothing, nothing, nothing, eos, scattering_opacity, atm.Temp, atm.rho)
+                end
+
+                @optionalTiming update_atmosphere_time update!(atm)
+                @optionalTiming solve_RT_time if solver == :gustafsson
+                    solve_gustafsson!(atm)
+                elseif solver == :vef
+                    #try
+                        solve_VEF!(atm)
+                    #catch e
+                    #    @warn "VEF solver failed (singular or invalid). Running approximate solver."
+                    #    damping = 0.01
+                    #    solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
+                    #end
+                else
+                    solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
+                end
+
+                # Update flux errors inside atm (Staggered Flux sum)
+                atm.F_total .= atm.F_rad .+ atm.F_conv
+                atm.F_err_rel .= (atm.F_total .- F_target) ./ F_target
+                flux_err_max_curr = maximum(abs.(atm.F_err_rel))
+            end
+
+            # Damping
+            for i in 1:length(atm.dT)
+                scale = tcmxu_inv
+                atm.dT[i] = atm.dT[i] / sqrt(1.0 + (scale * atm.dT[i] / atm.Temp[i])^2)
+            end
+            flux_err_max_prev = flux_err_max_curr
+
+            # Evaluation
+            converged = evaluate_iteration!(
+                r, iter, maxiter, F_target, 
+                atm.dT, 
+                atm.tau, 
+                atm.z, 
                 atm.Temp, 
-				atm.P_gas, 
-				atm.rho, 
-				atm.tau, 
+                atm.rho, 
+                atm.P_gas, 
+                atm.F_rad, 
+                atm.F_conv, 
+                atm.dFconv_dT, 
+                T_eff, 
+                logg, 
                 eos, 
-				exp10(logg); 
-                alpha_mlt=α_MLT, Teff=teff_target, v_mac=v_mac*1e5, pbeta=pbeta
+                damping; 
+                J=atm.J_bol, 
+                g_rad=atm.g_rad, 
+                P_turb=atm.P_turb, 
+                P_rad=atm.P_rad, 
+                F_err_rel=atm.F_err_rel, 
+                Q_rad=atm.Q_rad,
+                chi_max=maximum(atm.chi, dims=1), chi_min=minimum(atm.chi, dims=1),
+                kwargs...
             )
-        end
 
-        # Stabilizer for the approximate solver
-        if solver==:approximate
-            stabilizer_stage = if (flux_err_max_prev > 50.0)
-                stabilizer_stage > 3 ? 3 : stabilizer_stage
-            elseif (flux_err_max_prev > 1.0)
-                stabilizer_stage > 2 ? 2 : stabilizer_stage
-            else
-                stabilizer_stage > 1 ? 1 : stabilizer_stage
+            if converged 
+                @verbose_info 1 "Atmosphere converged."
+                break
             end
 
-            if stabilizer_stage == 3
-                for n in 2:length(atm.F_conv)
-                    if ((atm.F_conv[n-1] > 0.0) && (atm.F_conv[n] < atm.F_conv[n-1]))
-                        atm.F_conv[n] = atm.F_conv[n-1]
-                        atm.v_conv[n] = atm.v_conv[n-1]
-                        atm.P_turb[n] = atm.P_turb[n-1]
-                        atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
-                    end
-                end
-                smooth_array!(atm.F_conv, passes=1)
-                smooth_array!(atm.v_conv, passes=1)
-                smooth_array!(atm.P_turb, passes=1)
-                smooth_array!(atm.dFconv_dT, passes=1)
-            elseif stabilizer_stage == 2
-                for n in 2:length(atm.F_conv)
-                    if ((atm.dFconv_dT[n-1] > 0.0) && (atm.dFconv_dT[n] < atm.dFconv_dT[n-1]))
-                        atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
-                        atm.P_turb[n] = atm.P_turb[n-1]
-                    end
-                end
-                smooth_array!(atm.dFconv_dT, passes=1)
-                smooth_array!(atm.P_turb, passes=1)
-            end
-        end
-        
-		# Radiative Transfer
-        @optionalTiming radiation_transfer_time begin
-            @optionalTiming compute_opacities_time if opacity.binned
-                compute_opacities!(atm.chi, atm.chi_ref, atm.B, atm.dBdT, atm.dchidT, eos, opacity, atm.Temp, atm.rho)
-            else
-                compute_opacities_chunked!(atm.chi, atm.chi_ref, atm.B, atm.dBdT, atm.dchidT, eos, opacity, atm.Temp, atm.rho)
-            end
-
-            if !isnothing(scattering_opacity)
-                @optionalTiming compute_opacities_time compute_opacities_chunked!(atm.chi_scat, nothing, nothing, nothing, nothing, eos, scattering_opacity, atm.Temp, atm.rho)
-            end
-
-            @optionalTiming update_atmosphere_time update!(atm)
-            @optionalTiming solve_RT_time if solver == :gustafsson
-                solve_gustafsson!(atm)
-            elseif solver == :vef
-                #try
-                    solve_VEF!(atm)
-                #catch e
-                #    @warn "VEF solver failed (singular or invalid). Running approximate solver."
-                #    damping = 0.01
-                #    solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
-                #end
-            else
-                solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
-            end
-
-            # Update flux errors inside atm (Staggered Flux sum)
-            atm.F_total .= atm.F_rad .+ atm.F_conv
-            atm.F_err_rel .= (atm.F_total .- F_target) ./ F_target
-            flux_err_max_curr = maximum(abs.(atm.F_err_rel))
-        end
-
-        # Damping
-        for i in 1:length(atm.dT)
-            scale = tcmxu_inv
-            atm.dT[i] = atm.dT[i] / sqrt(1.0 + (scale * atm.dT[i] / atm.Temp[i])^2)
-        end
-        flux_err_max_prev = flux_err_max_curr
-
-        # Evaluation
-        converged = evaluate_iteration!(
-            r, iter, maxiter, F_target, 
-            atm.dT, 
-			atm.tau, 
-			atm.z, 
-			atm.Temp, 
-			atm.rho, 
-			atm.P_gas, 
-            atm.F_rad, 
-			atm.F_conv, 
-			atm.dFconv_dT, 
-            T_eff, 
-			logg, 
-			eos, 
-			damping; 
-            J=atm.J_bol, 
-			g_rad=atm.g_rad, 
-			P_turb=atm.P_turb, 
-			P_rad=atm.P_rad, 
-            F_err_rel=atm.F_err_rel, 
-			Q_rad=atm.Q_rad,
-            chi_max=maximum(atm.chi, dims=1), chi_min=minimum(atm.chi, dims=1),
-            kwargs...
-        )
-
-        if converged 
-            @verbose_info 1 "Atmosphere converged."
+            # Apply corrections & Hydrostatic Equilibrium
+            atm.Temp .+= atm.dT
+            atm.Temp .= clamp.(atm.Temp, 10, 1e12)
+            
+            @optionalTiming hydrostatic_time update_hydrostatic!(
+                atm.P_gas, 
+                atm.rho, 
+                atm.z, 
+                atm.Temp, 
+                atm.P_turb, 
+                atm.P_rad, 
+                atm.tau, 
+                eos=eos, 
+                logg=logg
+            )
+        catch e
+            @warn "M1DIS failed. Error: $e"
             break
         end
-
-        # Apply corrections & Hydrostatic Equilibrium
-        atm.Temp .+= atm.dT
-        atm.Temp .= clamp.(atm.Temp, 10, 1e12)
-        
-        @optionalTiming hydrostatic_time update_hydrostatic!(
-            atm.P_gas, 
-			atm.rho, 
-			atm.z, 
-			atm.Temp, 
-			atm.P_turb, 
-			atm.P_rad, 
-			atm.tau, 
-            eos=eos, 
-			logg=logg
-        )
     end
 
     return length(r) == 1 ? r[1] : r
