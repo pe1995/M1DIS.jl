@@ -21,7 +21,6 @@ mutable struct Atmosphere{T <: AbstractFloat}
     B::Matrix{T}          # Planck function (Nf x D)
     dBdT::Matrix{T}       # Derivative of B (Nf x D)
     dchidT::Matrix{T}     # Derivative of opacity (Nf x D)
-    eta::Matrix{T}        # Opacity ratio chi / chi_ref
     I_top::Vector{T}      # External Irradiation (Size: Nf)
     
     # Convection
@@ -51,7 +50,7 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
                     mu::Vector{T}, w_mu::Vector{T}, 
                     chi::Matrix{T}, chi_ref::Vector{T}, 
 					B::Matrix{T}, dBdT::Matrix{T}, dchidT::Matrix{T},
-					I_top::Union{Vector{T}, Nothing}=nothing, chi_scat::Union{Matrix{T}, Nothing}=nothing, irrad_iso::Bool=false, irrad_mu::T=1.0/sqrt(3.0)) where T
+					I_top::Union{Vector{T}, Nothing}=nothing, chi_scat::Union{Matrix{T}, Nothing}=nothing, irrad_iso::Bool=false, irrad_mu::T=1.0/2.0) where T
     D = length(tau)
     Nf = size(chi, 1) 
     Na = length(mu)
@@ -59,15 +58,6 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
     # Normalize Angle Weights
     total_w_mu = sum(w_mu)
     w_mu_norm = (total_w_mu > 0) ? w_mu ./ total_w_mu : deepcopy(w_mu)
-    
-    # Eta
-    eta = zeros(T, Nf, D)
-    for d in 1:D
-		ref = max(chi_ref[d], 1e-30)
-		for f in 1:Nf
-            eta[f, d] = chi[f, d] / ref
-        end
-    end
 
     # Compute tau_lambda
     tau_lambda = zeros(T, Nf, D)
@@ -102,7 +92,7 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
     return Atmosphere{T}(
         T_eff, deepcopy(z), deepcopy(tau), tau_lambda, deepcopy(rho), deepcopy(Temp), deepcopy(P_gas),
         deepcopy(mu), w_mu_norm, 
-        deepcopy(chi), chi_scat_val, deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), deepcopy(dchidT), eta, I_top_val, 
+        deepcopy(chi), chi_scat_val, deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), deepcopy(dchidT), I_top_val, 
         F_conv, dFconv_dT, v_conv, P_turb,
         J_bol, F_bol, F_rad, g_rad, P_rad, Q_rad, J_raw_init,
         dT, F_total, F_err_rel, irrad_iso, irrad_mu
@@ -112,16 +102,6 @@ end
 function update!(atm::Atmosphere{T}; sync_opacities::Bool=true, sync_geometry::Bool=true, sync_angles::Bool=false) where T
     D = length(atm.tau)
 	Nf = size(atm.chi, 1)
-
-	# Recompute Eta 
-    if sync_opacities
-        @inbounds for d in 1:D
-			ref = max(atm.chi_ref[d], 1e-30)
-            for f in 1:Nf
-                atm.eta[f, d] = atm.chi[f, d] / ref
-            end
-        end
-    end
 
     # Recompute frequency-dependent optical depth
     if sync_opacities || sync_geometry

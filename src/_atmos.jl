@@ -131,7 +131,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
         end
         @verbose_info 2 "========================================================================="
         sinf = TSO.@sprintf(
-            "%s | %s | %s | %s | %s\n__________________________________________________________________________________\n", 
+            "%s | %s | %s | %s | %s\n________________________________________________________________________________________\n", 
             "iteration", "ΔF/F (max, %)", "log(τ) of max. ΔF/F", "ΔT/T (max, %)", "ΔT (max, K)"
         )
         @verbose_info 1 sinf
@@ -234,6 +234,13 @@ function atmosphere(; T_eff, logg, eos, opacity,
             flux_err_max_curr = maximum(abs.(atm.F_err_rel))
         end
 
+        # Damping
+        for i in 1:length(atm.dT)
+            scale = tcmxu_inv
+            atm.dT[i] = atm.dT[i] / sqrt(1.0 + (scale * atm.dT[i] / atm.Temp[i])^2)
+        end
+        flux_err_max_prev = flux_err_max_curr
+
         # Evaluation
         converged = evaluate_iteration!(
             r, iter, maxiter, F_target, 
@@ -264,13 +271,6 @@ function atmosphere(; T_eff, logg, eos, opacity,
             @verbose_info 1 "Atmosphere converged."
             break
         end
-
-        # Damping
-        for i in 1:length(atm.dT)
-            scale = flux_err_max_curr > flux_err_max_prev ? tcmxu_inv * 10.0 : tcmxu_inv
-            atm.dT[i] = atm.dT[i] / sqrt(1.0 + (scale * atm.dT[i] / atm.Temp[i])^2)
-        end
-        flux_err_max_prev = flux_err_max_curr
 
         # Apply corrections & Hydrostatic Equilibrium
         atm.Temp .+= atm.dT
@@ -338,7 +338,7 @@ function evaluate_iteration!(result,
 	dt_err_max_abs = maximum(abs.(dT))
 	
     sinf = TSO.@sprintf(
-        "%4d | %20.4f %% | %6.2f | %10.4f %% | %11.4f K\n", 
+        "%4d | %20.4f %% | %6.2f | %14.4f %% | %14.4f K\n", 
 		iter, flux_err_max*100, log10(τ[f_amax]), dt_err_max*100, dt_err_max_abs
     )
 	@verbose_info 1 sinf
