@@ -160,13 +160,6 @@ function (objective::BinningObjective)(current_params)
     model = objective.restructure_model(Float32.(current_params))
     weights_assign = transpose(model(objective.X_features))
     
-    #=bin_totals = sum(weights_assign, dims=1)
-    min_fraction = 0.02 
-    threshold = min_fraction * objective.ctx.n_waves
-    k = 0.05 
-    shifted_exp = sum(exp.(k .* (threshold .- bin_totals)))
-    empty_bin_penalty = shifted_exp * (objective.baseline_loss * 10.0)=#
-
     steepness = 30.0
     ownership_threshold = 0.70
     strong_ownership = 1.0 ./ (1.0 .+ exp.(.-steepness .* (weights_assign .- ownership_threshold)))
