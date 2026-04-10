@@ -2,7 +2,7 @@
 # Dagger-based approximate solver
 # ==============================================================================
 
-function solve_approximate!(atm::Atmosphere{T}; include_dT::Bool=true, steepness=15.0, tau_trans=-2.0) where T
+function solve_approximate!(atm::Atmosphere{T}; include_dT::Bool=true, steepness=15.0, tau_trans=-2.0, n_workers=Threads.nthreads()) where T
     D = length(atm.tau)
     sigma_SB = 5.670374419e-5
     F_target = sigma_SB * atm.T_eff^4
@@ -14,13 +14,14 @@ function solve_approximate!(atm::Atmosphere{T}; include_dT::Bool=true, steepness
     K_rad_prev = zeros(T, D)
     dBdT_bol = zeros(T, D)
     kappa_bol = zeros(T, D)
-    compute_formal_sol_dagger!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev, dBdT_bol, kappa_bol)
+    compute_formal_sol_dagger!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev, dBdT_bol, kappa_bol, n_workers=n_workers)
+    
     if include_dT
         solve_T_correction_approximate_blended!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev, F_target; steepness=steepness, tau_trans=tau_trans)
     end
 end
 
-function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}, dBdT_bol::Vector{T}, kappa_bol::Vector{T}) where T
+function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}, dBdT_bol::Vector{T}, kappa_bol::Vector{T}; n_workers=Threads.nthreads()) where T
     D = length(atm.tau)
     Nf = size(atm.chi, 1)
     
@@ -29,7 +30,7 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_ja
     fill!(K_rad_diag, 0.0); fill!(K_rad_prev, 0.0)
     fill!(dBdT_bol, 0.0); fill!(kappa_bol, 0.0)
     
-    n_chunks = max(1, Threads.nthreads() * 4)
+    n_chunks = max(1, n_workers == 1 ? 1 : n_workers * 4)
     chunk_size = cld(Nf, n_chunks) 
     
     tasks = Vector{Any}(undef, 0) 

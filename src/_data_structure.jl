@@ -142,3 +142,22 @@ function formation_height(atm::M1DIS.Atmosphere; closest=true)
    
     fh
 end
+
+function formation_source_function(atm::M1DIS.Atmosphere; closest=true)
+    lgt = log10.(atm.tau)
+    sf = similar(atm.tau_lambda, size(atm.tau_lambda, 1))
+
+    if closest
+        for l in axes(atm.tau_lambda, 1)
+            idx = argmin(abs.(atm.tau_lambda[l, :] .- 1.0))
+            sf[l] = log10.(atm.B[l, idx])
+        end
+    else
+        for l in axes(atm.tau_lambda, 1)
+            log_tau_l = log10.(atm.tau_lambda[l, :])
+            sf[l] = MUST.linear_interpolation(log_tau_l, log10.(atm.B[l, :]), extrapolation_bc=MUST.Line())(0.0)
+        end
+    end
+   
+    return sf
+end

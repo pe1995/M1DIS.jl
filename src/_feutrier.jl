@@ -194,7 +194,7 @@ end
 function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
     dt_minus, dt_plus = get_dtau(atm.tau_lambda, f, d)
     D = length(atm.tau)
-    if d == 1 # Estimate infalling radiation
+    if d == 1 
         mu = sqrt(mu_sq)
         tau_slab = dt_plus / mu
         tau_top  = atm.tau_lambda[f, 1] / mu
@@ -215,7 +215,6 @@ function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
     else
         dtm_safe = max(dt_minus, 1e-30)
         dtp_safe = max(dt_plus, 1e-30)
-        
         A = -mu_sq / (0.5 * dtm_safe * (dtm_safe + dtp_safe))
         C = -mu_sq / (0.5 * dtp_safe * (dtm_safe + dtp_safe))
         diag = 1.0 - A - C 
