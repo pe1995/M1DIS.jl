@@ -5,11 +5,11 @@
 function Atmosphere(b::MUST.Box, eos, opacity; scattering=nothing, T_eff=b.parameter.teff, downsample=1)
     b = deepcopy(b)
     MUST.flip!(b, depth=true)
-    T = reshape(b.data[:T], :)[1:downsample:end]
-    ρ = reshape(b.data[:d], :)[1:downsample:end]
-    z = reshape(b.z, :)[1:downsample:end]
-    τ = reshape(b.data[:τ_ross], :)[1:downsample:end]
-    Pg = reshape(b.data[:Pg], :)[1:downsample:end]
+    T = MUST.profile(TSO.mean, b, :z, :T)[2][1:downsample:end]
+    ρ = MUST.profile(TSO.mean, b, :z, :log10d)[2][1:downsample:end] .|> exp10
+    z = MUST.profile(TSO.mean, b, :z, :z)[2][1:downsample:end]
+    τ = MUST.profile(TSO.mean, b, :z, :log10τ_ross)[2][1:downsample:end] .|> exp10
+    Pg = MUST.profile(TSO.mean, b, :z, :log10Pg)[2][1:downsample:end] .|> exp10
     
     μ_angles, μ_weights = generate_mu_grid(4)
     chi, chi_ref, S, dSdT, dchidT = opacity.binned ? compute_opacities(eos, opacity, T, ρ) : compute_opacities_chunked(eos, opacity, T, ρ)
@@ -31,6 +31,5 @@ function Atmosphere(b::MUST.Box, eos, opacity; scattering=nothing, T_eff=b.param
         dBdT=dSdT,
         dchidT=dchidT
     )
-    #update!(a, sync_opacities=true, sync_geometry=true, sync_angles=true)
     return a
 end

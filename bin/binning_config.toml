@@ -1,0 +1,101 @@
+# M1DIS Opacity Binning Configuration File
+# This file can be passed to opacity_binning.jl using the --config option.
+# Example: julia bin/opacity_binning.jl --config binning_config.toml
+# Any command-line arguments explicitly passed will override the settings here.
+
+# ==============================================================================
+# Model Parameters
+# ==============================================================================
+
+# Effective temperature [K]
+teff = 5777.0
+
+# Surface gravity [log10(g)]
+logg = 4.44
+
+# Mixing length parameter
+alpha_MLT = 1.5
+
+# Parameter for turbulent pressure. 0.0 turns off turbulent pressure.
+pbeta = 0.0
+
+# ==============================================================================
+# Chemical composition
+# ==============================================================================
+
+# metallicity
+feh = 0.0
+
+# abundance of each element. All elements missing are set to the default values
+# which are specified in the abund file (see eos config toml file).
+# specify [X/Fe] composition here as e.g. "C_0.3O,O_0.2,Si_-0.3"
+composition = ""
+
+# abundance of alpha elements
+alpha = 0.0
+
+# Microturbulence velocity (for opacities only) [km/s]
+vmic = 1.0
+
+# config file for other opacity table related parameters
+eos_config = "eos_config.toml"
+
+# ==============================================================================
+# EoS & Opacity Treatment
+# ==============================================================================
+
+# Path to the directory containing the Equation of State and Opacity table files.
+# Leave blank if you want to compute the EoS dynamically
+eos_dir = "/mnt/beegfs/gemini/groups/bergemann/users/eitner/storage/opacity_tables/magg_m0_a0_vmic1_v3.5/"
+#eos_dir = ""
+
+# include scattering opacity separately from true absorption opacity
+scattering = true
+
+# ==============================================================================
+# Optical depth grid (for automatic model computation)
+# ==============================================================================
+
+# Minimum optical depth to compute
+tau_min = -6.0
+
+# Maximum optical depth to compute
+tau_max = 2.0
+
+# Number of optical depth points
+n_tau = 200
+
+# ==============================================================================
+# Atmosphere Solver Parameters (for automatic model computation)
+# ==============================================================================
+
+# Maximum number of iterations for the atmosphere solver
+maxiter = 200
+
+# Damping parameter for the temperature updates
+damping = 0.1
+
+# ==============================================================================
+# Pre-computed Model (optional, overrides automatic computation)
+# ==============================================================================
+
+# Path to a pre-computed model HDF5 file.
+# If set, the atmosphere solver is skipped and this model is used directly.
+# Leave blank to compute the model automatically from the stellar parameters above.
+model = ""
+
+# ==============================================================================
+# Binning Optimization Parameters
+# ==============================================================================
+
+# Number of opacity bins
+bins = 4
+
+# Number of CMAES optimization iterations
+iters = 500
+
+# Number of neurons in the hidden layer
+n_neurons = 16
+
+# Output name prefix for the assignment and plot files
+out_name = "test_binning"

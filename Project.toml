@@ -5,6 +5,7 @@ authors = ["Philipp Eitner <eitner@mpia.de> and contributors"]
 
 [deps]
 ArgParse = "c7e460c6-2fb9-53a9-8c5b-16f535851c63"
+Clustering = "aaaa29a8-35af-508c-8bc3-b662a17a0fe5"
 Dagger = "d58978e5-989f-55fb-8d15-ea34adc7bf54"
 DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
 DifferentialEquations = "0c46a032-eb83-5123-abaf-570d42b7fbaa"

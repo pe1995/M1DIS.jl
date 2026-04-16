@@ -51,6 +51,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
     steepness=15.0,
     tau_trans=-2.0,
     solver=:vef,
+    stabilize_convection=false,
     kwargs...)  
 
     @optionalTiming initialization_time begin
@@ -166,40 +167,72 @@ function atmosphere(; T_eff, logg, eos, opacity,
                 )
             end
 
-            # Stabilizer for the approximate solver
-            if solver==:approximate
-                stabilizer_stage = if (flux_err_max_prev > 50.0)
-                    stabilizer_stage > 3 ? 3 : stabilizer_stage
-                elseif (flux_err_max_prev > 1.0)
-                    stabilizer_stage > 2 ? 2 : stabilizer_stage
-                else
-                    stabilizer_stage > 1 ? 1 : stabilizer_stage
-                end
+            if stabilize_convection
+                # Stabilizer for the approximate solver
+                if solver==:approximate
+                    stabilizer_stage = if (flux_err_max_prev > 50.0)
+                        stabilizer_stage > 3 ? 3 : stabilizer_stage
+                    elseif (flux_err_max_prev > 1.0)
+                        stabilizer_stage > 2 ? 2 : stabilizer_stage
+                    else
+                        stabilizer_stage > 1 ? 1 : stabilizer_stage
+                    end
 
-                if stabilizer_stage == 3
-                    for n in 2:length(atm.F_conv)
-                        if ((atm.F_conv[n-1] > 0.0) && (atm.F_conv[n] < atm.F_conv[n-1]))
-                            atm.F_conv[n] = atm.F_conv[n-1]
-                            atm.v_conv[n] = atm.v_conv[n-1]
-                            atm.P_turb[n] = atm.P_turb[n-1]
-                            atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
+                    if stabilizer_stage == 3
+                        for n in 2:length(atm.F_conv)
+                            if ((atm.F_conv[n-1] > 0.0) && (atm.F_conv[n] < atm.F_conv[n-1]))
+                                atm.F_conv[n] = atm.F_conv[n-1]
+                                atm.v_conv[n] = atm.v_conv[n-1]
+                                atm.P_turb[n] = atm.P_turb[n-1]
+                                atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
+                            end
                         end
-                    end
-                    smooth_array!(atm.F_conv, passes=1)
-                    smooth_array!(atm.v_conv, passes=1)
-                    smooth_array!(atm.P_turb, passes=1)
-                    smooth_array!(atm.dFconv_dT, passes=1)
-                elseif stabilizer_stage == 2
-                    for n in 2:length(atm.F_conv)
-                        if ((atm.dFconv_dT[n-1] > 0.0) && (atm.dFconv_dT[n] < atm.dFconv_dT[n-1]))
-                            atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
-                            atm.P_turb[n] = atm.P_turb[n-1]
+                        smooth_array!(atm.F_conv, passes=1)
+                        smooth_array!(atm.v_conv, passes=1)
+                        smooth_array!(atm.P_turb, passes=1)
+                        smooth_array!(atm.dFconv_dT, passes=1)
+                    elseif stabilizer_stage == 2
+                        for n in 2:length(atm.F_conv)
+                            if ((atm.dFconv_dT[n-1] > 0.0) && (atm.dFconv_dT[n] < atm.dFconv_dT[n-1]))
+                                atm.dFconv_dT[n] = atm.dFconv_dT[n-1]
+                                atm.P_turb[n] = atm.P_turb[n-1]
+                            end
                         end
+                        smooth_array!(atm.dFconv_dT, passes=1)
+                        smooth_array!(atm.P_turb, passes=1)
                     end
-                    smooth_array!(atm.dFconv_dT, passes=1)
-                    smooth_array!(atm.P_turb, passes=1)
+                else
+                    stabilizer_stage = if (flux_err_max_prev > 50.0)
+                        stabilizer_stage > 3 ? 3 : stabilizer_stage
+                    elseif (flux_err_max_prev > 1.0)
+                        stabilizer_stage > 2 ? 2 : stabilizer_stage
+                    else
+                        stabilizer_stage > 1 ? 1 : stabilizer_stage
+                    end
+
+                    if stabilizer_stage == 3
+                        smooth_array!(atm.F_conv, passes=1)
+                        smooth_array!(atm.v_conv, passes=1)
+                        smooth_array!(atm.P_turb, passes=1)
+                        smooth_array!(atm.dFconv_dT, passes=1)
+                    elseif stabilizer_stage == 2
+                        smooth_array!(atm.dFconv_dT, passes=1)
+                        smooth_array!(atm.P_turb, passes=1)
+                    end
                 end
             end
+
+            # there can be no convection in radiation dominated layers.
+            # This is needed to stabilize planetary atmosphere with strong 
+            # temperature inversions in the upper layers
+            #=for i in eachindex(atm.tau)
+                if log10(atm.tau[i]) < -6.0
+                    atm.F_conv[i] *= 0.001
+                    atm.v_conv[i] *= 0.001
+                    atm.P_turb[i] *= 0.001
+                    atm.dFconv_dT[i] *= 0.001
+                end
+            end=#
             
             # Radiative Transfer
             @optionalTiming radiation_transfer_time begin
@@ -236,7 +269,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
             # Damping
             for i in 1:length(atm.dT)
-                scale = tcmxu_inv
+                scale = flux_err_max_curr > flux_err_max_prev ? tcmxu_inv * 2 : tcmxu_inv
                 atm.dT[i] = atm.dT[i] / sqrt(1.0 + (scale * atm.dT[i] / atm.Temp[i])^2)
             end
             flux_err_max_prev = flux_err_max_curr

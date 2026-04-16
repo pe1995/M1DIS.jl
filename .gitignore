@@ -8,3 +8,6 @@
 /examples/*.pdf
 /examples/*.txt
 /examples/*.png
+/examples/*.png
+/examples/models/
+/examples/Manifest*.toml

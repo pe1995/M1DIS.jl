@@ -323,6 +323,7 @@ function main()
         R_irradiation = R_star_cm,
         F_irradiation = F_irr,
         scattering_opacity = scat_complete,
+        stabilize_convection=true,
     )
     M1DIS.end_timing!()
     
