@@ -334,7 +334,7 @@ function initialize_physics(model_box, eos_dir, n_bins)
         dBdT=zeros(Float64, n_bins, n_depths), dchidT=zeros(Float64, n_bins, n_depths)
     )
 
-    pool_size = Threads.nthreads() + 3
+    pool_size = Threads.nthreads() + 5
     atm_pool = Channel{M1DIS.Atmosphere}(pool_size)
     weights_pool = Channel{Matrix{Float32}}(pool_size)
     for _ in 1:pool_size
@@ -391,10 +391,8 @@ function prepare_training_data(ctx::PhysicsContext, n_bins::Int, stripes::Bool)
     return X_cnn, Y_targets
 end
 
-function pretrain_network(X_features, Y_targets, n_bins::Int, n_neurons::Int)
-    #@info "Pre-training 1D CNN..."
-    
-    T = 5.0f0 # Temperature to keep softmax assignments fuzzy/soft
+function pretrain_network(X_features, Y_targets, n_bins::Int, n_neurons::Int)    
+    T = 5.0f0 
     model = Chain(
         Conv((10,), size(X_features, 2) => n_neurons, relu, pad=SamePad()),
         Conv((1,), n_neurons => n_bins),
@@ -404,12 +402,11 @@ function pretrain_network(X_features, Y_targets, n_bins::Int, n_neurons::Int)
         softmax
     )
     
-    #optimizer = Flux.setup(Flux.OptimiserChain(Flux.WeightDecay(1e-3), Flux.Adam(0.05)), model)
     optimizer = Flux.setup(Flux.Adam(0.05), model)
     
-    prog = Progress(500, desc="[Binning] Pre-training: ", color=:cyan)
+    prog = Progress(1000, desc="[Binning] Pre-training: ", color=:cyan)
     with_logger(NullLogger()) do
-        for _ in 1:500
+        for _ in 1:1000
             Flux.train!((m, x, y) -> mse(m(x), y), model, [(X_features, Y_targets)], optimizer)
             next!(prog)
         end
@@ -492,7 +489,7 @@ function (objective::BinningObjective)(current_params)
     return total_loss
 end
 
-function optimize_weights(ctx::PhysicsContext, X_features, initial_params, restructure_model, iters::Int)    
+function optimize_weights(ctx::PhysicsContext, X_features, initial_params, restructure_model, iters::Int, target_error)    
     base_model = restructure_model(Float32.(initial_params))
     base_weights_assign = transpose(base_model(X_features))
     
@@ -514,19 +511,15 @@ function optimize_weights(ctx::PhysicsContext, X_features, initial_params, restr
     objective_func = BinningObjective(restructure_model, X_features, ctx, baseline_loss, Ref(Inf), base_model, base_weights_assign)
     
     num_params = length(initial_params)
-    lower_bounds = fill(-20., num_params)
-    upper_bounds = fill(20., num_params)
+    lower_bounds = fill(-15., num_params)
+    upper_bounds = fill(15., num_params)
     bounds = BoxConstraints(lower_bounds, upper_bounds)
     initial_params_64 = Float64.(initial_params)
     
-    n_neurons = args["n_neurons"]
-    bins = args["bins"]
-    @info "Binning Optimization (Bins = $(bins), Iters = $(iters), Neurons = $(n_neurons))..."
+    @info "⌛ Binning Optimization..."
     prog = Progress(iters, desc="[Binning] Optimizing: ", color=:magenta)
     
-    iter_count = 0
-    target_error = args["target_error"]
-    
+    iter_count = 0    
     cb = function(state)
         iter_count += 1
         current_best = objective_func.best_loss[]
@@ -539,7 +532,8 @@ function optimize_weights(ctx::PhysicsContext, X_features, initial_params, restr
         return false 
     end
     
-    optimizer = CMAES(sigma0 = 1.0, lambda = 50)
+    #optimizer = CMAES(sigma0 = 1.0, lambda = 50)
+    optimizer = CMAES()
     
     options = Evolutionary.Options(
         iterations = iters,
@@ -707,7 +701,7 @@ function main()
         put!(ctx.atm_pool, pre_atm)
     end
 
-    optimized_weights = optimize_weights(ctx, X_features, initial_params, restructure_model, args["iters"])
+    optimized_weights = optimize_weights(ctx, X_features, initial_params, restructure_model, args["iters"], args["target_error"])
     
     save_results_and_plot(ctx, optimized_weights, n_bins, out_prefix)
 end
