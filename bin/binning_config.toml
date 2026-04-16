@@ -97,5 +97,8 @@ iters = 500
 # Number of neurons in the hidden layer
 n_neurons = 16
 
+# Target error for the binning optimization
+target_error = 0.02
+
 # Output name prefix for the assignment and plot files
 out_name = "test_binning"

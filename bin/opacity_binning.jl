@@ -138,6 +138,10 @@ function parse_cli()
             help = "Number of neurons in the hidden layer of the neural network"
             arg_type = Int
             default = convert(Int, get(c, "n_neurons", 16))
+        "--target_error"
+            help = "Target error for the binning optimization"
+            arg_type = Float64
+            default = convert(Float64, get(c, "target_error", 0.02))
         # --- Output parameters (matching m1dis_star.jl logic) ---
         "--out_dir"
             help = "Output directory for the saved outputs (if --model is used, this is ignored and model dir is used)"
@@ -521,7 +525,7 @@ function optimize_weights(ctx::PhysicsContext, X_features, initial_params, restr
     prog = Progress(iters, desc="[Binning] Optimizing: ", color=:magenta)
     
     iter_count = 0
-    target_error = 0.02 # Stop if max relative error drops below 2%
+    target_error = args["target_error"]
     
     cb = function(state)
         iter_count += 1
