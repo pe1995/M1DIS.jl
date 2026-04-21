@@ -92,13 +92,19 @@ model = ""
 bins = 4
 
 # Number of CMAES optimization iterations
-iters = 500
+iters = 2000
 
 # Number of neurons in the hidden layer
-n_neurons = 16
+n_neurons = 32
+
+# Number of walkers for the optimization. If -1 they are automatically computed by the optimizer based on the number of model parameters. Consider something like 50 to 100.
+n_walkers = -1
+
+# Number of convolutions in the neural network
+convolutions = 10
 
 # Target error for the binning optimization
-target_error = 0.02
+target_error = 0.035
 
 # Output name prefix for the assignment and plot files
 out_name = "test_binning"

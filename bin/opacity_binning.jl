@@ -133,15 +133,27 @@ function parse_cli()
             default = convert(Int, get(c, "bins", 4))
         "--iters", "-i"
             arg_type = Int
-            default = convert(Int, get(c, "iters", 500))
+            default = convert(Int, get(c, "iters", 2000))
         "--n_neurons"
             help = "Number of neurons in the hidden layer of the neural network"
             arg_type = Int
-            default = convert(Int, get(c, "n_neurons", 16))
+            default = convert(Int, get(c, "n_neurons", 32))
+        "--n_walkers"
+            help = """
+            Number of walkers for the optimization. 
+            If -1 they are automatically computed by the optimizer based on the number of model parameters. 
+            Consider something like ~100. For fast execution it could be wise to take a multiple of the number of threads - 1, i.e. -t 31 --> --n_walkers=90. 
+            """
+            arg_type = Int
+            default = convert(Int, get(c, "n_walkers", -1))
+        "--convolutions"
+            help = "Number of convolutions in the neural network"
+            arg_type = Int
+            default = convert(Int, get(c, "convolutions", 10))
         "--target_error"
             help = "Target error for the binning optimization"
             arg_type = Float64
-            default = convert(Float64, get(c, "target_error", 0.02))
+            default = convert(Float64, get(c, "target_error", 0.035))
         # --- Output parameters (matching m1dis_star.jl logic) ---
         "--out_dir"
             help = "Output directory for the saved outputs (if --model is used, this is ignored and model dir is used)"
@@ -262,7 +274,6 @@ function compute_model(args, eos_dir)
     )
     M1DIS.end_timing!()
 
-    # Get the final iteration result
     model_box = if typeof(result) <: AbstractArray
         result[end]
     else
@@ -305,7 +316,6 @@ function run_1d_rt!(atm_obj, kappa, source)
 end
 
 function initialize_physics(model_box, eos_dir, n_bins)
-    # "Initializing physics and thread-local pool..."
     eos_file = MUST.glob("*_eos_*.hdf5", eos_dir)[1]
     opa_file = MUST.glob("*_opacities_*.hdf5", eos_dir)[1]
     scat_file = MUST.glob("*_sopacities_*.hdf5", eos_dir)[1]
@@ -341,7 +351,6 @@ function initialize_physics(model_box, eos_dir, n_bins)
         put!(atm_pool, deepcopy(atm_base))
         put!(weights_pool, zeros(Float32, n_waves, n_bins))
     end
-    #@info "Allocated $(pool_size) thread-local atmospheres and weight buffers."
 
     rho = Float32.(atm.rho)
     temp = Float32.(atm.Temp)
@@ -361,7 +370,6 @@ end
 # ============================================================================
 
 function prepare_training_data(ctx::PhysicsContext, n_bins::Int, stripes::Bool)
-    #@info "Preparing and normalizing data..."
     X_features = Base.convert(
         Matrix{Float32}, 
         vcat(
@@ -391,10 +399,10 @@ function prepare_training_data(ctx::PhysicsContext, n_bins::Int, stripes::Bool)
     return X_cnn, Y_targets
 end
 
-function pretrain_network(X_features, Y_targets, n_bins::Int, n_neurons::Int)    
-    T = 5.0f0 
+function pretrain_network(X_features, Y_targets, n_bins::Int, n_neurons::Int, n_conv::Int)    
+    T = 5.0f0
     model = Chain(
-        Conv((10,), size(X_features, 2) => n_neurons, relu, pad=SamePad()),
+        Conv((n_conv,), size(X_features, 2) => n_neurons, relu, pad=SamePad()),
         Conv((1,), n_neurons => n_bins),
         x -> dropdims(x, dims=3),
         x -> collect(transpose(x)),
@@ -404,9 +412,9 @@ function pretrain_network(X_features, Y_targets, n_bins::Int, n_neurons::Int)
     
     optimizer = Flux.setup(Flux.Adam(0.05), model)
     
-    prog = Progress(1000, desc="[Binning] Pre-training: ", color=:cyan)
+    prog = Progress(2000, desc="[Binning] Pre-training: ", color=:cyan)
     with_logger(NullLogger()) do
-        for _ in 1:1000
+        for _ in 1:2000
             Flux.train!((m, x, y) -> mse(m(x), y), model, [(X_features, Y_targets)], optimizer)
             next!(prog)
         end
@@ -425,35 +433,29 @@ struct BinningObjective
     ctx::PhysicsContext
     baseline_loss::Float64
     best_loss::Base.RefValue{Float64}
+    best_Q_loss::Base.RefValue{Float64}
+    best_F_loss::Base.RefValue{Float64}
     base_model::Any
     base_weights_assign::AbstractMatrix{Float32}
 end
 
 function (objective::BinningObjective)(current_params)
     M = objective.restructure_model(Float32.(current_params))(objective.X_features)
-    n_bins, n_waves = size(M)
+    weights_assign = take!(objective.ctx.weights_pool)
+    weights_assign .= transpose(M)
+    clean_weights!(weights_assign)
     
-    #=N_req = ceil(Int, 0.02 * n_waves)
-    target_weight = 0.70f0
-    empty_bin_penalty = 0.0f0
+    n_waves, n_bins = size(weights_assign)
+    bin_masses = sum(weights_assign, dims=1)
     
-    for b in 1:n_bins
-        row_vals = M[b, :] 
-        
-        sort!(row_vals, rev=true)
-        
-        for i in 1:N_req
-            val = row_vals[i]
-            if val < target_weight
-                empty_bin_penalty += (target_weight - val)^2
-            end
+    min_allowed_mass = n_waves * 0.02 
+    penalty = 0.0
+    for m in bin_masses
+        if m < min_allowed_mass
+            penalty += ((min_allowed_mass - m) / min_allowed_mass)^2 
         end
     end
     
-    final_penalty = empty_bin_penalty * objective.baseline_loss=#
-    
-    weights_assign = take!(objective.ctx.weights_pool)
-    weights_assign .= transpose(M)
     kappa_box, src_box = TSO.advanced_binning_1d_quick(
         weights_assign, 
         objective.ctx.weights, 
@@ -469,30 +471,65 @@ function (objective::BinningObjective)(current_params)
     kappa_1d = transpose(dropdims(kappa_box, dims=1))
     src_1d = transpose(dropdims(src_box, dims=1))
     my_atm = take!(objective.ctx.atm_pool)
+    
+    local rt_loss, F_loss
 
-    local rt_loss
     try
         Q_binned, F_binned = run_1d_rt!(my_atm, kappa_1d, src_1d)
         err_Q = abs.((Q_binned .- objective.ctx.Q_unbinned) ./ objective.ctx.Q_norm_factor)
+        err_F = abs.((F_binned .- objective.ctx.F_unbinned) ./ objective.ctx.F_unbinned)
         rt_loss = maximum(err_Q)
+        F_loss = maximum(err_F)
     finally
         put!(objective.ctx.atm_pool, my_atm)
         put!(objective.ctx.weights_pool, weights_assign)
     end
     
-    total_loss = rt_loss #+ final_penalty
+    total_loss = sqrt(2.0 * rt_loss^2 + F_loss^2) + (100.0 * penalty)
     
     if total_loss < objective.best_loss[]
         objective.best_loss[] = total_loss
+        objective.best_Q_loss[] = rt_loss
+        objective.best_F_loss[] = F_loss
     end
     
     return total_loss
 end
 
-function optimize_weights(ctx::PhysicsContext, X_features, initial_params, restructure_model, iters::Int, target_error)    
+function clean_weights!(weights::AbstractMatrix{T}; digits::Int=4, tol::T=T(10.0^(-(digits + 2)))) where {T <: AbstractFloat}   
+    rows, cols = size(weights)
+    @inbounds for i in 1:rows
+        max_val = typemin(T)
+        max_idx = 1
+        row_sum = zero(T)
+        
+        for j in 1:cols
+            val = weights[i, j]
+            
+            if val > max_val
+                max_val = val
+                max_idx = j
+            end
+            
+            rounded_val = round(val, digits=digits)
+            weights[i, j] = rounded_val
+            row_sum += rounded_val
+        end
+        
+        diff = one(T) - row_sum
+        if abs(diff) > tol
+            weights[i, max_idx] += diff
+        end
+    end
+    
+    return weights
+end
+
+function optimize_weights(ctx::PhysicsContext, X_features, initial_params, restructure_model, iters::Int, target_error, n_walkers)    
     base_model = restructure_model(Float32.(initial_params))
     base_weights_assign = transpose(base_model(X_features))
-    
+    clean_weights!(base_weights_assign)
+
     base_kappa, base_src = TSO.advanced_binning_1d_quick(
         base_weights_assign, ctx.weights, ctx.wavelengths, ctx.rho, ctx.temp, ctx.pgas, 
         ctx.chi_1d, ctx.src_1d, logg=ctx.logg
@@ -508,11 +545,11 @@ function optimize_weights(ctx::PhysicsContext, X_features, initial_params, restr
         put!(ctx.atm_pool, base_atm)
     end
     
-    objective_func = BinningObjective(restructure_model, X_features, ctx, baseline_loss, Ref(Inf), base_model, base_weights_assign)
+    objective_func = BinningObjective(restructure_model, X_features, ctx, baseline_loss, Ref(Inf), Ref(Inf), Ref(Inf), base_model, base_weights_assign)
     
     num_params = length(initial_params)
-    lower_bounds = fill(-15., num_params)
-    upper_bounds = fill(15., num_params)
+    lower_bounds = fill(-25., num_params)
+    upper_bounds = fill(25., num_params)
     bounds = BoxConstraints(lower_bounds, upper_bounds)
     initial_params_64 = Float64.(initial_params)
     
@@ -522,18 +559,18 @@ function optimize_weights(ctx::PhysicsContext, X_features, initial_params, restr
     iter_count = 0    
     cb = function(state)
         iter_count += 1
-        current_best = objective_func.best_loss[]
-        update!(prog, iter_count, showvalues=[(:Best_Loss, current_best)])
+        current_best = objective_func.best_Q_loss[]
+        update!(prog, iter_count, showvalues=[(Symbol("Q loss (max)"), objective_func.best_Q_loss[]), (Symbol("F loss (max)"), objective_func.best_F_loss[]), (Symbol("total loss (combined)"), objective_func.best_loss[])])
         
         if current_best < target_error
-            @info "Target error of < $(target_error * 100)% reached. Stopping optimization."
+            @info "Q error less than target error ($(target_error * 100)%). Stopping optimization."
             return true 
         end
         return false 
     end
     
-    #optimizer = CMAES(sigma0 = 1.0, lambda = 50)
-    optimizer = CMAES()
+    #optimizer = n_walkers > 0 ? CMAES(λ = n_walkers) : CMAES()
+    optimizer = n_walkers > 0 ? CMAES(λ = n_walkers, μ = floor(Int, n_walkers / 2)) : CMAES()
     
     options = Evolutionary.Options(
         iterations = iters,
@@ -555,9 +592,10 @@ function optimize_weights(ctx::PhysicsContext, X_features, initial_params, restr
     finish!(prog) 
     
     best_params = Evolutionary.minimizer(res)
-    @show minimum(best_params), maximum(best_params)
     final_model = restructure_model(Float32.(best_params)) 
-    return transpose(final_model(X_features))
+    w = transpose(final_model(X_features))
+    clean_weights!(w)
+    return w
 end
 
 # ============================================================================
@@ -601,14 +639,12 @@ function plot_assignment(ctx::PhysicsContext, weights, n_bins::Int, filename::St
     plt.close(fig)
 end
 
-function save_results_and_plot(ctx::PhysicsContext, optimized_weights, n_bins::Int, out_name::String)
-    #@info "Saving results..."
-    
+function save_results_and_plot(ctx::PhysicsContext, optimized_weights, n_bins::Int, out_name::String)    
     out_filename = "$(out_name)_assignment.txt"
     M1DIS.writedlm(out_filename, optimized_weights)
     @info "Saved assignment to $out_filename"
 
-    kappa_box, src_box = TSO.advanced_binning_1d(
+    kappa_box, src_box = TSO.advanced_binning_1d_quick(
         optimized_weights, ctx.weights, ctx.wavelengths, ctx.rho, ctx.temp, ctx.pgas, 
         ctx.chi_1d, ctx.src_1d, logg=ctx.logg
     )
@@ -626,8 +662,6 @@ function save_results_and_plot(ctx::PhysicsContext, optimized_weights, n_bins::I
     finally
         put!(ctx.atm_pool, final_atm)
     end
-
-    #@info "Execution completed."
 end
 
 # ============================================================================
@@ -640,19 +674,14 @@ function main()
     args = parse_cli()
     n_bins = args["bins"]
 
-    # Step 1: Resolve EoS directory
     eos_dir = resolve_eos_dir(args)
 
-    # Step 2: Get the model — either from --model or by computing it
     model_box = if args["model"] != ""
-        #@info "Loading pre-computed model from: $(args["model"])"
         Box(args["model"], mmap=false)
     else
-        #@info "No --model provided. Computing atmosphere from stellar parameters..."
         compute_model(args, eos_dir)
     end
 
-    # Step 3: Determine model name and output directory exactly like m1dis_star.jl
     model_name = if args["model"] != ""
         replace(basename(args["model"]), r"\.hdf5$"i => "")
     elseif args["model_name"] == ""
@@ -677,19 +706,21 @@ function main()
     
     out_prefix = joinpath(out_dir, model_name)
 
+    println("================================================================================")
+    println("=========================== M1DIS.jl Binning ===================================")
+    println("================================================================================")
     @info "Starting M1DIS Binning..."
    
     stripes = true
     ctx = initialize_physics(model_box, eos_dir, n_bins)
     X_features, Y_targets = prepare_training_data(ctx, n_bins, stripes)
-    initial_params, restructure_model = pretrain_network(X_features, Y_targets, n_bins, args["n_neurons"])
+    initial_params, restructure_model = pretrain_network(X_features, Y_targets, n_bins, args["n_neurons"], args["convolutions"])
     
-    # Plot initial pre-trained assignment and residuals
     initial_model = restructure_model(Float32.(initial_params))
     initial_weights = transpose(initial_model(X_features))
     plot_assignment(ctx, initial_weights, n_bins, "$(out_prefix)_pretrain_assignment.png")
 
-    base_kappa, base_src = TSO.advanced_binning_1d(
+    base_kappa, base_src = TSO.advanced_binning_1d_quick(
         initial_weights, ctx.weights, ctx.wavelengths, ctx.rho, ctx.temp, ctx.pgas, 
         ctx.chi_1d, ctx.src_1d, logg=ctx.logg
     )
@@ -701,8 +732,7 @@ function main()
         put!(ctx.atm_pool, pre_atm)
     end
 
-    optimized_weights = optimize_weights(ctx, X_features, initial_params, restructure_model, args["iters"], args["target_error"])
-    
+    optimized_weights = optimize_weights(ctx, X_features, initial_params, restructure_model, args["iters"], args["target_error"], args["n_walkers"])
     save_results_and_plot(ctx, optimized_weights, n_bins, out_prefix)
 end
 
