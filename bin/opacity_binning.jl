@@ -739,7 +739,6 @@ end
 function save_results_and_plot(ctx::PhysicsContext, optimized_weights, n_bins::Int, out_name::String)    
     out_filename = "$(out_name)_assignment.txt"
     M1DIS.writedlm(out_filename, optimized_weights)
-    @info "Saved assignment to $out_filename"
 
     kappa_box, src_box = TSO.advanced_binning_1d_quick(
         optimized_weights, ctx.weights, ctx.wavelengths, ctx.rho, ctx.temp, ctx.pgas, 
@@ -751,7 +750,7 @@ function save_results_and_plot(ctx::PhysicsContext, optimized_weights, n_bins::I
         Q_final, F_final = run_1d_rt!(final_atm, transpose(dropdims(kappa_box, dims=1)), transpose(dropdims(src_box, dims=1)))
         err_Q = abs.((Q_final .- ctx.Q_unbinned) ./ ctx.Q_norm_factor)
         final_loss = maximum(err_Q)
-        @info "Final Loss: $final_loss"
+        @info "Final Q max error: $(final_loss*100) %"
 
         plot_residuals(ctx, Q_final, F_final, final_atm.tau, out_name)
         plot_assignment(ctx, optimized_weights, n_bins, "$(out_name)_assignment.png")
@@ -920,7 +919,8 @@ function main()
         args["namelist_kwargs"]...
     )
     @info "Initial condition for M3DIS prepared."
-    @info "M1DIS complete. Results stored in $out_dir."
+    @info "All results stored in $out_dir."
+    @info "M1DIS complete."
 end
 
 main()
