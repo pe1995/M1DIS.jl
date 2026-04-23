@@ -57,13 +57,13 @@ scattering = true
 # ==============================================================================
 
 # Minimum optical depth to compute
-tau_min = -6.0
+tau_min = -6.5
 
 # Maximum optical depth to compute
 tau_max = 2.0
 
 # Number of optical depth points
-n_tau = 200
+n_tau = 300
 
 # ==============================================================================
 # Atmosphere Solver Parameters (for automatic model computation)
@@ -92,7 +92,7 @@ model = ""
 bins = 4
 
 # Number of CMAES optimization iterations
-iters = 2000
+iters = 1000
 
 # Number of neurons in the hidden layer
 n_neurons = 32
@@ -104,7 +104,117 @@ n_walkers = -1
 convolutions = 10
 
 # Target error for the binning optimization
-target_error = 0.035
+target_error = 0.025
 
 # Output name prefix for the assignment and plot files
 out_name = "test_binning"
+
+# Output name prefix for the output 3D model simulation.
+prefix = ""
+
+# ==============================================================================
+# Model Extrapolation Parameters
+# ==============================================================================
+
+# Minimum optical depth for extrapolation
+extrapolate_tau_min = -7.0
+
+# Maximum optical depth for extrapolation
+extrapolate_tau_max = 7.0
+
+# Base extrapolation on regression algorithm
+extrapolate_regression = false
+
+# Extrapolation offsets (for rho and T)
+extrapolate_offsets = [0.0, 0.0]
+
+# ==============================================================================
+# M3DIS Namelist Configuration
+# ==============================================================================
+
+# Number of patches in the [x, y, z] direction
+n_patches = [12, 12, 6]
+
+# Number of cells per patch in each dimension
+patch_size = 20
+
+# Physical size of the atmosphere in [x, y, z] 
+# (measured relative to the mixing length scale factor)
+atmos_size = [6.0, 6.0, 3.0]
+
+# Vertical shift of the atmosphere box relative to tau = 1
+shift_atmosphere_by = 0.0
+
+# M3DIS output cadence (io_params)
+out_time = 1.0
+
+# M3DIS simulation end time (io_params)
+end_time = 1000.0
+
+# Below are the default M3DIS namelist parameters grouped together.
+# You can override specific M3DIS namelist parameters here.
+
+[namelist.cartesian_params]
+mpi_dims = [2, 2, 1]
+
+[namelist.patch_params]
+grace = 0.01
+
+[namelist.experiment_params]
+t_bot = 0.01
+
+[namelist.stellar_params]
+w_perturb = 0.1
+
+[namelist.friction_params]
+end_time = 15.0
+decay_scale = 10.0
+time = 0.1
+local_spring_constant = true
+decay_limit = 0.01
+
+[namelist.newton_params]
+end_time = 60.0
+decay_scale = 20.0
+scale = 0.1
+time = 0.1
+
+[namelist.rt_integral_params]
+s_limit = true
+linearize = true
+approximate_ex0 = false
+solver = 8
+dtau_min = 1.0e-5
+dtau_lin = 0.0001
+dtau_dif = 5.0
+dtau_max = 1.0e6
+kappa_limit = true
+staggered = true
+
+[namelist.sc_rt_params]
+rt_freq = 1.0
+rt_grace = 0.01
+rt_res = [-1, -1, -1]
+courant_eos = 0.5
+courant_ray = 0.05
+ng = 2
+n_phi = 4
+n_mu = 2
+
+[namelist.boundary_params]
+radiation_bc = 1
+lower_bc = 5
+upper_bc = 2
+teff_cadence = 40
+wavekill_end_time = 30.0
+teff_tolerance = 30
+teff_scaling_factor = 15
+adjust_teff_after = 160
+wavekill_dt = 0.001
+wavekill = true
+wavekill_decay_scale = 20.0
+wavekill_n = 10
+fix_massflux = false
+
+[namelist.an_params]
+courant = 0.2

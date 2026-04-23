@@ -1,6 +1,6 @@
 #!/usr/bin/env julia
 
-using Pkg; Pkg.activate(joinpath(@__DIR__, "../examples"))
+using Pkg; Pkg.activate(joinpath(@__DIR__, ".."))
 using ArgParse
 using M1DIS
 using PythonPlot 
@@ -17,14 +17,27 @@ using LaTeXStrings
 using Evolutionary  
 using Random
 using Clustering
+using MLJ
+using MLJGLMInterface
 
 plt = matplotlib.pyplot
 plt.switch_backend("Agg") 
-TSO.USE_BINNING_THREADS[] = false
 
 # ============================================================================
 # CLI Parsing
 # ============================================================================
+
+function dict_to_symbol_tuples(d::Dict)
+    pairs = Pair{Symbol, Any}[]
+    for (k, v) in d
+        if typeof(v) <: Dict
+            push!(pairs, Symbol(k) => dict_to_symbol_tuples(v))
+        else
+            push!(pairs, Symbol(k) => v)
+        end
+    end
+    return Tuple(pairs)
+end
 
 function parse_cli()
     # Pre-scan for config file
@@ -133,7 +146,7 @@ function parse_cli()
             default = convert(Int, get(c, "bins", 4))
         "--iters", "-i"
             arg_type = Int
-            default = convert(Int, get(c, "iters", 2000))
+            default = convert(Int, get(c, "iters", 1000))
         "--n_neurons"
             help = "Number of neurons in the hidden layer of the neural network"
             arg_type = Int
@@ -161,18 +174,85 @@ function parse_cli()
         "--model_name", "-n"
             help = "Output name of the model to save. If empty, auto-generated."
             default = get(c, "model_name", "")
+        "--prefix"
+            help = "Prefix added in front of model3D_name."
+            arg_type = String
+            default = get(c, "prefix", "")
 
         # --- Optional pre-computed model (overrides automatic computation) ---
         "--model"
             help = "Path to a pre-computed model HDF5 file. If provided, skips automatic atmosphere computation."
             arg_type = String
             default = get(c, "model", "")
+
+        # --- Extrapolation Parameters ---
+        "--extrapolate_tau_min"
+            help = "Minimum optical depth for extrapolation."
+            arg_type = Float64
+            default = convert(Float64, get(c, "extrapolate_tau_min", -7.0))
+        "--extrapolate_tau_max"
+            help = "Maximum optical depth for extrapolation."
+            arg_type = Float64
+            default = convert(Float64, get(c, "extrapolate_tau_max", 7.0))
+        "--extrapolate_regression"
+            help = "Use regression algorithm for boundary condition extrapolation."
+            action = :store_true
+            
+        # --- Namelist Base Parameters ---
+        "--n_patches"
+            help = "Number of patches in [x,y,z]. Provide as string, e.g. \"12,12,6\"."
+            arg_type = String
+        "--patch_size"
+            help = "Size of each patch in cells."
+            arg_type = Int
+            default = convert(Int, get(c, "patch_size", 20))
+        "--atmos_size"
+            help = "Physical size of the atmosphere in [x,y,z]. Provide as string, e.g. \"6.0,6.0,3.0\"."
+            arg_type = String
+        "--shift_atmosphere_by"
+            help = "Vertical shift of the atmosphere box."
+            arg_type = Float64
+            default = convert(Float64, get(c, "shift_atmosphere_by", 0.0))
+            
+        # --- Common Namelist Overrides ---
+        "--out_time"
+            help = "M3DIS output cadence (overrides io_params.out_time)."
+            arg_type = Float64
+            default = convert(Float64, get(c, "out_time", 1.0))
+        "--end_time"
+            help = "M3DIS simulation end time (overrides io_params.end_time)."
+            arg_type = Float64
+            default = convert(Float64, get(c, "end_time", 1000.0))
+            
     end
 
     args = parse_args(s)
 
     # Handle boolean flags that can come from config
     args["scattering"] = args["scattering"] || get(c, "scattering", false)
+    args["extrapolate_regression"] = args["extrapolate_regression"] || get(c, "extrapolate_regression", false)
+    
+    # Store config dict to access nested elements (e.g. [namelist])
+    args["_config_obj"] = c
+
+    # Pre-parse array strings
+    parse_array(s::String, T) = [parse(T, x) for x in split(s, ',')]
+    
+    args["n_patches_parsed"] = if args["n_patches"] !== nothing
+        parse_array(args["n_patches"], Int)
+    else
+        get(c, "n_patches", [12, 12, 6])
+    end
+
+    args["atmos_size_parsed"] = if args["atmos_size"] !== nothing
+        parse_array(args["atmos_size"], Float64)
+    else
+        get(c, "atmos_size", [6.0, 6.0, 3.0])
+    end
+
+    # Pre-parse namelist kwargs
+    namelist_dict = get(c, "namelist", Dict{String, Any}())
+    args["namelist_kwargs"] = Dict{Symbol, Any}(Symbol(k) => dict_to_symbol_tuples(v) for (k,v) in namelist_dict)
 
     return args
 end
@@ -302,9 +382,14 @@ struct PhysicsContext
     temp::Vector{Float32}
     pgas::Vector{Float32}
     chi_1d::Matrix{Float32}
+    chi_scat_1d::Matrix{Float32}
     src_1d::Matrix{Float32}
     logg::Float64
     n_waves::Int
+    eos
+    eos500
+    opa
+    scat
 end
 
 function run_1d_rt!(atm_obj, kappa, source)
@@ -317,10 +402,12 @@ end
 
 function initialize_physics(model_box, eos_dir, n_bins)
     eos_file = MUST.glob("*_eos_*.hdf5", eos_dir)[1]
+    eos500_file = MUST.glob("*_eos500_*.hdf5", eos_dir)[1]
     opa_file = MUST.glob("*_opacities_*.hdf5", eos_dir)[1]
     scat_file = MUST.glob("*_sopacities_*.hdf5", eos_dir)[1]
     
     eos_data = reload(eos_file) |> extended
+    eos500_data = reload(eos500_file) |> extended
     opa_data = reload(opa_file, mmap=true) |> extended
     scat_data = reload(scat_file, mmap=true) |> extended
 
@@ -331,7 +418,7 @@ function initialize_physics(model_box, eos_dir, n_bins)
     wavelengths = wavelength(opa_data)
     logg = model_box.parameter.logg
 
-    M1DIS.solve_approximate!(atm, include_dT=false)
+    M1DIS.solve_VEF!(atm, include_dT=false)
     Q_unbinned = deepcopy(atm.Q_rad)
     Q_norm_factor = maximum(abs.(Q_unbinned))
     F_unbinned = deepcopy(atm.F_rad)
@@ -358,10 +445,11 @@ function initialize_physics(model_box, eos_dir, n_bins)
     lnr = Float32.(log.(atm.rho))
     lnt = Float32.(log.(atm.Temp))
     chi_1d, src_1d = transpose.(TSO.sample(eos_data, opa_data, (:κ, :src), lnr, lnt)) .|> collect
+    chi_scat_1d, = transpose.(TSO.sample(eos_data, scat_data, (:κ, ), lnr, lnt)) .|> collect
 
     return PhysicsContext(
         atm, atm_pool, weights_pool, Q_unbinned, Q_norm_factor, F_unbinned, F_norm_factor, wavelengths, opa_data.weights, 
-        rho, temp, pgas, chi_1d, src_1d, logg, n_waves
+        rho, temp, pgas, chi_1d, chi_scat_1d, src_1d, logg, n_waves, eos_data, eos500_data, opa_data, scat_data
     )
 end
 
@@ -393,7 +481,7 @@ function prepare_training_data(ctx::PhysicsContext, n_bins::Int, stripes::Bool)
         Y_targets[clusters.assignments[i], i] = 1.0f0
     end
     
-    # Reshape (C, W) array to (W, C, N) tensor required by Flux 1D convolutions!
+    # Reshape (C, W) array to (W, C, N)
     X_cnn = reshape(collect(X_features'), (ctx.n_waves, size(X_features, 1), 1))
     
     return X_cnn, Y_targets
@@ -465,7 +553,8 @@ function (objective::BinningObjective)(current_params)
         objective.ctx.pgas, 
         objective.ctx.chi_1d, 
         objective.ctx.src_1d, 
-        logg=objective.ctx.logg
+        logg=objective.ctx.logg,
+        κ_scat_1d=objective.ctx.chi_scat_1d
     )
     
     kappa_1d = transpose(dropdims(kappa_box, dims=1))
@@ -532,7 +621,7 @@ function optimize_weights(ctx::PhysicsContext, X_features, initial_params, restr
 
     base_kappa, base_src = TSO.advanced_binning_1d_quick(
         base_weights_assign, ctx.weights, ctx.wavelengths, ctx.rho, ctx.temp, ctx.pgas, 
-        ctx.chi_1d, ctx.src_1d, logg=ctx.logg
+        ctx.chi_1d, ctx.src_1d, logg=ctx.logg, κ_scat_1d=ctx.chi_scat_1d
     )
     
     base_atm = take!(ctx.atm_pool)
@@ -560,10 +649,18 @@ function optimize_weights(ctx::PhysicsContext, X_features, initial_params, restr
     cb = function(state)
         iter_count += 1
         current_best = objective_func.best_Q_loss[]
-        update!(prog, iter_count, showvalues=[(Symbol("Q loss (max)"), objective_func.best_Q_loss[]), (Symbol("F loss (max)"), objective_func.best_F_loss[]), (Symbol("total loss (combined)"), objective_func.best_loss[])])
+        update!(
+            prog, 
+            iter_count, 
+            showvalues=[
+                (Symbol("Q loss (max)"), objective_func.best_Q_loss[]), 
+                (Symbol("F loss (max)"), objective_func.best_F_loss[]), 
+                (Symbol("total loss (combined)"), objective_func.best_loss[]),
+                (Symbol("target error (Q max)"), target_error)
+            ]
+        )
         
         if current_best < target_error
-            @info "Q error less than target error ($(target_error * 100)%). Stopping optimization."
             return true 
         end
         return false 
@@ -646,7 +743,7 @@ function save_results_and_plot(ctx::PhysicsContext, optimized_weights, n_bins::I
 
     kappa_box, src_box = TSO.advanced_binning_1d_quick(
         optimized_weights, ctx.weights, ctx.wavelengths, ctx.rho, ctx.temp, ctx.pgas, 
-        ctx.chi_1d, ctx.src_1d, logg=ctx.logg
+        ctx.chi_1d, ctx.src_1d, logg=ctx.logg, κ_scat_1d=ctx.chi_scat_1d
     )
     
     final_atm = take!(ctx.atm_pool)
@@ -665,15 +762,46 @@ function save_results_and_plot(ctx::PhysicsContext, optimized_weights, n_bins::I
 end
 
 # ============================================================================
+# Compute initial condition for M3DIS directly from binned opacities
+# ============================================================================
+
+function save_table(aos, aos500,binned_opacities, model, target_dir)
+    save(binned_opacities.opacities, joinpath(target_dir, "binned_opacities_T.hdf5"))
+    save(aos.eos, joinpath(target_dir, "eos_T.hdf5"))
+    save(aos500.eos, joinpath(target_dir, "eos500_T.hdf5"))
+
+	lnEi, = TSO.sample(aos, (:lnEi,), model[:logd], model[:logT])
+	lnEimin, lnEimax = TSO.get_e_limit(aos.eos, lnEi, 1.5)
+	eosE, opaE = TSO.remap_T_to_E(
+		aos,
+		binned_opacities.opacities, 
+		upsample=2048,
+		lnEimin=lnEimin,
+		lnEimax=lnEimax
+	)
+	
+	for_dispatch(eosE, opaE.κ, opaE.src, ones(eltype(opaE.src), size(opaE.src)...), target_dir)
+
+	save(opaE, joinpath(target_dir, "binned_opacities.hdf5"))
+    save(eosE, joinpath(target_dir, "eos.hdf5"))
+	
+    return target_dir
+end
+
+include("initial_condition.jl")
+
+# ============================================================================
 # Main
 # ============================================================================
 
 function main()
     Random.seed!(42) 
 
+    # multi-threading used in the optimizer internally, so turn it off elsewhere
+    TSO.USE_BINNING_THREADS[] = false
+
     args = parse_cli()
     n_bins = args["bins"]
-
     eos_dir = resolve_eos_dir(args)
 
     model_box = if args["model"] != ""
@@ -693,11 +821,29 @@ function main()
         args["model_name"]
     end
 
+    model3D_name = if args["model"] != ""
+        replace(basename(args["model"]), r"\.hdf5$"i => "")
+    elseif args["model_name"] == ""
+        a = args["alpha"]
+        z = args["feh"]
+        v = args["vmic"]
+        "t$(round(args["teff"]/10, digits=2))g$(round(args["logg"]*10, digits=2))m$(round(z, digits=4))_a$(a)"
+    else
+        args["model_name"]
+    end
+    
+    if args["prefix"] != ""
+        model3D_name = args["prefix"] * "_" * model3D_name
+    end
+
     out_dir = if args["model"] != ""
         dirname(abspath(args["model"]))
     else
         joinpath(abspath(args["out_dir"]), model_name)
     end
+
+    # make a new sub-dir for binning related things
+    out_dir = joinpath(out_dir, "opacity_binning")
 
     if !isdir(out_dir)
         @info "Creating output directory: $out_dir"
@@ -722,7 +868,7 @@ function main()
 
     base_kappa, base_src = TSO.advanced_binning_1d_quick(
         initial_weights, ctx.weights, ctx.wavelengths, ctx.rho, ctx.temp, ctx.pgas, 
-        ctx.chi_1d, ctx.src_1d, logg=ctx.logg
+        ctx.chi_1d, ctx.src_1d, logg=ctx.logg, κ_scat_1d=ctx.chi_scat_1d
     )
     pre_atm = take!(ctx.atm_pool)
     try
@@ -734,6 +880,47 @@ function main()
 
     optimized_weights = optimize_weights(ctx, X_features, initial_params, restructure_model, args["iters"], args["target_error"], args["n_walkers"])
     save_results_and_plot(ctx, optimized_weights, n_bins, out_prefix)
+
+    # opacity bins are assigned, now bin the full table
+    TSO.USE_BINNING_THREADS[] = true
+
+    # compute the final binning for the entire table
+    binned_opacities = TSO.advanced_binning(
+        optimized_weights, ctx.weights, ctx.eos.eos, opacity(ctx.opa), opacity(ctx.scat), logg=ctx.logg
+    )
+
+    # store the results and convert to dispatch format
+    save_table(ctx.eos.eos, ctx.eos500.eos, binned_opacities, model_box, out_dir)
+    @info "Binning complete."
+    
+    extrapolate_offsets = get(args["_config_obj"], "extrapolate_offsets", nothing)
+    
+    # extrapolate the model to the desired optical depth range
+    model_extra = extrapolate_model(
+        model_box, ctx.eos.eos.eos, args["extrapolate_tau_min"], args["extrapolate_tau_max"], 
+        regression=args["extrapolate_regression"], 
+        extrapolation_offsets=extrapolate_offsets,
+        outdir=out_dir
+    )
+
+    # construct namelist for M3DIS
+    nml_name = model3D_name*".nml"
+    nml = construct_namelist(
+        model_extra, 
+        model_box.parameter.teff, 
+        model_box.parameter.logg,
+        n_patches=args["n_patches_parsed"],
+        patch_size=args["patch_size"],
+        atmos_size=args["atmos_size_parsed"],
+        shift_atmosphere_by=args["shift_atmosphere_by"],
+        out_time=args["out_time"],
+        end_time=args["end_time"],
+        outdir=out_dir, 
+        nml_name=nml_name;
+        args["namelist_kwargs"]...
+    )
+    @info "Initial condition for M3DIS prepared."
+    @info "M1DIS complete. Results stored in $out_dir."
 end
 
 main()
