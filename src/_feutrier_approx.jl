@@ -2,7 +2,7 @@
 # Dagger-based approximate solver
 # ==============================================================================
 
-function solve_approximate!(atm::Atmosphere{T}; include_dT::Bool=true, steepness=15.0, tau_trans=-2.0, n_workers=Threads.nthreads()) where T
+function solve_approximate!(atm::Atmosphere{T}; include_dT::Bool=true, steepness=15.0, tau_trans=-2.0) where T
     D = length(atm.tau)
     sigma_SB = 5.670374419e-5
     F_target = sigma_SB * atm.T_eff^4
@@ -14,14 +14,14 @@ function solve_approximate!(atm::Atmosphere{T}; include_dT::Bool=true, steepness
     K_rad_prev = zeros(T, D)
     dBdT_bol = zeros(T, D)
     kappa_bol = zeros(T, D)
-    compute_formal_sol_dagger!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev, dBdT_bol, kappa_bol, n_workers=n_workers)
+    compute_formal_sol_dagger!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev, dBdT_bol, kappa_bol)
     
     if include_dT
         solve_T_correction_approximate_blended!(atm, RE_res, RE_jac, K_rad_diag, K_rad_prev, F_target; steepness=steepness, tau_trans=tau_trans)
     end
 end
 
-function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}, dBdT_bol::Vector{T}, kappa_bol::Vector{T}; n_workers=Threads.nthreads()) where T
+function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_jac::Vector{T}, K_rad_diag::Vector{T}, K_rad_prev::Vector{T}, dBdT_bol::Vector{T}, kappa_bol::Vector{T}) where T
     D = length(atm.tau)
     Nf = size(atm.chi, 1)
     
@@ -30,7 +30,7 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_ja
     fill!(K_rad_diag, 0.0); fill!(K_rad_prev, 0.0)
     fill!(dBdT_bol, 0.0); fill!(kappa_bol, 0.0)
     
-    n_chunks = max(1, n_workers == 1 ? 1 : n_workers * 4)
+    n_chunks = USE_RT_THREADS[] ? max(1, Threads.nthreads() * 4) : 1
     chunk_size = cld(Nf, n_chunks) 
     
     tasks = Vector{Any}(undef, 0) 
@@ -41,13 +41,21 @@ function compute_formal_sol_dagger!(atm::Atmosphere{T}, RE_res::Vector{T}, RE_ja
         f_end   = min(i*chunk_size, Nf)
         
         if f_start <= f_end
-            t = Dagger.@spawn process_frequency_chunk(atm, f_start, f_end)
+            if USE_RT_THREADS[]
+                t = Dagger.@spawn process_frequency_chunk(atm, f_start, f_end)
+            else
+                t = process_frequency_chunk(atm, f_start, f_end)
+            end
             push!(tasks, t)
         end
     end
     
     for t in tasks
-        (J_p, F_p, RE_r, RE_j, K_d, K_p, g_p, P_p, dBdT_p, kappa_p) = fetch(t)::NTuple{10, Vector{T}}
+        (J_p, F_p, RE_r, RE_j, K_d, K_p, g_p, P_p, dBdT_p, kappa_p) = if USE_RT_THREADS[]
+            fetch(t)::NTuple{10, Vector{T}}
+        else
+            t::NTuple{10, Vector{T}}
+        end
         
         atm.J_bol   .+= J_p
         atm.F_rad   .+= F_p

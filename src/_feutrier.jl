@@ -2,6 +2,8 @@
 # Data structures
 # ==============================================================================
 
+const USE_RT_THREADS = Ref(true)
+
 struct Packer{T}
     Nf::Int
     Na::Int
@@ -323,3 +325,4 @@ end
 include("_feutrier_gustafsson.jl")
 include("_feutrier_approx.jl")
 include("_feutrier_vef.jl")
+include("_feutrier_vef_full.jl")

@@ -250,13 +250,9 @@ function atmosphere(; T_eff, logg, eos, opacity,
                 @optionalTiming solve_RT_time if solver == :gustafsson
                     solve_gustafsson!(atm)
                 elseif solver == :vef
-                    #try
-                        solve_VEF!(atm)
-                    #catch e
-                    #    @warn "VEF solver failed (singular or invalid). Running approximate solver."
-                    #    damping = 0.01
-                    #    solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
-                    #end
+                    solve_VEF!(atm)
+                elseif solver == :vef_full
+                    solve_VEF_full!(atm)
                 else
                     solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
                 end
@@ -364,7 +360,8 @@ function evaluate_iteration!(result,
 	iter, maxiter, 
 	F_target, dT, 
 	τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg, eos, damping; 
-	dt_tolerance_rel=0.00001, dt_tolerance=0.005, flux_tolerance_rel=0.01, save_every=1, kwargs...)
+	#dt_tolerance_rel=0.00001, dt_tolerance=0.005, flux_tolerance_rel=0.01, save_every=1, kwargs...)
+	dt_tolerance_rel=0.00001, dt_tolerance=1.0, flux_tolerance_rel=0.01, save_every=1, kwargs...)
 	
     # store the atmosphere every `save_every` iterations
 	store = save_every > 0 ? ((iter%save_every == 0) | (iter == maxiter)) : false
