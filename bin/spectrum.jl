@@ -305,7 +305,7 @@ function main()
         Δλ, nλ
     end
     window = MUST.@sprintf "lam_%i-%i" λs λe
-    window_nice = MUST.@sprintf "%iÅ - %iÅ" λs λe
+    window_nice = MUST.@sprintf "%iÅ - %iÅ" args["lambda_start"] args["lambda_end"]
     extension = length(args["name"]) > 0 ? "_"*args["name"] : ""
     prefix = length(args["name"]) > 0 ? args["name"]*"_" : ""
 
