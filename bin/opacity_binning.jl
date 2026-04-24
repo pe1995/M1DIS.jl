@@ -487,7 +487,8 @@ function prepare_training_data(ctx::PhysicsContext, n_bins::Int, stripes::Bool)
     return X_cnn, Y_targets
 end
 
-function pretrain_network(X_features, Y_targets, n_bins::Int, n_neurons::Int, n_conv::Int)    
+function pretrain_network(X_features, Y_targets, n_bins::Int, n_neurons::Int, n_conv::Int; 
+                          max_epochs::Int=2000, patience::Int=15, min_delta::Float32=1f-5)    
     T = 5.0f0
     model = Chain(
         Conv((n_conv,), size(X_features, 2) => n_neurons, relu, pad=SamePad()),
@@ -500,13 +501,40 @@ function pretrain_network(X_features, Y_targets, n_bins::Int, n_neurons::Int, n_
     
     optimizer = Flux.setup(Flux.Adam(0.05), model)
     
-    prog = Progress(2000, desc="[Binning] Pre-training: ", color=:cyan)
+    prog = Progress(max_epochs, desc="[Binning] Generic pre-binning: ", color=:cyan)
+    
+    # Early stopping trackers
+    best_loss = Inf32
+    patience_counter = 0
+    best_state = deepcopy(Flux.state(model))
+    
     with_logger(NullLogger()) do
-        for _ in 1:2000
-            Flux.train!((m, x, y) -> mse(m(x), y), model, [(X_features, Y_targets)], optimizer)
-            next!(prog)
+        for epoch in 1:max_epochs
+            loss_val, grads = Flux.withgradient(model) do m
+                mse(m(X_features), Y_targets)
+            end
+            
+            Flux.update!(optimizer, model, grads[1])
+            
+            if loss_val < (best_loss - min_delta)
+                best_loss = loss_val
+                patience_counter = 0
+                best_state = deepcopy(Flux.state(model)) # Save the best weights
+            else
+                patience_counter += 1
+            end
+            
+            if patience_counter >= patience
+                finish!(prog) 
+                break
+            end
+            
+            next!(prog; showvalues=[(Symbol("pretraining loss"), loss_val), (Symbol("patience"), patience_counter)])
         end
     end
+    
+    # Restore the best weights before returning
+    Flux.loadmodel!(model, best_state)
     
     return Flux.destructure(model)
 end
@@ -826,7 +854,7 @@ function main()
         a = args["alpha"]
         z = args["feh"]
         v = args["vmic"]
-        "t$(round(args["teff"]/10, digits=2))g$(round(args["logg"]*10, digits=2))m$(round(z, digits=4))_a$(a)"
+        MUST.@sprintf "t%.2fg%.2fm%.3f_a%.3fvmic%.1f" args["teff"]/100.0 args["logg"]*10.0 z a v
     else
         args["model_name"]
     end
@@ -842,10 +870,9 @@ function main()
     end
 
     # make a new sub-dir for binning related things
-    out_dir = joinpath(out_dir, "opacity_binning")
+    out_dir = joinpath(out_dir, model3D_name)
 
     if !isdir(out_dir)
-        @info "Creating output directory: $out_dir"
         mkpath(out_dir)
     end
     

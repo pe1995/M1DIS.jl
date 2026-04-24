@@ -186,7 +186,7 @@ approximate_ex0 = false
 solver = 8
 dtau_min = 1.0e-5
 dtau_lin = 0.0001
-dtau_dif = 5.0
+dtau_dif = 10.0
 dtau_max = 1.0e6
 kappa_limit = true
 staggered = true
@@ -218,3 +218,6 @@ fix_massflux = false
 
 [namelist.an_params]
 courant = 0.2
+
+[namelist.aux_params]
+select=["flux"]
