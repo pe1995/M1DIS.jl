@@ -170,22 +170,17 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
             err = abs(j_sum_new[d] - J_old[d]) / max(j_sum_new[d], 1e-20)
             max_err = max(max_err, err)
         end
-        
+
         if nan_detected
-            #@warn "NaN or Inf detected in lambda iterations for frequency $f at iter $iter. Halting scattering and reverting to last safe state."
             j_sum_new .= J_old  
             break
         end
-        
+
         J_old .= j_sum_new
         
         if (max_err < tol) || (!do_scattering)
             break 
         end
-
-        #if iter == max_scat_iter
-        #    @warn "Feutrier solver did not converge for frequency $f. Max error: $max_err"
-        #end
     end
 end
 
@@ -199,7 +194,9 @@ function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
     if d == 1 
         mu = sqrt(mu_sq)
         tau_slab = dt_plus / mu
-        tau_top  = atm.tau_lambda[f, 1] / mu
+        #tau_top  = atm.tau_lambda[f, 1] / mu
+        eta = atm.chi[f, 1] / atm.chi_ref[1]
+        tau_top  = (eta * atm.tau[1]) / mu
         
         E_slab = (tau_slab < 0.01) ? 1.0 - tau_slab*(1.0 - 0.5*tau_slab) : exp(-tau_slab)
         E_top  = (tau_top < 0.01)  ? 1.0 - tau_top *(1.0 - 0.5*tau_top)  : exp(-tau_top)
@@ -211,9 +208,8 @@ function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
         src  = 0.5 * (1.0 - E_slab) * term_top
         ext  = 0.5 * E_top * (1.0 - E_slab^2)
         (0.0, diag, off, src, ext)
-    elseif d == D # Diffusion BC 
-        (0.0, 1.0, 0.0, 1.0, 0.0)  # Diffusion BC 
-        #(-1.0, 1.0, 0.0, 0.0, 0.0) # von-Neumann BC
+    elseif d == D 
+        (0.0, 1.0, 0.0, 1.0, 0.0) 
     else
         dtm_safe = max(dt_minus, 1e-30)
         dtp_safe = max(dt_plus, 1e-30)

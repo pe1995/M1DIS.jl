@@ -57,16 +57,29 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true) where T
     end
 
     if include_dT
-        for d in 1:D
+        for d in 2:D
             schur[d, d] += atm.dFconv_dT[d]
             if d > 1
-                schur[d, d-1] += -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
+                schur[d, d-1] += -(atm.Temp[d] / max(atm.Temp[d-1], 1.0)) * atm.dFconv_dT[d]
             end
         end
 
         RHS = zeros(T, D)
         for d in 1:D
-            RHS[d] = F_target - atm.F_rad[d] - atm.F_conv[d]
+            if d == 1
+                RHS[1] = -RE_res_total[1]
+            else
+                RHS[d] = F_target - atm.F_rad[d] - atm.F_conv[d]
+            end
+        end
+
+        if abs(schur[1, 1]) < 1e-12
+            for j in 1:D
+                schur[1, j] = 0.0
+            end
+            schur[1, 1] = 1.0
+            schur[1, 2] = -1.0
+            RHS[1] = atm.Temp[2] - atm.Temp[1] 
         end
 
         atm.dT .= schur \ RHS
@@ -103,7 +116,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     j_sum_new = zeros(T, D)
     tau_lambda_col = zeros(T, D)
     J_history = zeros(T, D, 4)
-    dchidT_col  = zeros(T, D)
 
     J_mean  = zeros(T, D)
     K_mean  = zeros(T, D)
@@ -114,7 +126,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     vef_rhs = zeros(T, D)
     vef_sol = zeros(T, D)
     inv_col = zeros(T, D)
-
     schur_dt_inv  = zeros(T, D)
     schur_dtp_inv = zeros(T, D)
     schur_dtm_inv = zeros(T, D)
@@ -136,7 +147,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     use_irr = atm.I_top[1] > 0.0
 
     @inbounds for f in f_start:f_end
-        dchidT_col .= view(atm.dchidT, f, :)
         chi_col .= view(atm.chi, f, :)
         B_col   .= view(atm.B, f, :)
         dB_col  .= view(atm.dBdT, f, :)
@@ -164,10 +174,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                 F_ini_col[d] = -F_arriving * attenuation
                 K_ini_col[d] = J_ini_col[d] * mu_star^2
             end
-        else
-            fill!(J_ini_col, zero(T))
-            fill!(F_ini_col, zero(T))
-            fill!(K_ini_col, zero(T))
         end
 
         # -------------------------------------------------------
@@ -198,36 +204,25 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             J_mean[d] = j_sum + J_ini_col[d]
             K_mean[d] = k_sum + K_ini_col[d]
             f_edd[d] = k_sum / j_sum
-            #f_edd[d] = K_mean[d] / J_mean[d]
 
             J_part[d] += w_f * J_mean[d]
             kabs = chi_col[d] - sig_col[d]
             RE_res[d] += w_f * kabs * (J_mean[d] - B_col[d])
             P_rad_part[d] += (4π * w_f / c_light) * K_mean[d]
 
-            # add opacity derivative to the Schur matrix
-            #if use_irr; schur_part[d, d] += w_f * dchidT_col[d] * (J_mean[d] - B_col[d]); end
-            schur_part[d, d] += w_f * dchidT_col[d] * (J_mean[d] - B_col[d])
-
             flux_sum = 0.0
             for a in 1:Na
                 ang = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
                 dJ, dt = 0.0, 1.0
                 if d == 1
-                    dt = tau_lambda_col[2] - tau_lambda_col[1]
+                    dt = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-60)
                     dJ = J_nu[a, 2] - J_nu[a, 1]
-                    
-                    # vacuum: 4π * w_mu * mu * J_nu
-                    if use_irr
-                        dJ = J_nu[a, 1]
-                        dt = atm.mu[a]
-                    end
                 elseif d == D
-                    dt = tau_lambda_col[D] - tau_lambda_col[D-1]
+                    dt = max(tau_lambda_col[D] - tau_lambda_col[D-1], 1e-60)
                     dJ = J_nu[a, D] - J_nu[a, D-1]
                 else
-                    dt_plus  = tau_lambda_col[d+1] - tau_lambda_col[d]
-                    dt_minus = tau_lambda_col[d] - tau_lambda_col[d-1]
+                    dt_plus  = max(tau_lambda_col[d+1] - tau_lambda_col[d], 1e-60)
+                    dt_minus = max(tau_lambda_col[d]   - tau_lambda_col[d-1], 1e-60)
                     
                     w_plus  = dt_minus / (dt_plus + dt_minus)
                     w_minus = dt_plus  / (dt_plus + dt_minus)
@@ -247,12 +242,12 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
         # Precalculate Schur derivative coefficients
         for d in 1:D
             if d == 1
-                schur_dt_inv[1] = 1.0 / (tau_lambda_col[2] - tau_lambda_col[1])
+                schur_dt_inv[1] = 1.0 / max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
             elseif d == D
-                schur_dt_inv[D] = 1.0 / (tau_lambda_col[D] - tau_lambda_col[D-1])
+                schur_dt_inv[D] = 1.0 / max(tau_lambda_col[D] - tau_lambda_col[D-1], 1e-30)
             else
-                dtp = tau_lambda_col[d+1] - tau_lambda_col[d]
-                dtm = tau_lambda_col[d] - tau_lambda_col[d-1]
+                dtp = max(tau_lambda_col[d+1] - tau_lambda_col[d], 1e-30)
+                dtm = max(tau_lambda_col[d] - tau_lambda_col[d-1], 1e-30)
                 schur_dtp_inv[d] = 1.0 / dtp
                 schur_dtm_inv[d] = 1.0 / dtm
                 schur_wp[d] = dtm / (dtp + dtm)
@@ -289,8 +284,8 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
 
         # Interior 
         for d in 2:D-1
-            dtm = tau_lambda_col[d]   - tau_lambda_col[d-1]
-            dtp = tau_lambda_col[d+1] - tau_lambda_col[d]
+            dtm = max(tau_lambda_col[d]   - tau_lambda_col[d-1], 1e-30)
+            dtp = max(tau_lambda_col[d+1] - tau_lambda_col[d],   1e-30)
             dtc = 0.5*(dtm + dtp)
 
             vef_dl[d] = f_edd[d-1] / (dtm * dtc)
@@ -308,6 +303,9 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
 
         for dp in 1:D
             C_dp = (dp < D) ? eps_col[dp] * dB_col[dp] : dB_col[dp]
+            if abs(C_dp) < 1e-30
+                continue
+            end
 
             invert_tridiagonal_column!(vef_sol, dp, vef_dl, vef_d, vef_du)
 
@@ -319,12 +317,11 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             end
 
             @inbounds begin
-                if use_irr
-                    dfdJ_1 = h_surf_val * vef_sol[1]
-                else
-                    dfdJ_1 = (f_vef[2] - f_vef[1]) * schur_dt_inv[1]
-                end
-                schur_part[1, dp] += neg_C_4pi * dfdJ_1
+                kabs_1 = chi_col[1] - sig_col[1]
+                dJ_1_dTdp = neg_C * vef_sol[1]
+                diag_dB_dT = (dp == 1) ? dB_col[1] : 0.0
+                
+                schur_part[1, dp] += kabs_1 * (dJ_1_dTdp - diag_dB_dT)
 
                 @simd for d in 2:D-1
                     grad_p = (f_vef[d+1] - f_vef[d]) * schur_dtp_inv[d]
