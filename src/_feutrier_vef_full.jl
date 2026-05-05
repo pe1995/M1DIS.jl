@@ -58,16 +58,29 @@ function solve_VEF_full!(atm::Atmosphere{T}; include_dT::Bool=true) where T
     end
 
     if include_dT
-        for d in 1:D
+        for d in 2:D
             schur[d, d] += atm.dFconv_dT[d]
             if d > 1
-                schur[d, d-1] += -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
+                schur[d, d-1] += -(atm.Temp[d] / max(atm.Temp[d-1], 1.0)) * atm.dFconv_dT[d]
             end
         end
 
         RHS = zeros(T, D)
         for d in 1:D
-            RHS[d] = F_target - atm.F_rad[d] - atm.F_conv[d]
+            if d == 1
+                RHS[1] = -RE_res_total[1]
+            else
+                RHS[d] = F_target - atm.F_rad[d] - atm.F_conv[d]
+            end
+        end
+
+        if abs(schur[1, 1]) < 1e-12
+            for j in 1:D
+                schur[1, j] = 0.0
+            end
+            schur[1, 1] = 1.0
+            schur[1, 2] = -1.0
+            RHS[1] = atm.Temp[2] - atm.Temp[1] 
         end
 
         atm.dT .= schur \ RHS
@@ -290,9 +303,7 @@ function process_frequency_chunk_VEF_full(atm::Atmosphere{T}, f_start::Int, f_en
             kabs = chi_col[d] - sig_col[d]
             RE_res[d] += w_f * kabs * (J_mean[d] - B_col[d])
             P_rad_part[d] += (4π * w_f / c_light) * K_mean[d]
-
-            schur_part[d, d] += w_f * dchidT_col[d] * (J_mean[d] - B_col[d])
-
+            
             flux_sum = 0.0
             for a in 1:Na
                 ang = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
@@ -356,12 +367,11 @@ function process_frequency_chunk_VEF_full(atm::Atmosphere{T}, f_start::Int, f_en
             end
 
             @inbounds begin
-                if use_irr
-                    dfdJ_1 = h_surf_val * vef_sol[1]
-                else
-                    dfdJ_1 = (f_vef[2] - f_vef[1]) * schur_dt_inv[1]
-                end
-                schur_part[1, dp] += neg_C_4pi * dfdJ_1
+                kabs_1 = chi_col[1] - sig_col[1]
+                dJ_1_dTdp = neg_C * vef_sol[1]
+                diag_dB_dT = (dp == 1) ? dB_col[1] : 0.0
+                
+                schur_part[1, dp] += kabs_1 * (dJ_1_dTdp - diag_dB_dT)
 
                 @simd for d in 2:D-1
                     grad_p = (f_vef[d+1] - f_vef[d]) * schur_dtp_inv[d]

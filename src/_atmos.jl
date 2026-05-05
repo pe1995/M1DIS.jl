@@ -127,9 +127,16 @@ function atmosphere(; T_eff, logg, eos, opacity,
         if !opacity.binned
             @verbose_info 2 "Running M1DIS with unbinned opacity table. Forcing use_threads=true."
 		end
-        if use_threads
-            @verbose_info 1 "Running RT solver:$(solver) with $(Base.Threads.nthreads()) threads."
+
+        # check selected solver
+        solver = if solver in [:gustafsson, :vef, :vef_full, :approximate]
+            solver
+        else
+            @verbose_info 1 "Selected solver $(solver) not available. Switching to default solver."
+            :vef
         end
+        @verbose_info 1 "Running RT solver:$(solver) with $(Base.Threads.nthreads()) threads."
+        
         @verbose_info 2 "========================================================================="
         sinf = TSO.@sprintf(
             "%s | %s | %s | %s | %s | %s\n________________________________________________________________________________________________________\n", 
@@ -221,18 +228,6 @@ function atmosphere(; T_eff, logg, eos, opacity,
                     end
                 end
             end
-
-            # there can be no convection in radiation dominated layers.
-            # This is needed to stabilize planetary atmosphere with strong 
-            # temperature inversions in the upper layers
-            #=for i in eachindex(atm.tau)
-                if log10(atm.tau[i]) < -6.0
-                    atm.F_conv[i] *= 0.001
-                    atm.v_conv[i] *= 0.001
-                    atm.P_turb[i] *= 0.001
-                    atm.dFconv_dT[i] *= 0.001
-                end
-            end=#
             
             # Radiative Transfer
             @optionalTiming radiation_transfer_time begin

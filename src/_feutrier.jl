@@ -306,10 +306,25 @@ end
 
 function compute_τ!(τ; z, ρκ)
     @inbounds for j in eachindex(τ)
-        if j==1 
-            τ[1] = 0 + abs(z[2] - z[1]) * 0.5 * (ρκ[j])
+        if j == 1 
+            if abs(ρκ[2] - ρκ[1]) / ρκ[1] > 1e-4
+                H = abs(z[2] - z[1]) / log(ρκ[2] / ρκ[1])
+                τ[1] = ρκ[1] * H
+            else
+                τ[1] = abs(z[2] - z[1]) * 0.5 * ρκ[1] 
+            end
         else
-            τ[j] = τ[j-1] + abs(z[j] - z[j-1]) * 0.5 * (ρκ[j] + ρκ[j-1])
+            dz = abs(z[j] - z[j-1])
+            χ1 = ρκ[j-1]
+            χ2 = ρκ[j]
+            
+            if abs(χ2 - χ1) / χ1 > 1e-4
+                dτ = dz * (χ2 - χ1) / log(χ2 / χ1)
+            else
+                dτ = dz * 0.5 * (χ1 + χ2)
+            end
+            
+            τ[j] = τ[j-1] + dτ
         end
     end
 end
