@@ -488,7 +488,7 @@ function prepare_training_data(ctx::PhysicsContext, n_bins::Int, stripes::Bool)
 end
 
 function pretrain_network(X_features, Y_targets, n_bins::Int, n_neurons::Int, n_conv::Int; 
-                          max_epochs::Int=2000, patience::Int=15, min_delta::Float32=1f-5)    
+                          max_epochs::Int=500, patience::Int=15, min_delta::Float32=1f-5)    
     T = 5.0f0
     model = Chain(
         Conv((n_conv,), size(X_features, 2) => n_neurons, relu, pad=SamePad()),
@@ -911,6 +911,7 @@ function main()
     TSO.USE_BINNING_THREADS[] = true
 
     # compute the final binning for the entire table
+    @info "Binning opacity based on the final bin assignment."
     binned_opacities = TSO.advanced_binning(
         optimized_weights, ctx.weights, ctx.eos.eos, opacity(ctx.opa), opacity(ctx.scat), logg=ctx.logg
     )
