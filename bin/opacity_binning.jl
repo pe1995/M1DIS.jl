@@ -23,6 +23,9 @@ using MLJGLMInterface
 plt = matplotlib.pyplot
 plt.switch_backend("Agg") 
 
+# Toggle: force hard one-hot bin assignments (true) vs soft weights (false)
+const HARD_BINS = false
+
 # ============================================================================
 # CLI Parsing
 # ============================================================================
@@ -462,8 +465,9 @@ function prepare_training_data(ctx::PhysicsContext, n_bins::Int, stripes::Bool)
         Matrix{Float32}, 
         vcat(
             log10.(ctx.wavelengths)', 
-            M1DIS.formation_height(ctx.atm, closest=true)', 
-            M1DIS.formation_source_function(ctx.atm, closest=true)'
+            M1DIS.formation_height(ctx.atm, closest=false)', 
+            M1DIS.formation_source_function(ctx.atm, closest=false)',
+            M1DIS.formation_opacity(ctx.atm, closest=false)',
         ) |> collect
     )
 
@@ -474,7 +478,7 @@ function prepare_training_data(ctx::PhysicsContext, n_bins::Int, stripes::Bool)
     
     Y_targets = zeros(Float32, n_bins, ctx.n_waves)
 
-    data = stripes ? X_features[2:end, :] : X_features
+    data = stripes ? X_features[1:2, :] : X_features
     clusters = kmeans(Matrix{Float64}(data), n_bins; maxiter=200)
 
     for i in 1:ctx.n_waves
@@ -488,7 +492,7 @@ function prepare_training_data(ctx::PhysicsContext, n_bins::Int, stripes::Bool)
 end
 
 function pretrain_network(X_features, Y_targets, n_bins::Int, n_neurons::Int, n_conv::Int; 
-                          max_epochs::Int=500, patience::Int=15, min_delta::Float32=1f-5)    
+                          max_epochs::Int=2000, patience::Int=15, min_delta::Float32=1f-5)    
     T = 5.0f0
     model = Chain(
         Conv((n_conv,), size(X_features, 2) => n_neurons, relu, pad=SamePad()),
@@ -559,7 +563,7 @@ function (objective::BinningObjective)(current_params)
     M = objective.restructure_model(Float32.(current_params))(objective.X_features)
     weights_assign = take!(objective.ctx.weights_pool)
     weights_assign .= transpose(M)
-    clean_weights!(weights_assign)
+    #clean_weights!(weights_assign, hard=HARD_BINS)
     
     n_waves, n_bins = size(weights_assign)
     bin_masses = sum(weights_assign, dims=1)
@@ -613,7 +617,7 @@ function (objective::BinningObjective)(current_params)
     return total_loss
 end
 
-function clean_weights!(weights::AbstractMatrix{T}; digits::Int=4, tol::T=T(10.0^(-(digits + 2)))) where {T <: AbstractFloat}   
+function clean_weights!(weights::AbstractMatrix{T}; digits::Int=3, tol::T=T(10.0^(-(digits + 2))), hard::Bool=false) where {T <: AbstractFloat}   
     rows, cols = size(weights)
     @inbounds for i in 1:rows
         max_val = typemin(T)
@@ -633,9 +637,16 @@ function clean_weights!(weights::AbstractMatrix{T}; digits::Int=4, tol::T=T(10.0
             row_sum += rounded_val
         end
         
-        diff = one(T) - row_sum
-        if abs(diff) > tol
-            weights[i, max_idx] += diff
+        if hard
+            # Snap to one-hot: argmax gets 1, rest get 0
+            for j in 1:cols
+                weights[i, j] = (j == max_idx) ? one(T) : zero(T)
+            end
+        else
+            diff = one(T) - row_sum
+            if abs(diff) > tol
+                weights[i, max_idx] += diff
+            end
         end
     end
     
@@ -645,7 +656,7 @@ end
 function optimize_weights(ctx::PhysicsContext, X_features, initial_params, restructure_model, iters::Int, target_error, n_walkers)    
     base_model = restructure_model(Float32.(initial_params))
     base_weights_assign = transpose(base_model(X_features))
-    clean_weights!(base_weights_assign)
+    #clean_weights!(base_weights_assign, hard=HARD_BINS)
 
     base_kappa, base_src = TSO.advanced_binning_1d_quick(
         base_weights_assign, ctx.weights, ctx.wavelengths, ctx.rho, ctx.temp, ctx.pgas, 
@@ -719,7 +730,7 @@ function optimize_weights(ctx::PhysicsContext, X_features, initial_params, restr
     best_params = Evolutionary.minimizer(res)
     final_model = restructure_model(Float32.(best_params)) 
     w = transpose(final_model(X_features))
-    clean_weights!(w)
+    #clean_weights!(w, hard=HARD_BINS)
     return w
 end
 
@@ -795,7 +806,7 @@ end
 function save_table(aos, aos500,binned_opacities, model, target_dir)
     save(binned_opacities.opacities, joinpath(target_dir, "binned_opacities_T.hdf5"))
     save(aos.eos, joinpath(target_dir, "eos_T.hdf5"))
-    save(aos500.eos, joinpath(target_dir, "eos500_T.hdf5"))
+    save(aos500.eos, joinpath(target_dir, "eos_T500.hdf5"))
 
 	lnEi, = TSO.sample(aos, (:lnEi,), model[:logd], model[:logT])
 	lnEimin, lnEimax = TSO.get_e_limit(aos.eos, lnEi, 1.5)
