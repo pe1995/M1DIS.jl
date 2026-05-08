@@ -125,7 +125,7 @@ end
 # Compute formation height
 # ============================================================================
 
-function formation_height(atm::M1DIS.Atmosphere; closest=true)
+function formation_height(atm::M1DIS.Atmosphere; closest=false)
     lgt = log10.(atm.tau)
     fh = similar(atm.tau_lambda, size(atm.tau_lambda, 1))
 
@@ -136,14 +136,14 @@ function formation_height(atm::M1DIS.Atmosphere; closest=true)
         end
     else
         for l in axes(atm.tau_lambda, 1)
-            fh[l] = -MUST.linear_interpolation(log10.(atm.tau_lambda[l, :]), lgt, extrapolation_bc=MUST.Line())(0.0)
+            fh[l] = -MUST.linear_interpolation(log10.(atm.tau_lambda[l, :]), lgt, extrapolation_bc=MUST.Flat())(0.0)
         end
     end
    
     fh
 end
 
-function formation_source_function(atm::M1DIS.Atmosphere; closest=true)
+function formation_source_function(atm::M1DIS.Atmosphere; closest=false)
     lgt = log10.(atm.tau)
     sf = similar(atm.tau_lambda, size(atm.tau_lambda, 1))
 
@@ -155,9 +155,48 @@ function formation_source_function(atm::M1DIS.Atmosphere; closest=true)
     else
         for l in axes(atm.tau_lambda, 1)
             log_tau_l = log10.(atm.tau_lambda[l, :])
-            sf[l] = MUST.linear_interpolation(log_tau_l, log10.(atm.B[l, :]), extrapolation_bc=MUST.Line())(0.0)
+            sf[l] = MUST.linear_interpolation(log_tau_l, log10.(atm.B[l, :]), extrapolation_bc=MUST.Flat())(0.0)
         end
     end
    
     return sf
+end
+
+function formation_opacity(atm::M1DIS.Atmosphere; closest=false)
+    lgt = log10.(atm.tau)
+    sf = similar(atm.tau_lambda, size(atm.tau_lambda, 1))
+
+    if closest
+        for l in axes(atm.tau_lambda, 1)
+            idx = argmin(abs.(atm.tau_lambda[l, :] .- 1.0))
+            sf[l] = log10.(atm.chi[l, idx])
+        end
+    else
+        for l in axes(atm.tau_lambda, 1)
+            log_tau_l = log10.(atm.tau_lambda[l, :])
+            sf[l] = MUST.linear_interpolation(log_tau_l, log10.(atm.chi[l, :]), extrapolation_bc=MUST.Flat())(0.0)
+        end
+    end
+   
+    return sf
+end
+
+function opacity_at(atm::M1DIS.Atmosphere, logtau; closest=false)
+    lgt = log10.(atm.tau)
+    op = similar(atm.chi, size(atm.chi, 1))
+    lgo = similar(atm.chi, size(atm.chi, 2))
+
+    if closest
+        idx = argmin(abs.(lgt .- logtau))
+        for l in axes(atm.chi, 1)
+            op[l] = log10.(atm.chi[l, idx])
+        end
+    else
+        for l in axes(atm.chi, 1)
+            @. lgo = log10(atm.chi[l, :])
+            op[l] = MUST.linear_interpolation(lgt, lgo, extrapolation_bc=MUST.Flat())(logtau)
+        end
+    end
+   
+    op
 end
