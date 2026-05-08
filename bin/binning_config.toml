@@ -120,13 +120,13 @@ prefix = ""
 extrapolate_tau_min = -7.0
 
 # Maximum optical depth for extrapolation
-extrapolate_tau_max = 7.0
+extrapolate_tau_max = 7.5
 
 # Base extrapolation on regression algorithm
 extrapolate_regression = false
 
 # Extrapolation offsets (for rho and T)
-extrapolate_offsets = [0.0, 0.0]
+extrapolate_offsets = [0.1, -0.1]
 
 # ==============================================================================
 # M3DIS Namelist Configuration
@@ -174,8 +174,8 @@ local_spring_constant = true
 decay_limit = 0.01
 
 [namelist.newton_params]
-end_time = 60.0
-decay_scale = 20.0
+end_time = 40.0
+decay_scale = 10.0
 scale = 0.1
 time = 0.1
 
