@@ -329,7 +329,6 @@ function get_or_compute_eos(
         return eos_folder
     end
 
-    
     @verbose_info 1 "No EoS table found for the requested chemical composition."
     cs = join(["[$(k)/Fe]=$(v)" for (k, v) in comp_dict], ",")
     cstring = "[Fe/H]=$(feh), [α/Fe]=$(alpha), with: $(cs)"
@@ -367,14 +366,14 @@ function get_or_compute_eos(
 
     @verbose_info 1 "⏳ Loading M3D output and collecting opacities..."
     run_m3d = MUST.M3DISRun("data/$(model)", read_atmos=false)
-    eos, eos500, opa, scat = TSO.collect_opacity(run_m3d, compute_ross=true, mini=mini, mmap=mmap)
+    eos, eos500, opa, scat, nan_mask_ross, nan_mask_500 = TSO.collect_opacity(run_m3d, compute_ross=true, mini=mini, mmap=mmap)
     
     @verbose_info 2 "⏳ Saving variables..."
     eos_mono = deepcopy(eos); eos500_mono = deepcopy(eos500)
     TSO.smoothAccumulate!(eos_mono); TSO.smoothAccumulate!(eos500_mono)
     
-    TSO.save(eos_mono, joinpath(eos_folder, "combined_eos_$(eos_id).hdf5"))
-    TSO.save(eos500_mono, joinpath(eos_folder, "combined_eos500_$(eos_id).hdf5"))
+    TSO.save(eos_mono, joinpath(eos_folder, "combined_eos_$(eos_id).hdf5"), nan_mask=nan_mask_ross)
+    TSO.save(eos500_mono, joinpath(eos_folder, "combined_eos500_$(eos_id).hdf5"), nan_mask=nan_mask_500)
     TSO.save(opa, joinpath(eos_folder, "combined_opacities_$(eos_id).hdf5"))
     if !isnothing(scat)
         TSO.save(scat, joinpath(eos_folder, "combined_sopacities_$(eos_id).hdf5"))
