@@ -42,9 +42,8 @@ models = atmosphere(
     eos, opacity,                        # tables from above
 	τ=10 .^range(-6.0, 2.0, length=100), # optical depth grid
 	α_MLT=1.5,                           # Mixing-length parameter
-	maxiter=20,                          # maximum number of iterations
-	damping=0.01,                         # relative dT step size limit.
-	feutrier=true,                       # use the feutrier solver (recommended)
+	maxiter=50,                          # maximum number of iterations
+	damping=0.1,                         # relative dT step size limit.
 	use_threads=false,                   # use the approximate Feutrier method 
     save_every=1,                        # save every `save_every` snapshot
     dt_tolerance_rel=0.001,              # converged if dT smaller than this
@@ -81,3 +80,9 @@ Besides creating the models, the command line tool can also be used to compute t
 julia bin/spectrum.jl -c bin/spectrum_config.toml -m models/m1dis_model -n 'myspectrum' --feh=-1 --alpha=0.4
 ```
 Where the default parameters are again stored in a `.toml` file. Multi3D is assumed to be located at the path you specified in the `bin/eos_config.toml`.
+
+# Opacity Binning
+There is an additional usecase of `M1DIS.jl`, which provides great synergy with the 3D RHD code `M3DIS`. In order to start a 3D simulations, there a two very important things that need to be present: The initial atmospheric structure and the opacity table. Because `M3DIS` works with binned opacities, there is a complementary code that computes these binned tables already available (`TSO.jl`, see above). However, there is generally a great uncertainty associated with the bin selection, which is why it is advisable to automate the procedure. `M1DIS.jl` is capable of doing this in a very straightforward way. 
+
+For this, the command line tool `bin/opacity_binning.jl` with the default configuration `bin/binning_config.toml` is available. This script computes -- for a given chemical compostion -- the monochromatic opacity table using `Multi3D`. After specifing $\rm T_{eff}$, $\log g$ the 1D HE atmosphere will be computed. After the atmosphere has been constructed, the opacity binning is optimized iteratively by adjusting the bin assignment matrix with dimensions ($n_{\lambda} \times n_{bins}$), computing the respective binned opacity, and solving the RT using those opacities. The goodness of the binning is judged by comparing cooling error at the cooling-peak with the unbinned result. The code furthermore makes sure that the flux error is kept within bounds. The optimized bin assignment matrix is then used to construct the final binned opacity table, which is then stored together with the corresponding namelist for `M3DIS`, such that it can directly be executed.
+
