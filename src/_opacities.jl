@@ -325,14 +325,14 @@ function get_or_compute_eos(
     target_eos_file = joinpath(eos_folder, "combined_eos_$(eos_id).hdf5")
     
     if isfile(target_eos_file)
-        @verbose_info 1 "✅ EoS table for $eos_id already exists."
+        (verbose[] >= 1) && print_nice("✅ EoS table for $eos_id already exists.", category="Opacities", color=color_opacity)
         return eos_folder
     end
 
-    @verbose_info 1 "No EoS table found for the requested chemical composition."
+    (verbose[] >= 1) && print_nice("No EoS table found for the requested chemical composition.", category="Opacities", color=color_opacity)
     cs = join(["[$(k)/Fe]=$(v)" for (k, v) in comp_dict], ",")
     cstring = "[Fe/H]=$(feh), [α/Fe]=$(alpha), with: $(cs)"
-    @verbose_info 1 "Creating tables with composition (relative to $abund): $(cstring)"
+    (verbose[] >= 1) && print_nice("Creating tables with composition (relative to $abund): $(cstring)", category="Opacities", color=color_opacity)
 
     multi_name = "model_$(eos_id)"
     abund_file_path = MUST.abund_abundances(; α = alpha, comp_dict..., default = abund)
@@ -344,7 +344,7 @@ function get_or_compute_eos(
 
     λ_file_opt = use_lambda_file ? lambda_file : nothing
     
-    @verbose_info 1 "⏳ Running Multi3D..."
+    (verbose[] >= 1) && print_nice("⏳ Running Multi3D...", category="Opacities", color=color_opacity)
     try
         MUST.opacityTable(
             model; 
@@ -354,9 +354,9 @@ function get_or_compute_eos(
             slurm=false, nν=nnu, FeH=feh, abund_file=abund_file_path, tmolim=tmolim,
             m3dis_kwargs=Dict(:threads=>multi_threads)
         )
-        @verbose_info 1 "✅ Multi3D completed."
+        (verbose[] >= 1) && print_nice("✅ Multi3D completed.", category="Opacities", color=color_opacity)
     catch e
-        @verbose_info 1 "❌ Multi3D failed."
+        (verbose[] >= 1) && print_nice("❌ Multi3D failed. $e", category="Opacities", color=color_opacity)
         error(e)
     end
 
@@ -364,11 +364,11 @@ function get_or_compute_eos(
         mkpath(eos_folder)
     end
 
-    @verbose_info 1 "⏳ Loading M3D output and collecting opacities..."
+    (verbose[] >= 1) && print_nice("⏳ Loading M3D output and collecting opacities...", category="Opacities", color=color_opacity)
     run_m3d = MUST.M3DISRun("data/$(model)", read_atmos=false)
     eos, eos500, opa, scat, nan_mask_ross, nan_mask_500 = TSO.collect_opacity(run_m3d, compute_ross=true, mini=mini, mmap=mmap)
     
-    @verbose_info 2 "⏳ Saving variables..."
+    (verbose[] >= 2) && print_nice("⏳ Saving variables...", category="Opacities", color=color_opacity)
     eos_mono = deepcopy(eos); eos500_mono = deepcopy(eos500)
     TSO.smoothAccumulate!(eos_mono); TSO.smoothAccumulate!(eos500_mono)
     

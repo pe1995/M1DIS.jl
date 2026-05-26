@@ -5,6 +5,20 @@ const c_light = 2.99792458e10
 const σ_SB = 5.670374e-5
 const verbose = Ref{Int}(1)
 
+const color_star = :light_red
+const color_planet = :light_green
+const color_opacity = :light_cyan
+const color_messages = Ref{Symbol}(color_star)
+
+function print_nice(s; category="", kwargs...)
+    if category == ""
+        printstyled(s, "\n"; kwargs...)
+    else 
+        printstyled("[ $(category): "; bold=true, kwargs...)
+        printstyled(s, "\n")
+    end
+end
+
 macro verbose_info(level, args...)
     return quote
         if verbose[] >= $(esc(level))

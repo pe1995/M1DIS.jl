@@ -86,7 +86,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
         if !isnothing(scattering_opacity)
             @assert typeof(scattering_opacity) <: TSO.MiniOpacityTable "Scattering opacity must be MiniOpacityTable."
-            @info "Running with scattering treatment."
+            (verbose[] >=1) && print_nice("Running with scattering treatment.", category="M1DIS", color=color_messages[])
         end
 
         # --- Initial State ---
@@ -120,29 +120,28 @@ function atmosphere(; T_eff, logg, eos, opacity,
             chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT, dchidT=dchidT, I_top=Irr, chi_scat=chi_scat
         )
         
-        @verbose_info 2 "================================= M1DIS ================================="
+        (verbose[] >= 2) && print_nice("================================= M1DIS =================================", category="M1DIS", color=color_messages[])
         if typeof(opacity) <: TSO.MiniOpacityTable
-            @verbose_info 2 "Running M1DIS with MiniOpacityTable. Source function is computed on the fly."
+            (verbose[] >= 2) && print_nice("Running M1DIS with MiniOpacityTable. Source function is computed on the fly.", category="M1DIS", color=color_messages[])
         end
         if !opacity.binned
-            @verbose_info 2 "Running M1DIS with unbinned opacity table. Forcing use_threads=true."
+            (verbose[] >= 2) && print_nice("Running M1DIS with unbinned opacity table. Forcing use_threads=true.", category="M1DIS", color=color_messages[])
 		end
 
         # check selected solver
         solver = if solver in [:gustafsson, :vef, :vef_full, :approximate]
             solver
         else
-            @verbose_info 1 "Selected solver $(solver) not available. Switching to default solver."
+            (verbose[] >= 1) && print_nice("Selected solver $(solver) not available. Switching to default solver.", category="M1DIS", color=color_messages[])
             :vef
         end
-        @verbose_info 1 "Running RT solver:$(solver) with $(Base.Threads.nthreads()) threads."
-        
-        @verbose_info 2 "========================================================================="
+        (verbose[] >= 1) && print_nice("Running RT solver:$(solver) with $(Base.Threads.nthreads()) threads.", category="M1DIS", color=color_messages[])
+        (verbose[] >= 2) && print_nice("=========================================================================", category="M1DIS", color=color_messages[])
         sinf = TSO.@sprintf(
             "%s | %s | %s | %s | %s | %s\n________________________________________________________________________________________________________\n", 
             "iteration", "ΔF/F (max, %)", "log(τ) of max. ΔF/F", "ΔT/T (max, %)", "log(τ) of max. ΔT/T", "ΔT (max, K)"
         )
-        @verbose_info 1 sinf
+        (verbose[] >= 1) && print_nice(sinf, category="M1DIS", color=color_messages[])
     end
 	
 	flux_err_max_prev = Inf
@@ -294,7 +293,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
             )
 
             if converged 
-                @verbose_info 1 "Atmosphere converged."
+                (verbose[] >= 1) && print_nice("Atmosphere converged.", category="M1DIS", color=color_messages[])
                 break
             end
 
@@ -370,10 +369,10 @@ function evaluate_iteration!(result,
 	dt_err_max_abs = maximum(abs.(dT))
 	
     sinf = TSO.@sprintf(
-        "%4d | %20.4f %% | %6.2f | %14.4f %% | %6.2f | %14.4f K\n", 
+        "%4d | %20.4f %% | %6.2f | %14.4f %% | %6.2f | %14.4f K", 
 		iter, flux_err_max*100, log10(τ[f_amax]), dt_err_max*100, log10(τ[dt_amax]), dt_err_max_abs
     )
-	@verbose_info 1 sinf
+	(verbose[] >= 1) && print_nice(sinf, category="M1DIS", color=color_messages[])
 
 	converged = (dt_err_max<dt_tolerance_rel) | (flux_err_max<flux_tolerance_rel)
 	#converged = (dt_err_max<dt_tolerance) && (flux_err_max<flux_tolerance_rel)
