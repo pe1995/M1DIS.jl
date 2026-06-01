@@ -25,7 +25,7 @@ Compute a M1DIS atmosphere iteratively based on the given binned opacity table, 
 - `ρ`: density (optional starting atmosphere)
 - `P`: pressure (optional starting atmosphere)
 - `z`: height (optional starting atmosphere)
-- `feutrier`: use Feutrier solver
+- `feautrier`: use Feutrier solver
 - `use_threads`: use threads
 - `dt_tolerance_rel`: relative temperature tolerance
 - `flux_tolerance_rel`: relative flux tolerance
@@ -44,13 +44,14 @@ function atmosphere(; T_eff, logg, eos, opacity,
     pbeta=1.0,
     T_irradiation=nothing, R_irradiation=nothing, d_irradiation=nothing, F_irradiation=nothing,
     T=nothing, ρ=nothing, P=nothing, z=nothing, 
-    feutrier=true,
+    feautrier=true,
     use_threads=false,
     scattering_opacity=nothing,
     target_flux=nothing,
     steepness=15.0,
     tau_trans=-2.0,
     solver=:vef,
+    vef_mode=:boundary,
     stabilize_convection=false,
     kwargs...)  
 
@@ -104,7 +105,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 
         # --- Pre-compute initial opacities to bootstrap the Atmosphere object ---
 		@optionalTiming prepare_opacities_time begin
-			chi, chi_ref, S, dSdT, dchidT, chi_scat = if feutrier
+			chi, chi_ref, S, dSdT, dchidT, chi_scat = if feautrier
 				c, c_ref, s_val, dsdt_val, dchidt_val = opacity.binned ? compute_opacities(eos, opacity, T, ρ) : compute_opacities_chunked(eos, opacity, T, ρ)
 				c_scat = (!isnothing(scattering_opacity)) ? compute_opacities_chunked(eos, scattering_opacity, T, ρ, opacity_only=true)[1] : nothing
 				c, c_ref, s_val, dsdt_val, dchidt_val, c_scat
@@ -136,6 +137,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
             :vef
         end
         (verbose[] >= 1) && print_nice("Running RT solver:$(solver) with $(Base.Threads.nthreads()) threads.", category="M1DIS", color=color_messages[])
+        (verbose[] >= 1) && print_nice("dT mode: $(vef_mode).", category="M1DIS", color=color_messages[])
         (verbose[] >= 2) && print_nice("=========================================================================", category="M1DIS", color=color_messages[])
         sinf = TSO.@sprintf(
             "%s | %s | %s | %s | %s | %s\n________________________________________________________________________________________________________\n", 
@@ -244,9 +246,9 @@ function atmosphere(; T_eff, logg, eos, opacity,
                 @optionalTiming solve_RT_time if solver == :gustafsson
                     solve_gustafsson!(atm)
                 elseif solver == :vef
-                    solve_VEF!(atm)
+                    solve_VEF!(atm, mode=vef_mode, tau_trans=tau_trans)
                 elseif solver == :vef_full
-                    solve_VEF_full!(atm)
+                    solve_VEF_full!(atm, mode=vef_mode, tau_trans=tau_trans)
                 else
                     solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
                 end
@@ -312,7 +314,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
                 eos=eos, 
                 logg=logg
             )
-        catch e
+        catch
             @warn "M1DIS failed. Error: $e"
             break
         end
@@ -357,7 +359,7 @@ function evaluate_iteration!(result,
 	F_target, dT, 
 	τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, teff, logg, eos, damping; 
 	#dt_tolerance_rel=0.00001, dt_tolerance=0.001, flux_tolerance_rel=0.01, save_every=1, kwargs...)
-	dt_tolerance_rel=0.00001, dt_tolerance=1.0, flux_tolerance_rel=0.01, save_every=1, kwargs...)
+	dt_tolerance_rel=0.00001, dt_tolerance=0.5, flux_tolerance_rel=0.01, save_every=1, kwargs...)
 	
     # store the atmosphere every `save_every` iterations
 	store = save_every > 0 ? ((iter%save_every == 0) | (iter == maxiter)) : false
@@ -374,8 +376,8 @@ function evaluate_iteration!(result,
     )
 	(verbose[] >= 1) && print_nice(sinf, category="M1DIS", color=color_messages[])
 
-	converged = (dt_err_max<dt_tolerance_rel) | (flux_err_max<flux_tolerance_rel)
-	#converged = (dt_err_max<dt_tolerance) && (flux_err_max<flux_tolerance_rel)
+	#converged = (dt_err_max<dt_tolerance_rel) | (flux_err_max<flux_tolerance_rel)
+	converged = (dt_err_max_abs<dt_tolerance) & (flux_err_max<flux_tolerance_rel)
 	if converged | store
 		append!(result, [m1disBox(τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, dT, teff, logg, eos; kwargs...)])
 	end

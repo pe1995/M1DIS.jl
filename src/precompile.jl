@@ -34,7 +34,7 @@ using PrecompileTools
                     damping = 0.1,
                     τ = 10.0 .^ range(-4.0, 1.0, length=30),
                     use_threads = true,
-                    feutrier = true,
+                    feautrier = true,
                 )
                 println("✅ Precompiled with MiniOpacityTable.")
             catch e
@@ -53,7 +53,7 @@ using PrecompileTools
                     damping = 0.1,
                     τ = 10.0 .^ range(-4.0, 1.0, length=30),
                     use_threads = true,
-                    feutrier = true,
+                    feautrier = true,
                 )
                 println("✅ Precompiled with ExtendedOpacity.")
             catch e

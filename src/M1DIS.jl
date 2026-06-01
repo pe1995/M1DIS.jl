@@ -13,7 +13,7 @@ using SparseArrays
 
 include("_data_structure.jl")
 include("_timing.jl")
-include("_feutrier.jl")
+include("_feautrier.jl")
 include("_constants.jl")
 include("_boundary.jl")
 include("_hydro.jl")

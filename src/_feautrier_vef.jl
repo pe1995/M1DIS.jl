@@ -2,7 +2,7 @@
 # Full VEF solver
 # ==============================================================================
 
-function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true) where T
+function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:boundary, tau_trans::Float64=-2.0) where T
     D = length(atm.tau)
     Nf = size(atm.chi, 1)
     sigma_SB = 5.670374419e-5
@@ -25,9 +25,9 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true) where T
         f_end   = min(i*chunk_size, Nf)
         if f_start <= f_end
             if USE_RT_THREADS[]
-                t = Dagger.@spawn process_frequency_chunk_VEF(atm, f_start, f_end)
+                t = Dagger.@spawn process_frequency_chunk_VEF(atm, f_start, f_end, mode, tau_trans)
             else
-                t = process_frequency_chunk_VEF(atm, f_start, f_end)
+                t = process_frequency_chunk_VEF(atm, f_start, f_end, mode, tau_trans)
             end
             push!(tasks, t)
         end
@@ -66,27 +66,29 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true) where T
 
         RHS = zeros(T, D)
         for d in 1:D
-            if d == 1
-                RHS[1] = -RE_res_total[1]
+            is_re = use_RE(d, mode, atm, tau_trans)
+
+            if is_re
+                RHS[d] = -RE_res_total[d]
             else
                 RHS[d] = F_target - atm.F_rad[d] - atm.F_conv[d]
             end
         end
 
-        if abs(schur[1, 1]) < 1e-12
+        #=if abs(schur[1, 1]) < 1e-12
             for j in 1:D
                 schur[1, j] = 0.0
             end
             schur[1, 1] = 1.0
             schur[1, 2] = -1.0
             RHS[1] = atm.Temp[2] - atm.Temp[1] 
-        end
+        end=#
 
         atm.dT .= schur \ RHS
     end
 end
 
-function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::Int) where T
+function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::Int, mode::Symbol, tau_trans::Float64) where T
     D, Na = length(atm.tau), length(atm.mu)
     c_light = 2.99792458e10
 
@@ -115,6 +117,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     J_old     = zeros(T, D)
     j_sum_new = zeros(T, D)
     tau_lambda_col = zeros(T, D)
+    dchidT_col  = zeros(T, D)
     J_history = zeros(T, D, 4)
 
     J_mean  = zeros(T, D)
@@ -151,6 +154,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
         B_col   .= view(atm.B, f, :)
         dB_col  .= view(atm.dBdT, f, :)
         tau_lambda_col .= view(atm.tau_lambda, f, :)
+        dchidT_col .= view(atm.dchidT, f, :)
 
         if do_scattering
             sig_col .= view(atm.chi_scat, f, :)
@@ -210,6 +214,8 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             RE_res[d] += w_f * kabs * (J_mean[d] - B_col[d])
             P_rad_part[d] += (4π * w_f / c_light) * K_mean[d]
 
+            #schur_part[d, d] += (d == 1) ? w_f * dchidT_col[d] * (J_mean[d] - B_col[d]) : zero(T)
+
             flux_sum = 0.0
             for a in 1:Na
                 ang = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
@@ -217,6 +223,10 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                 if d == 1
                     dt = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-60)
                     dJ = J_nu[a, 2] - J_nu[a, 1]
+                    if use_irr
+                        dJ = J_nu[a, 1]
+                        dt = atm.mu[a]
+                    end
                 elseif d == D
                     dt = max(tau_lambda_col[D] - tau_lambda_col[D-1], 1e-60)
                     dJ = J_nu[a, D] - J_nu[a, D-1]
@@ -317,21 +327,33 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             end
 
             @inbounds begin
-                kabs_1 = chi_col[1] - sig_col[1]
-                dJ_1_dTdp = neg_C * vef_sol[1]
-                diag_dB_dT = (dp == 1) ? dB_col[1] : 0.0
-                
-                schur_part[1, dp] += kabs_1 * (dJ_1_dTdp - diag_dB_dT)
+                for d in 1:D
+                    is_re = use_RE(d, mode, atm, tau_trans)
 
-                @simd for d in 2:D-1
-                    grad_p = (f_vef[d+1] - f_vef[d]) * schur_dtp_inv[d]
-                    grad_m = (f_vef[d] - f_vef[d-1]) * schur_dtm_inv[d]
-                    dfdJ = schur_wp[d] * grad_p + schur_wm[d] * grad_m
-                    schur_part[d, dp] += neg_C_4pi * dfdJ
+                    if is_re
+                        kabs_d = chi_col[d] - sig_col[d]
+                        dJ_d_dTdp = neg_C * vef_sol[d]
+                        diag_dB_dT_d = (dp == d) ? dB_col[d] : 0.0
+                        schur_part[d, dp] += kabs_d * (dJ_d_dTdp - diag_dB_dT_d)
+                    else
+                        if d == 1
+                            if use_irr
+                                grad_p = h_surf_val * vef_sol[1]
+                            else
+                                grad_p = (f_vef[2] - f_vef[1]) * schur_dt_inv[1]
+                            end
+                            schur_part[1, dp] += neg_C_4pi * grad_p
+                        elseif d == D
+                            grad_m = (f_vef[D] - f_vef[D-1]) * schur_dt_inv[D]
+                            schur_part[D, dp] += neg_C_4pi * grad_m
+                        else
+                            grad_p = (f_vef[d+1] - f_vef[d]) * schur_dtp_inv[d]
+                            grad_m = (f_vef[d] - f_vef[d-1]) * schur_dtm_inv[d]
+                            dfdJ = schur_wp[d] * grad_p + schur_wm[d] * grad_m
+                            schur_part[d, dp] += neg_C_4pi * dfdJ
+                        end
+                    end
                 end
-
-                dfdJ_D = (f_vef[D] - f_vef[D-1]) * schur_dt_inv[D]
-                schur_part[D, dp] += neg_C_4pi * dfdJ_D
             end
         end
     end

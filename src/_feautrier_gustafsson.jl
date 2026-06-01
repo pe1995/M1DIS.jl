@@ -32,7 +32,7 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
             
             B   = atm.B[f, d]
             dB  = atm.dBdT[f, d]
-            A, B_diag, C, src_fac, ext_fac = feutrier_coeffs(atm, f, d, pack.mu_sq[i])
+            A, B_diag, C, src_fac, ext_fac = feautrier_coeffs(atm, f, d, pack.mu_sq[i])
             
             push!(rows, row); push!(cols, idx_J(i,d)); push!(vals, B_diag)
             if A != 0; push!(rows, row); push!(cols, idx_J(i,d-1)); push!(vals, A); end
@@ -104,7 +104,7 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
     return nothing
 end
 
-function solve_feutrier_1D!(atm::Atmosphere{T}, f::Int, J_out::Matrix{T}, L_acc::AbstractVector{T}) where T
+function solve_feautrier_1D!(atm::Atmosphere{T}, f::Int, J_out::Matrix{T}, L_acc::AbstractVector{T}) where T
     D, Na = length(atm.tau), length(atm.mu)
     
     @inbounds for a in 1:Na
@@ -114,7 +114,7 @@ function solve_feutrier_1D!(atm::Atmosphere{T}, f::Int, J_out::Matrix{T}, L_acc:
         
         @inbounds for d in 1:D
             # Get coeffs
-            (A, B_diag, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, d, mu_sq)
+            (A, B_diag, C, src_fac, ext_fac) = feautrier_coeffs(atm, f, d, mu_sq)
             
             if A != 0; push!(rows, d); push!(cols, d-1); push!(vals, A); end
             push!(rows, d); push!(cols, d); push!(vals, B_diag)

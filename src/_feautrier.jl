@@ -63,7 +63,7 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
             mu_sq  = atm.mu[a]^2
             weight = atm.w_mu[a]
             
-            (A, B, C, src_fac, _) = feutrier_coeffs(atm, f, 1, mu_sq)
+            (A, B, C, src_fac, _) = feautrier_coeffs(atm, f, 1, mu_sq)
             tri_d[1]   = B
             tri_du[1]  = C
             tri_rhs[1] = src_fac * S_col[1]
@@ -71,7 +71,7 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
             L_nu[1] += weight * (src_fac / B)
 
             for d in 2:D-1
-                (A, B, C, src_fac, ext_fac) = feutrier_coeffs(atm, f, d, mu_sq)
+                (A, B, C, src_fac, ext_fac) = feautrier_coeffs(atm, f, d, mu_sq)
                 tri_dl[d]  = A
                 tri_d[d]   = B
                 tri_du[d]  = C
@@ -80,7 +80,7 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
                 L_nu[d] += weight * (src_fac / B)
             end
             
-            (A, B, C, src_fac, _) = feutrier_coeffs(atm, f, D, mu_sq)
+            (A, B, C, src_fac, _) = feautrier_coeffs(atm, f, D, mu_sq)
             tri_dl[D]  = A
             tri_d[D]   = B
             tri_rhs[D] = src_fac * S_col[D]
@@ -188,7 +188,7 @@ end
 # Core Feutrier kernels
 # ==============================================================================
 
-function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
+function feautrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
     dt_minus, dt_plus = get_dtau(atm.tau_lambda, f, d)
     D = length(atm.tau)
     if d == 1 
@@ -213,9 +213,17 @@ function feutrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
     else
         dtm_safe = max(dt_minus, 1e-30)
         dtp_safe = max(dt_plus, 1e-30)
-        A = -mu_sq / (0.5 * dtm_safe * (dtm_safe + dtp_safe))
-        C = -mu_sq / (0.5 * dtp_safe * (dtm_safe + dtp_safe))
-        diag = 1.0 - A - C 
+        mu = sqrt(mu_sq)
+
+        # Cap μ/Δτ ratios at 1e10 to prevent numerical instability
+        # for very thin layers (matching petitRADTRANS inv_del_tau_min)
+        f1_interior = min(2.0 * mu / (dtm_safe + dtp_safe), 5e9)   # 2μ/(Δτ⁻+Δτ⁺)
+        f2_interior = min(mu / dtp_safe, 1e10)                      # μ/Δτ⁺
+        f3_interior = min(mu / dtm_safe, 1e10)                      # μ/Δτ⁻
+
+        A = -f1_interior * f3_interior
+        C = -f1_interior * f2_interior
+        diag = 1.0 - A - C
         (A, diag, C, 1.0, 0.0)
     end
 end
@@ -304,7 +312,7 @@ function get_dtau(tau, f, d)
     end
 end
 
-function compute_τ!(τ; z, ρκ)
+#=function compute_τ!(τ; z, ρκ)
     @inbounds for j in eachindex(τ)
         if j == 1 
             if abs(ρκ[2] - ρκ[1]) / ρκ[1] > 1e-4
@@ -327,13 +335,38 @@ function compute_τ!(τ; z, ρκ)
             τ[j] = τ[j-1] + dτ
         end
     end
+end=#
+
+function compute_τ!(τ; z, ρκ)
+    @inbounds for j in eachindex(τ)
+        if j==1 
+            τ[1] = 0 + abs(z[2] - z[1]) * 0.5 * (ρκ[j])
+        else
+            τ[j] = τ[j-1] + abs(z[j] - z[j-1]) * 0.5 * (ρκ[j] + ρκ[j-1])
+        end
+    end
+end
+
+@inline function use_RE(d, mode, atm, tau_trans)
+    is_re = false
+    if mode == :RE
+        is_re = true
+    elseif mode == :switch
+        is_re = log10(atm.tau[d]) < tau_trans
+    elseif mode == :boundary
+        is_re = (d == 1)
+    end
+    if d == length(atm.tau)
+        is_re = false
+    end
+    return is_re
 end
 
 # ==============================================================================
 # Top-level Feutrier solvers
 # ==============================================================================
 
-include("_feutrier_gustafsson.jl")
-include("_feutrier_approx.jl")
-include("_feutrier_vef.jl")
-include("_feutrier_vef_full.jl")
+include("_feautrier_gustafsson.jl")
+include("_feautrier_approx.jl")
+include("_feautrier_vef.jl")
+include("_feautrier_vef_full.jl")

@@ -6,7 +6,7 @@ const generalTimer = TimerOutput()
 const initialization_time = Ref(false)
 const atmosphere_preparation_time = Ref(false)
 const prepare_opacities_time = Ref(false)
-const allocate_feutrier_time = Ref(false)
+const allocate_feautrier_time = Ref(false)
 
 const mixing_length_time = Ref(false)
 const radiation_transfer_time = Ref(false)
@@ -27,7 +27,7 @@ const timers = [
     relaxation_time,
     atmosphere_preparation_time,
     prepare_opacities_time,
-    allocate_feutrier_time,
+    allocate_feautrier_time,
 ]
 
 # ============================================================================
