@@ -8,6 +8,7 @@ const verbose = Ref{Int}(1)
 const color_star = :light_red
 const color_planet = :light_green
 const color_opacity = :light_cyan
+const color_spectrum = :light_magenta
 const color_messages = Ref{Symbol}(color_star)
 
 function print_nice(s; category="", kwargs...)

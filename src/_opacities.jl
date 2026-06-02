@@ -315,6 +315,7 @@ function get_or_compute_eos(
     linelist_dir::String = "input_multi3d/master_linelists",
     use_lambda_file::Bool = false, 
     lambda_file::String = "input_multi3d/flx_wavelengths_UV.vac",
+    absdat_file::String = "./input_multi3d/TS_absdat.dat",
     mini::Bool = false, 
     mmap::Bool = false
 )
@@ -351,7 +352,7 @@ function get_or_compute_eos(
             folder=modelatmosfolder, linelist=linelist_dir, λ_file=λ_file_opt,
             λs=log(lambda_min), λe=log(lambda_max), δλ=(log(lambda_max)-log(lambda_min))/n_lambda,
             in_log=true, δlnT=(log(t_max)-log(t_min))/n_t, δlnρ=(log(rho_max)-log(rho_min))/n_rho,
-            slurm=false, nν=nnu, FeH=feh, abund_file=abund_file_path, tmolim=tmolim,
+            slurm=false, nν=nnu, FeH=feh, abund_file=abund_file_path, tmolim=tmolim, absdat_file=absdat_file,
             m3dis_kwargs=Dict(:threads=>multi_threads)
         )
         (verbose[] >= 1) && print_nice("✅ Multi3D completed.", category="Opacities", color=color_opacity)
