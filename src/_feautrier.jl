@@ -1,4 +1,16 @@
 # ==============================================================================
+# Feautrier RT solver — shared infrastructure
+#
+# This file contains the core routines shared by all solver variants:
+#   - Packer: frequency×angle indexing for the Gustafsson direct solver
+#   - lambda_formal_solution!: Feautrier tridiagonal solve with Λ-iteration
+#     for scattering and Ng acceleration
+#   - feautrier_coeffs: tridiagonal coefficients for the Feautrier equation
+#   - Tridiagonal solvers: solve, factorize, invert column
+#   - Helpers: optical depth integration, RE/flux mode selection
+# ==============================================================================
+
+# ==============================================================================
 # Data structures
 # ==============================================================================
 
@@ -185,31 +197,31 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
 end
 
 # ==============================================================================
-# Core Feutrier kernels
+# Core Feautrier kernels
 # ==============================================================================
 
 function feautrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
     dt_minus, dt_plus = get_dtau(atm.tau_lambda, f, d)
     D = length(atm.tau)
-    if d == 1 
+    if d == 1
         mu = sqrt(mu_sq)
         tau_slab = dt_plus / mu
-        #tau_top  = atm.tau_lambda[f, 1] / mu
         eta = atm.chi[f, 1] / atm.chi_ref[1]
         tau_top  = (eta * atm.tau[1]) / mu
-        
+        #tau_top = 0.0
+
         E_slab = (tau_slab < 0.01) ? 1.0 - tau_slab*(1.0 - 0.5*tau_slab) : exp(-tau_slab)
         E_top  = (tau_top < 0.01)  ? 1.0 - tau_top *(1.0 - 0.5*tau_top)  : exp(-tau_top)
-        
+
         term_top = 2.0 - E_top * (1.0 + E_slab)
-        
+
         diag = 1.0
         off  = -E_slab
         src  = 0.5 * (1.0 - E_slab) * term_top
         ext  = 0.5 * E_top * (1.0 - E_slab^2)
         (0.0, diag, off, src, ext)
-    elseif d == D 
-        (0.0, 1.0, 0.0, 1.0, 0.0) 
+    elseif d == D
+        (0.0, 1.0, 0.0, 1.0, 0.0)
     else
         dtm_safe = max(dt_minus, 1e-30)
         dtp_safe = max(dt_plus, 1e-30)
@@ -314,6 +326,15 @@ end
 
 #=function compute_τ!(τ; z, ρκ)
     @inbounds for j in eachindex(τ)
+        if j==1
+            τ[1] = abs(z[2] - z[1]) * 0.5 * ρκ[j]
+        else
+            τ[j] = τ[j-1] + abs(z[j] - z[j-1]) * 0.5 * (ρκ[j] + ρκ[j-1])
+        end
+    end
+end=#
+function compute_τ!(τ; z, ρκ)
+    @inbounds for j in eachindex(τ)
         if j == 1 
             if abs(ρκ[2] - ρκ[1]) / ρκ[1] > 1e-4
                 H = abs(z[2] - z[1]) / log(ρκ[2] / ρκ[1])
@@ -335,27 +356,35 @@ end
             τ[j] = τ[j-1] + dτ
         end
     end
-end=#
-
-function compute_τ!(τ; z, ρκ)
-    @inbounds for j in eachindex(τ)
-        if j==1 
-            τ[1] = 0 + abs(z[2] - z[1]) * 0.5 * (ρκ[j])
-        else
-            τ[j] = τ[j-1] + abs(z[j] - z[j-1]) * 0.5 * (ρκ[j] + ρκ[j-1])
-        end
-    end
 end
 
+"""
+    use_RE(d, mode, atm, tau_trans) → Bool
+
+Determine whether depth point `d` should use the radiative equilibrium (RE)
+constraint rather than the flux conservation constraint for the temperature
+correction.
+
+Modes:
+  - `:RE`       — use RE (k(J-B)=0) everywhere (except bottom boundary)
+  - `:FC`       — use FC (F_target=F_rad+F_conv) everywhere
+  - `:switch`   — use RE above `tau_trans`, flux conservation below
+  - `:boundary` — use RE only at the topmost point (d=1)
+"""
 @inline function use_RE(d, mode, atm, tau_trans)
     is_re = false
-    if mode == :RE
-        is_re = true
+    is_re = if mode == :RE
+        true
     elseif mode == :switch
-        is_re = log10(atm.tau[d]) < tau_trans
+        log10(atm.tau[d]) < tau_trans
     elseif mode == :boundary
-        is_re = (d == 1)
+        d == 1
+    elseif mode == :FC
+        false
+    else
+        error("Specified dT mode is not known. Please select one of the following modes: :RE, :FC, :switch, :boundary. Received $(mode).")
     end
+
     if d == length(atm.tau)
         is_re = false
     end
@@ -370,3 +399,4 @@ include("_feautrier_gustafsson.jl")
 include("_feautrier_approx.jl")
 include("_feautrier_vef.jl")
 include("_feautrier_vef_full.jl")
+#include("_feutrier_mod.jl")

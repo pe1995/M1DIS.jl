@@ -1,5 +1,10 @@
 # ==============================================================================
-# Full VEF solver
+# VEF solver
+#
+# Solves the radiative transfer equation using the Feautrier method to obtain
+# angle-dependent mean intensities J_nu(mu,d), then computes the Eddington
+# factor f = K/J. A VEF moment equation is solved
+# to obtain the Jacobian for the temperature correction.
 # ==============================================================================
 
 function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:boundary, tau_trans::Float64=-2.0) where T
@@ -56,14 +61,10 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:bou
         end
     end
 
+    # -------------------------------------------------------
+    # Temperature correction 
+    # -------------------------------------------------------
     if include_dT
-        for d in 2:D
-            schur[d, d] += atm.dFconv_dT[d]
-            if d > 1
-                schur[d, d-1] += -(atm.Temp[d] / max(atm.Temp[d-1], 1.0)) * atm.dFconv_dT[d]
-            end
-        end
-
         RHS = zeros(T, D)
         for d in 1:D
             is_re = use_RE(d, mode, atm, tau_trans)
@@ -72,17 +73,20 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:bou
                 RHS[d] = -RE_res_total[d]
             else
                 RHS[d] = F_target - atm.F_rad[d] - atm.F_conv[d]
+                schur[d, d] += atm.dFconv_dT[d]
+                if d > 1
+                    schur[d, d-1] += -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
+                end
             end
         end
 
-        #=if abs(schur[1, 1]) < 1e-12
+        for d in 1:D
+            row_scale = maximum(abs.(schur[d, :])) + 1e-30
+            RHS[d] /= row_scale
             for j in 1:D
-                schur[1, j] = 0.0
+                schur[d, j] /= row_scale
             end
-            schur[1, 1] = 1.0
-            schur[1, 2] = -1.0
-            RHS[1] = atm.Temp[2] - atm.Temp[1] 
-        end=#
+        end
 
         atm.dT .= schur \ RHS
     end
@@ -97,7 +101,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     RE_res     = zeros(T, D)
     g_rad_part = zeros(T, D)
     P_rad_part = zeros(T, D)
-
     schur_part = zeros(T, D, D)
 
     tri_dl  = zeros(T, D)
@@ -106,19 +109,21 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     tri_rhs = zeros(T, D)
     tri_sol = zeros(T, D)
 
-    chi_col = zeros(T, D)
-    B_col   = zeros(T, D)
-    dB_col  = zeros(T, D)
-    J_nu    = zeros(T, Na, D)
+    chi_col        = zeros(T, D)
+    B_col          = zeros(T, D)
+    dB_col         = zeros(T, D)
+    dchidT_col     = zeros(T, D)
+    dchidT_col_scat = zeros(T, D)
+    tau_lambda_col = zeros(T, D)
+    J_nu           = zeros(T, Na, D)
 
     sig_col   = zeros(T, D)
     S_col     = zeros(T, D)
     eps_col   = zeros(T, D)
     J_old     = zeros(T, D)
     j_sum_new = zeros(T, D)
-    tau_lambda_col = zeros(T, D)
-    dchidT_col  = zeros(T, D)
     J_history = zeros(T, D, 4)
+    L_nu      = zeros(T, D)
 
     J_mean  = zeros(T, D)
     K_mean  = zeros(T, D)
@@ -128,14 +133,13 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     vef_du  = zeros(T, D)
     vef_rhs = zeros(T, D)
     vef_sol = zeros(T, D)
-    inv_col = zeros(T, D)
+
     schur_dt_inv  = zeros(T, D)
     schur_dtp_inv = zeros(T, D)
     schur_dtm_inv = zeros(T, D)
     schur_wp      = zeros(T, D)
     schur_wm      = zeros(T, D)
     f_vef         = zeros(T, D)
-    L_nu          = zeros(T, D)
 
     J_ini_col = zeros(T, D)
     F_ini_col = zeros(T, D)
@@ -146,42 +150,47 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     tol = 1e-6
 
     mu_star = atm.irrad_mu
-    f_redist = 0.25 
-    use_irr = atm.I_top[1] > 0.0
+    f_redist = 0.25     # day-side redistribution factor (f = 1/4 for full redistribution)
 
     @inbounds for f in f_start:f_end
-        chi_col .= view(atm.chi, f, :)
-        B_col   .= view(atm.B, f, :)
-        dB_col  .= view(atm.dBdT, f, :)
+        chi_col        .= view(atm.chi, f, :)
+        B_col          .= view(atm.B, f, :)
+        dB_col         .= view(atm.dBdT, f, :)
         tau_lambda_col .= view(atm.tau_lambda, f, :)
-        dchidT_col .= view(atm.dchidT, f, :)
+        dchidT_col     .= view(atm.dchidT, f, :)
 
         if do_scattering
             sig_col .= view(atm.chi_scat, f, :)
+            dchidT_col_scat .= view(atm.dchidT_scat, f, :)
             eps_col .= 1.0 .- (sig_col ./ chi_col)
         else
-            eps_col .= 1.0
             sig_col .= 0.0
+            dchidT_col_scat .= 0.0
+            eps_col .= 1.0
         end
 
         J_old .= B_col
 
         # -------------------------------------------------------
-        # Analytic Stellar Beam Calculation 
+        # Analytic stellar beam 
         # -------------------------------------------------------
-        if use_irr
+        use_irr_f = atm.I_top[f] > 0.0
+        if use_irr_f
             F_arriving = f_redist * π * atm.I_top[f]
-            #F_arriving = f_redist * atm.I_top[f]
             @inbounds for d in 1:D
                 attenuation = exp(-tau_lambda_col[d] / mu_star)
                 J_ini_col[d] = (F_arriving / (4.0 * π * mu_star)) * attenuation
                 F_ini_col[d] = -F_arriving * attenuation
                 K_ini_col[d] = J_ini_col[d] * mu_star^2
             end
+        else
+            fill!(J_ini_col, zero(T))
+            fill!(F_ini_col, zero(T))
+            fill!(K_ini_col, zero(T))
         end
 
         # -------------------------------------------------------
-        # Feutrier formal solution
+        # Feautrier formal solution (with scattering)
         # -------------------------------------------------------
         lambda_formal_solution!(
             atm, f, max_scat_iter, tol, do_scattering,
@@ -207,49 +216,51 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             end
             J_mean[d] = j_sum + J_ini_col[d]
             K_mean[d] = k_sum + K_ini_col[d]
-            f_edd[d] = k_sum / j_sum
+            f_edd[d]  = k_sum / j_sum          # diffuse-only Eddington factor
 
             J_part[d] += w_f * J_mean[d]
             kabs = chi_col[d] - sig_col[d]
             RE_res[d] += w_f * kabs * (J_mean[d] - B_col[d])
             P_rad_part[d] += (4π * w_f / c_light) * K_mean[d]
 
-            #schur_part[d, d] += (d == 1) ? w_f * dchidT_col[d] * (J_mean[d] - B_col[d]) : zero(T)
-
             flux_sum = 0.0
             for a in 1:Na
                 ang = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
                 dJ, dt = 0.0, 1.0
                 if d == 1
-                    dt = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-60)
-                    dJ = J_nu[a, 2] - J_nu[a, 1]
-                    if use_irr
-                        dJ = J_nu[a, 1]
-                        dt = atm.mu[a]
-                    end
+                    #if use_irr_f
+                    #    # Vacuum top boundary (irradiated): H_diffuse = J_diffuse / μ
+                    #    dJ = J_nu[a, 1]
+                    #    dt = atm.mu[a]
+                    #else
+                        dt = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
+                        dJ = J_nu[a, 2] - J_nu[a, 1]
+                    #end
                 elseif d == D
-                    dt = max(tau_lambda_col[D] - tau_lambda_col[D-1], 1e-60)
+                    dt = max(tau_lambda_col[D] - tau_lambda_col[D-1], 1e-30)
                     dJ = J_nu[a, D] - J_nu[a, D-1]
                 else
-                    dt_plus  = max(tau_lambda_col[d+1] - tau_lambda_col[d], 1e-60)
-                    dt_minus = max(tau_lambda_col[d]   - tau_lambda_col[d-1], 1e-60)
-                    
+                    dt_plus  = max(tau_lambda_col[d+1] - tau_lambda_col[d], 1e-30)
+                    dt_minus = max(tau_lambda_col[d]   - tau_lambda_col[d-1], 1e-30)
+
                     w_plus  = dt_minus / (dt_plus + dt_minus)
                     w_minus = dt_plus  / (dt_plus + dt_minus)
-                    
+
                     dJ_plus  = (J_nu[a, d+1] - J_nu[a, d]) / dt_plus
                     dJ_minus = (J_nu[a, d] - J_nu[a, d-1]) / dt_minus
-                    
+
                     dJ = w_plus * dJ_plus + w_minus * dJ_minus
                     dt = 1.0
                 end
                 flux_sum += ang * (dJ / dt)
             end
-            F_part[d] += flux_sum + F_ini_col[d]
+            F_part[d]     += flux_sum + F_ini_col[d]
             g_rad_part[d] += (flux_sum + F_ini_col[d]) * chi_col[d]
         end
 
-        # Precalculate Schur derivative coefficients
+        # -------------------------------------------------------
+        # Precalculate coefficients 
+        # -------------------------------------------------------
         for d in 1:D
             if d == 1
                 schur_dt_inv[1] = 1.0 / max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
@@ -266,28 +277,29 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
         end
 
         # -------------------------------------------------------
-        # Build VEF moment equation
+        # Build VEF moment equation for the diffuse field
         # -------------------------------------------------------
         fill!(vef_dl, 0.0)
         fill!(vef_d,  0.0)
         fill!(vef_du, 0.0)
         h_surf_val = 0.0
 
-        # Surface: Vacuum for irradiation
+        # Top boundary 
         begin
             dt1 = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
-            
-            H_surf = 0.0
+
+            H_surf    = 0.0
             j_sum_top = 0.0
             for a in 1:Na
-                if use_irr
-                    H_surf += atm.w_mu[a] * atm.mu[a] * J_nu[a, 1]
-                else
+                #if use_irr_f
+                #    # Vacuum: outgoing flux from diffuse field = Σ w_μ μ J_nu
+                #    H_surf += atm.w_mu[a] * atm.mu[a] * J_nu[a, 1]
+                #else
                     H_surf += atm.w_mu[a] * atm.mu[a]^2 * (J_nu[a, 2] - J_nu[a, 1]) / dt1
-                end
+                #end
                 j_sum_top += atm.w_mu[a] * J_nu[a, 1]
-            end            
-            h_surf_val = H_surf / j_sum_top
+            end
+            h_surf_val = H_surf / max(j_sum_top, 1e-30)
             vef_d[1]  = -2.0*(f_edd[1] + h_surf_val*dt1)/(dt1*dt1) - eps_col[1]
             vef_du[1] = 2.0*f_edd[2]/(dt1*dt1)
         end
@@ -303,7 +315,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             vef_du[d] = f_edd[d+1] / (dtp * dtc)
         end
 
-        # Bottom: diffusion BC, J=B → δJ = dB/dT δT
+        # Bottom: diffusion BC
         vef_d[D] = 1.0
 
         # -------------------------------------------------------
@@ -313,10 +325,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
 
         for dp in 1:D
             C_dp = (dp < D) ? eps_col[dp] * dB_col[dp] : dB_col[dp]
-            if abs(C_dp) < 1e-30
-                continue
-            end
-
+        
             invert_tridiagonal_column!(vef_sol, dp, vef_dl, vef_d, vef_du)
 
             neg_C = (dp == D) ? C_dp : -C_dp
@@ -331,17 +340,26 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                     is_re = use_RE(d, mode, atm, tau_trans)
 
                     if is_re
+                        # RE Jacobian: d(κ_abs·(J-B))/dT
                         kabs_d = chi_col[d] - sig_col[d]
                         dJ_d_dTdp = neg_C * vef_sol[d]
                         diag_dB_dT_d = (dp == d) ? dB_col[d] : 0.0
-                        schur_part[d, dp] += kabs_d * (dJ_d_dTdp - diag_dB_dT_d)
+                        term = kabs_d * (dJ_d_dTdp - diag_dB_dT_d)
+                        
+                        #diag_dchi_dT_d = (dp == d && isfinite(dchidT_col[d]) && isfinite(dchidT_col_scat[d])) ? dchidT_col[d] - dchidT_col_scat[d] : 0.0
+                        #term2 = diag_dchi_dT_d * (J_mean[d] - B_col[d])
+                        #term2 = min(abs(term2), abs(term)) * sign(term2)
+
+                        schur_part[d, dp] += term #+ term2
                     else
+                        # Flux Jacobian: d(4π·H)/dT
                         if d == 1
-                            if use_irr
-                                grad_p = h_surf_val * vef_sol[1]
-                            else
+                            #if use_irr_f
+                            #    # Vacuum top: H ∝ h·J → dH/dT = h · δJ/δT
+                            #    grad_p = h_surf_val * vef_sol[1]
+                            #else
                                 grad_p = (f_vef[2] - f_vef[1]) * schur_dt_inv[1]
-                            end
+                            #end
                             schur_part[1, dp] += neg_C_4pi * grad_p
                         elseif d == D
                             grad_m = (f_vef[D] - f_vef[D-1]) * schur_dt_inv[D]

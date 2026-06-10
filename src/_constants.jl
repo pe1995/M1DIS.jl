@@ -36,3 +36,7 @@ macro verbose_warn(level, args...)
     end
 end
 
+# helper function for nothing
+import Base.similar
+Base.similar(::Nothing) = nothing
+

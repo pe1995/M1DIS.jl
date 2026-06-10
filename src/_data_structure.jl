@@ -21,6 +21,7 @@ mutable struct Atmosphere{T <: AbstractFloat}
     B::Matrix{T}          # Planck function (Nf x D)
     dBdT::Matrix{T}       # Derivative of B (Nf x D)
     dchidT::Matrix{T}     # Derivative of opacity (Nf x D)
+    dchidT_scat::Union{Matrix{T}, Nothing} # Derivative of opacity (Nf x D)
     I_top::Vector{T}      # External Irradiation (Size: Nf)
     
     # Convection
@@ -50,7 +51,7 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
                     mu::Vector{T}, w_mu::Vector{T}, 
                     chi::Matrix{T}, chi_ref::Vector{T}, 
 					B::Matrix{T}, dBdT::Matrix{T}, dchidT::Matrix{T},
-					I_top::Union{Vector{T}, Nothing}=nothing, chi_scat::Union{Matrix{T}, Nothing}=nothing, irrad_iso::Bool=false, irrad_mu::T=1.0/2.0) where T
+					I_top::Union{Vector{T}, Nothing}=nothing, chi_scat::Union{Matrix{T}, Nothing}=nothing, dchidT_scat::Union{Matrix{T}, Nothing}=nothing, irrad_iso::Bool=false, irrad_mu::T=1.0/2.0) where T
     D = length(tau)
     Nf = size(chi, 1) 
     Na = length(mu)
@@ -67,6 +68,7 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
     
     I_top_val = isnothing(I_top) ? zeros(T, Nf) : deepcopy(I_top)
     chi_scat_val = isnothing(chi_scat) ? nothing : deepcopy(chi_scat)
+    dchidT_scat_val = isnothing(dchidT_scat) ? nothing : deepcopy(dchidT_scat)
     
     # Allocation of Internal Storage
     # Memory for convection
@@ -92,7 +94,7 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
     return Atmosphere{T}(
         T_eff, deepcopy(z), deepcopy(tau), tau_lambda, deepcopy(rho), deepcopy(Temp), deepcopy(P_gas),
         deepcopy(mu), w_mu_norm, 
-        deepcopy(chi), chi_scat_val, deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), deepcopy(dchidT), I_top_val, 
+        deepcopy(chi), chi_scat_val, deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), deepcopy(dchidT), dchidT_scat_val, I_top_val, 
         F_conv, dFconv_dT, v_conv, P_turb,
         J_bol, F_bol, F_rad, g_rad, P_rad, Q_rad, J_raw_init,
         dT, F_total, F_err_rel, irrad_iso, irrad_mu

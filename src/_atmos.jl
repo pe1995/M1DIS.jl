@@ -56,7 +56,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
     kwargs...)  
 
     @optionalTiming initialization_time begin
-        # --- EoS & Opacity Setup ---
+        # EoS & Opacity tables--
         eos = if typeof(eos) <: TSO.ExtendedEoS
             @assert !TSO.is_internal_energy(eos.eos)
             eos
@@ -90,7 +90,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
             (verbose[] >=1) && print_nice("Running with scattering treatment.", category="M1DIS", color=color_messages[])
         end
 
-        # --- Initial State ---
+        # Initial atmosphere
         τ = deepcopy(τ)
         T, ρ, P, z = if isnothing(T) 
             initial_atmosphere(τ, T_eff=T_eff, logg=logg, eos=eos)
@@ -103,22 +103,25 @@ function atmosphere(; T_eff, logg, eos, opacity,
         μ_angles, μ_weights = generate_mu_grid(4)
         Irr = isnothing(d_irradiation) ? nothing : irradiate(eos, opacity, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
 
-        # --- Pre-compute initial opacities to bootstrap the Atmosphere object ---
 		@optionalTiming prepare_opacities_time begin
-			chi, chi_ref, S, dSdT, dchidT, chi_scat = if feautrier
+			chi, chi_ref, S, dSdT, dchidT, chi_scat, dchidT_scat = if feautrier
 				c, c_ref, s_val, dsdt_val, dchidt_val = opacity.binned ? compute_opacities(eos, opacity, T, ρ) : compute_opacities_chunked(eos, opacity, T, ρ)
 				c_scat = (!isnothing(scattering_opacity)) ? compute_opacities_chunked(eos, scattering_opacity, T, ρ, opacity_only=true)[1] : nothing
-				c, c_ref, s_val, dsdt_val, dchidt_val, c_scat
+				c, c_ref, s_val, dsdt_val, dchidt_val, c_scat, similar(c_scat)
 			else
-				nothing, nothing, nothing, nothing, nothing, nothing
+				nothing, nothing, nothing, nothing, nothing, nothing, nothing
 			end
 		end
 
-		# --- Master Storage Initialization ---
+        # if we have scattering, we want to look up the opacity gradient as well
+        scattering_bin_z = similar(chi_ref)
+        scattering_bin_lam = isnothing(chi_scat) ? nothing : similar(chi_scat)
+
+		# Storage structure 
         atm = Atmosphere(
             T_eff=teff_target, z=z, tau=τ, rho=ρ, Temp=T, P_gas=P,
             mu=μ_angles, w_mu=μ_weights, 
-            chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT, dchidT=dchidT, I_top=Irr, chi_scat=chi_scat
+            chi=chi, chi_ref=chi_ref, B=S, dBdT=dSdT, dchidT=dchidT, I_top=Irr, chi_scat=chi_scat, dchidT_scat=dchidT_scat
         )
         
         (verbose[] >= 2) && print_nice("================================= M1DIS =================================", category="M1DIS", color=color_messages[])
@@ -129,8 +132,13 @@ function atmosphere(; T_eff, logg, eos, opacity,
             (verbose[] >= 2) && print_nice("Running M1DIS with unbinned opacity table. Forcing use_threads=true.", category="M1DIS", color=color_messages[])
 		end
 
+        # check irradiation
+        if any(i->i>0.0, atm.I_top)
+            (verbose[] >= 1) && print_nice("External irradiation has been turned on.", category="M1DIS", color=color_messages[])
+        end
+
         # check selected solver
-        solver = if solver in [:gustafsson, :vef, :vef_full, :approximate]
+        solver = if solver in [:gustafsson, :vef, :vef_full, :vef_mod, :approximate]
             solver
         else
             (verbose[] >= 1) && print_nice("Selected solver $(solver) not available. Switching to default solver.", category="M1DIS", color=color_messages[])
@@ -150,7 +158,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
 	flux_err_max_curr = Inf
     stabilizer_stage = 3
 
-    # MARCS-standard thresholds
+    # MARCS thresholds
     tcmxu_inv = 1.0 / damping 
     tcmxu_top_inv = 1.0 / (damping * 5.0) 
     r = []
@@ -229,6 +237,10 @@ function atmosphere(; T_eff, logg, eos, opacity,
                     end
                 end
             end
+            atm.F_conv .= 0.0
+            atm.dFconv_dT .= 0.0
+            atm.v_conv .= 0.0
+            atm.P_turb .= 0.0
             
             # Radiative Transfer
             @optionalTiming radiation_transfer_time begin
@@ -239,7 +251,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
                 end
 
                 if !isnothing(scattering_opacity)
-                    @optionalTiming compute_opacities_time compute_opacities_chunked!(atm.chi_scat, nothing, nothing, nothing, nothing, eos, scattering_opacity, atm.Temp, atm.rho)
+                    @optionalTiming compute_opacities_time compute_opacities_chunked!(atm.chi_scat, scattering_bin_z, scattering_bin_lam, scattering_bin_lam, atm.dchidT_scat, eos, scattering_opacity, atm.Temp, atm.rho)
                 end
 
                 @optionalTiming update_atmosphere_time update!(atm)
@@ -249,11 +261,13 @@ function atmosphere(; T_eff, logg, eos, opacity,
                     solve_VEF!(atm, mode=vef_mode, tau_trans=tau_trans)
                 elseif solver == :vef_full
                     solve_VEF_full!(atm, mode=vef_mode, tau_trans=tau_trans)
+                elseif solver == :vef_mod
+                    solve_VEF_mod!(atm)
                 else
                     solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
                 end
 
-                # Update flux errors inside atm (Staggered Flux sum)
+                # Update flux errors
                 atm.F_total .= atm.F_rad .+ atm.F_conv
                 atm.F_err_rel .= (atm.F_total .- F_target) ./ F_target
                 flux_err_max_curr = maximum(abs.(atm.F_err_rel))
@@ -314,7 +328,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
                 eos=eos, 
                 logg=logg
             )
-        catch
+        catch e
             @warn "M1DIS failed. Error: $e"
             break
         end
@@ -377,7 +391,7 @@ function evaluate_iteration!(result,
 	(verbose[] >= 1) && print_nice(sinf, category="M1DIS", color=color_messages[])
 
 	#converged = (dt_err_max<dt_tolerance_rel) | (flux_err_max<flux_tolerance_rel)
-	converged = (dt_err_max_abs<dt_tolerance) & (flux_err_max<flux_tolerance_rel)
+	converged = (dt_err_max_abs<dt_tolerance) | (flux_err_max<flux_tolerance_rel)
 	if converged | store
 		append!(result, [m1disBox(τ, z, T, ρ, P, F_rad, F_conv, dFconv_dT, dT, teff, logg, eos; kwargs...)])
 	end
