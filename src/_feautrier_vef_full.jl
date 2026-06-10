@@ -15,7 +15,6 @@ function solve_VEF_full!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol
     RE_res_total = zeros(T, D)
 
     n_chunks = USE_RT_THREADS[] ? max(1, Threads.nthreads() * 4) : 1
-    #n_chunks = 1
     chunk_size = cld(Nf, n_chunks)
 
     tasks = Vector{Any}(undef, 0)
@@ -58,13 +57,6 @@ function solve_VEF_full!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol
     end
 
     if include_dT
-        for d in 2:D
-            schur[d, d] += atm.dFconv_dT[d]
-            if d > 1
-                schur[d, d-1] += -(atm.Temp[d] / max(atm.Temp[d-1], 1.0)) * atm.dFconv_dT[d]
-            end
-        end
-
         RHS = zeros(T, D)
         for d in 1:D
             is_re = use_RE(d, mode, atm, tau_trans)
@@ -73,16 +65,20 @@ function solve_VEF_full!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol
                 RHS[d] = -RE_res_total[d]
             else
                 RHS[d] = F_target - atm.F_rad[d] - atm.F_conv[d]
+                
+                schur[d, d] += atm.dFconv_dT[d]
+                if d > 1
+                    schur[d, d-1] += -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
+                end
             end
         end
 
-        if abs(schur[1, 1]) < 1e-12
+        for d in 1:D
+            row_scale = maximum(abs.(schur[d, :])) + 1e-30
+            RHS[d] /= row_scale
             for j in 1:D
-                schur[1, j] = 0.0
+                schur[d, j] /= row_scale
             end
-            schur[1, 1] = 1.0
-            schur[1, 2] = -1.0
-            RHS[1] = atm.Temp[2] - atm.Temp[1] 
         end
 
         atm.dT .= schur \ RHS
@@ -139,15 +135,12 @@ function process_frequency_chunk_VEF_full(atm::Atmosphere{T}, f_start::Int, f_en
     F_ini_col = zeros(T, D)
     K_ini_col = zeros(T, D)
 
-    f_edd_history = zeros(T, D, 4)
-
     do_scattering = !isnothing(atm.chi_scat)
     max_scat_iter = !do_scattering ? 1 : 1000 
     tol = 1e-6
 
     mu_star = atm.irrad_mu
     f_redist = 0.25 
-    use_irr = atm.I_top[1] > 0.0
 
     @inbounds for f in f_start:f_end
         dchidT_col .= view(atm.dchidT, f, :)
@@ -167,9 +160,9 @@ function process_frequency_chunk_VEF_full(atm::Atmosphere{T}, f_start::Int, f_en
         J_old .= B_col
 
         # Analytic Stellar Beam Calculation 
-        if use_irr
+        use_irr_f = atm.I_top[f] > 0.0
+        if use_irr_f
             F_arriving = f_redist * π * atm.I_top[f]
-            #F_arriving = f_redist * atm.I_top[f]
             @inbounds for d in 1:D
                 attenuation = exp(-tau_lambda_col[d] / mu_star)
                 J_ini_col[d] = (F_arriving / (4.0 * π * mu_star)) * attenuation
@@ -193,78 +186,45 @@ function process_frequency_chunk_VEF_full(atm::Atmosphere{T}, f_start::Int, f_en
             dt1 = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
             
             # surface boundary factor (H/J)
-            if iter > 1
-                # Compute H/J at the top for the VEF boundary condition.
-                # Always use the flux gradient: H = d(fJ)/dτ ≈ Σ wₐ μₐ² (u₂-u₁)/Δτ
-                # This is correct for both irradiated and non-irradiated cases
-                # because the Feautrier solve is for the *diffuse* field only.
-                J_diffuse_top = 0.0
-                H_flux_top    = 0.0
-                for a in 1:Na
-                    J_diffuse_top += atm.w_mu[a] * J_nu[a, 1]
-                    #H_flux_top    += atm.w_mu[a] * atm.mu[a]^2 * (J_nu[a, 2] - J_nu[a, 1]) / dt1
-                    H_flux_top    += atm.w_mu[a] * atm.mu[a] * J_nu[a, 1]
-                end
-                h_surf_val = H_flux_top / max(J_diffuse_top, 1e-30)
+            j_sum_top = sum(atm.w_mu[a] * J_nu[a, 1] for a in 1:Na)
+            H_surf = 0.0
+            for a in 1:Na
+                H_surf += atm.w_mu[a] * atm.mu[a]^2 * (J_nu[a, 2] - J_nu[a, 1]) / dt1
             end
+            h_surf_val = H_surf / max(j_sum_top, 1e-30)
             
             vef_d[1]   = -2.0*(f_edd[1] + h_surf_val*dt1)/(dt1*dt1) - eps_col[1]
             vef_du[1]  = 2.0*f_edd[2]/(dt1*dt1)
-            vef_rhs[1] = -eps_col[1] * B_col[1] - (1.0 - eps_col[1]) * J_ini_col[1]
+            vef_rhs[1] = -eps_col[1] * B_col[1]
             
             for d in 2:D-1
-                dtm = tau_lambda_col[d]   - tau_lambda_col[d-1]
-                dtp = tau_lambda_col[d+1] - tau_lambda_col[d]
+                dtm = max(tau_lambda_col[d]   - tau_lambda_col[d-1], 1e-30)
+                dtp = max(tau_lambda_col[d+1] - tau_lambda_col[d], 1e-30)
                 dtc = 0.5*(dtm + dtp)
 
                 vef_dl[d]  = f_edd[d-1] / (dtm * dtc)
                 vef_d[d]   = -f_edd[d] * (1.0/dtp + 1.0/dtm) / dtc - eps_col[d]
                 vef_du[d]  = f_edd[d+1] / (dtp * dtc)
-                vef_rhs[d] = -eps_col[d] * B_col[d] - (1.0 - eps_col[d]) * J_ini_col[d]
+                vef_rhs[d] = -eps_col[d] * B_col[d]
             end
             
             vef_d[D]   = 1.0
             vef_rhs[D] = B_col[D]
             
-            #solve_tridiagonal_direct!(vef_sol, vef_dl, vef_d, vef_du, vef_rhs)
-            M_vef = Tridiagonal(vef_dl[2:end], vef_d, vef_du[1:end-1])
-            vef_sol .= M_vef \ vef_rhs
-
+            solve_tridiagonal_direct!(vef_sol, vef_dl, vef_d, vef_du, vef_rhs)
             J_mean .= vef_sol
-            # Accelerated Lambda Iteration (ALI) source function update.
-            # Uses L_nu (≈ diagonal of Λ operator) from the *previous* iteration's
-            # Feautrier solve to accelerate convergence in scattering-dominated layers.
-            # Formula: S_new = (ε·B + (1-ε)·(J_total - Λ·S_old)) / (1 - (1-ε)·Λ)
-            # On iteration 1, L_nu=0 everywhere, so this reduces to the standard update.
-            for d in 1:D
-                J_total_d           = J_mean[d] + J_ini_col[d]
-                scattering_fraction = 1.0 - eps_col[d]
-                ali_numerator       = eps_col[d]*B_col[d] + scattering_fraction*(J_total_d - L_nu[d]*S_col[d])
-                ali_denominator     = 1.0 - scattering_fraction*L_nu[d]
-                if abs(ali_denominator) > 1e-30
-                    S_col[d] = max(ali_numerator / ali_denominator, 0.0)
-                else
-                    S_col[d] = max(eps_col[d]*B_col[d] + scattering_fraction*J_total_d, 0.0)
-                end
-            end
+            S_col .= eps_col .* B_col .+ (1.0 .- eps_col) .* (J_mean .+ J_ini_col)
             
             fill!(L_nu, 0.0)
             for a in 1:Na
                 mu_sq  = atm.mu[a]^2
                 weight = atm.w_mu[a]
                 
-                # Free-streaming top boundary (petitRADTRANS-style).
-                # No incoming diffuse radiation from above (beam handled analytically).
-                # From I⁺(τ=0)=0: b₁ = 1+2f(1+f), c₁ = -2f², with f = μ/Δτ.
-                # Capped at f=1e10 to avoid overflow for very thin top layers.
-                mu_val             = sqrt(mu_sq)
-                mu_over_dtau_top   = min(mu_val / dt1, 1e10)
-                free_stream_diag   = 1.0 + 2.0*mu_over_dtau_top*(1.0 + mu_over_dtau_top)
-                free_stream_off    = -2.0*mu_over_dtau_top*mu_over_dtau_top
-                tri_d[1]   = free_stream_diag
-                tri_du[1]  = free_stream_off
-                tri_rhs[1] = S_col[1]
-                L_nu[1]   += weight / free_stream_diag
+                (A, B, C, src_fac, _) = feautrier_coeffs(atm, f, 1, mu_sq)
+                tri_d[1]   = B
+                tri_du[1]  = C
+                tri_rhs[1] = src_fac * S_col[1]
+                L_nu[1] += weight * (src_fac / B)
 
                 for d in 2:D-1
                     (A, B, C, src_fac, ext_fac) = feautrier_coeffs(atm, f, d, mu_sq)
@@ -281,9 +241,7 @@ function process_frequency_chunk_VEF_full(atm::Atmosphere{T}, f_start::Int, f_en
                 tri_rhs[D] = src_fac * S_col[D]
                 L_nu[D] += weight * (src_fac / B)
                 
-                #solve_tridiagonal_direct!(tri_sol, tri_dl, tri_d, tri_du, tri_rhs)
-                M_tri = Tridiagonal(tri_dl[2:end], tri_d, tri_du[1:end-1])
-                tri_sol .= M_tri \ tri_rhs
+                solve_tridiagonal_direct!(tri_sol, tri_dl, tri_d, tri_du, tri_rhs)
                 
                 for d in 1:D
                     J_nu[a, d] = tri_sol[d]
@@ -309,60 +267,6 @@ function process_frequency_chunk_VEF_full(atm::Atmosphere{T}, f_start::Int, f_en
                 max_err = max(max_err, err)
             end
             
-            # Ng Acceleration on Eddington factors
-            for d in 1:D
-                f_edd_history[d, 1] = f_edd_history[d, 2]
-                f_edd_history[d, 2] = f_edd_history[d, 3]
-                f_edd_history[d, 3] = f_edd_history[d, 4]
-                f_edd_history[d, 4] = f_edd[d]
-            end
-            
-            if (iter >= 4) && (iter % 4 == 0)
-                A11, A12, A22 = 0.0, 0.0, 0.0
-                B1, B2 = 0.0, 0.0
-                
-                for d in 1:D
-                    x0 = f_edd_history[d, 1]
-                    x1 = f_edd_history[d, 2]
-                    x2 = f_edd_history[d, 3]
-                    x3 = f_edd_history[d, 4]
-                    
-                    dx1 = x1 - x0
-                    dx2 = x2 - x1
-                    dx3 = x3 - x2
-                    
-                    d1 = dx3 - dx2
-                    d2 = dx2 - dx1
-                    
-                    w = 1.0 / max(x3, 1e-30)
-                    d1_w = d1 * w
-                    d2_w = d2 * w
-                    dx3_w = dx3 * w
-                    
-                    A11 += d1_w * d1_w
-                    A12 += d1_w * d2_w
-                    A22 += d2_w * d2_w
-                    B1  += dx3_w * d1_w
-                    B2  += dx3_w * d2_w
-                end
-                
-                det = A11 * A22 - A12 * A12
-                if abs(det) > 1e-15 * (A11 * A22 + 1e-30)
-                    a1 = (A22 * B1 - A12 * B2) / det
-                    a2 = (A11 * B2 - A12 * B1) / det
-                    
-                    for d in 1:D
-                        x1 = f_edd_history[d, 2]
-                        x2 = f_edd_history[d, 3]
-                        x3 = f_edd_history[d, 4]
-                        f_extrap = (1.0 - a1 - a2) * x3 + a1 * x2 + a2 * x1
-                        f_extrap = clamp(f_extrap, 1e-4, 1.0)
-                        f_edd[d] = f_extrap
-                        f_edd_history[d, 4] = f_extrap 
-                    end
-                end
-            end
-
             J_old .= J_mean
             
             if (max_err < tol) || (!do_scattering)
@@ -391,24 +295,19 @@ function process_frequency_chunk_VEF_full(atm::Atmosphere{T}, f_start::Int, f_en
             RE_res[d] += w_f * kabs * (J_mean[d] - B_col[d])
             P_rad_part[d] += (4π * w_f / c_light) * K_mean[d]
 
-            if use_RE(d, mode, atm, tau_trans)
-                schur_part[d, d] += w_f * dchidT_col[d] * (J_mean[d] - B_col[d])
-            end
-            
             flux_sum = 0.0
             for a in 1:Na
                 ang = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
                 dJ, dt = 0.0, 1.0
                 if d == 1
-                    # Use free-streaming relation consistent with top BC
-                    dJ = J_nu[a, 1]
-                    dt = atm.mu[a]
+                    dt = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
+                    dJ = J_nu[a, 2] - J_nu[a, 1]
                 elseif d == D
-                    dt = max(tau_lambda_col[D] - tau_lambda_col[D-1], 1e-60)
+                    dt = max(tau_lambda_col[D] - tau_lambda_col[D-1], 1e-30)
                     dJ = J_nu[a, D] - J_nu[a, D-1]
                 else
-                    dt_plus  = max(tau_lambda_col[d+1] - tau_lambda_col[d], 1e-60)
-                    dt_minus = max(tau_lambda_col[d] - tau_lambda_col[d-1], 1e-60)
+                    dt_plus  = max(tau_lambda_col[d+1] - tau_lambda_col[d], 1e-30)
+                    dt_minus = max(tau_lambda_col[d] - tau_lambda_col[d-1], 1e-30)
                     
                     w_plus  = dt_minus / (dt_plus + dt_minus)
                     w_minus = dt_plus  / (dt_plus + dt_minus)
@@ -444,9 +343,6 @@ function process_frequency_chunk_VEF_full(atm::Atmosphere{T}, f_start::Int, f_en
 
         for dp in 1:D
             C_dp = (dp < D) ? eps_col[dp] * dB_col[dp] : dB_col[dp]
-            if abs(C_dp) < 1e-30
-                continue
-            end
 
             invert_tridiagonal_column!(vef_sol, dp, vef_dl, vef_d, vef_du)
 
@@ -462,14 +358,15 @@ function process_frequency_chunk_VEF_full(atm::Atmosphere{T}, f_start::Int, f_en
                     is_re = use_RE(d, mode, atm, tau_trans)
 
                     if is_re
+                        # RE Jacobian: d(κ_abs·(J-B))/dT
                         kabs_d = chi_col[d] - sig_col[d]
                         dJ_d_dTdp = neg_C * vef_sol[d]
                         diag_dB_dT_d = (dp == d) ? dB_col[d] : 0.0
                         schur_part[d, dp] += kabs_d * (dJ_d_dTdp - diag_dB_dT_d)
                     else
+                        # Flux Jacobian: d(4π·H)/dT
                         if d == 1
-                            # Consistently use h_surf_val formula for top boundary Schur
-                            grad_p = h_surf_val * vef_sol[1]
+                            grad_p = (f_vef[2] - f_vef[1]) * schur_dt_inv[1]
                             schur_part[1, dp] += neg_C_4pi * grad_p
                         elseif d == D
                             grad_m = (f_vef[D] - f_vef[D-1]) * schur_dt_inv[D]
