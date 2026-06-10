@@ -228,14 +228,8 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                 ang = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
                 dJ, dt = 0.0, 1.0
                 if d == 1
-                    #if use_irr_f
-                    #    # Vacuum top boundary (irradiated): H_diffuse = J_diffuse / μ
-                    #    dJ = J_nu[a, 1]
-                    #    dt = atm.mu[a]
-                    #else
-                        dt = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
-                        dJ = J_nu[a, 2] - J_nu[a, 1]
-                    #end
+                    dt = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
+                    dJ = J_nu[a, 2] - J_nu[a, 1]
                 elseif d == D
                     dt = max(tau_lambda_col[D] - tau_lambda_col[D-1], 1e-30)
                     dJ = J_nu[a, D] - J_nu[a, D-1]
@@ -291,12 +285,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             H_surf    = 0.0
             j_sum_top = 0.0
             for a in 1:Na
-                #if use_irr_f
-                #    # Vacuum: outgoing flux from diffuse field = Σ w_μ μ J_nu
-                #    H_surf += atm.w_mu[a] * atm.mu[a] * J_nu[a, 1]
-                #else
-                    H_surf += atm.w_mu[a] * atm.mu[a]^2 * (J_nu[a, 2] - J_nu[a, 1]) / dt1
-                #end
+                H_surf += atm.w_mu[a] * atm.mu[a]^2 * (J_nu[a, 2] - J_nu[a, 1]) / dt1
                 j_sum_top += atm.w_mu[a] * J_nu[a, 1]
             end
             h_surf_val = H_surf / max(j_sum_top, 1e-30)
@@ -354,12 +343,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                     else
                         # Flux Jacobian: d(4π·H)/dT
                         if d == 1
-                            #if use_irr_f
-                            #    # Vacuum top: H ∝ h·J → dH/dT = h · δJ/δT
-                            #    grad_p = h_surf_val * vef_sol[1]
-                            #else
-                                grad_p = (f_vef[2] - f_vef[1]) * schur_dt_inv[1]
-                            #end
+                            grad_p = (f_vef[2] - f_vef[1]) * schur_dt_inv[1]
                             schur_part[1, dp] += neg_C_4pi * grad_p
                         elseif d == D
                             grad_m = (f_vef[D] - f_vef[D-1]) * schur_dt_inv[D]
