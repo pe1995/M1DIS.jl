@@ -25,7 +25,7 @@ Compute a M1DIS atmosphere iteratively based on the given binned opacity table, 
 - `ρ`: density (optional starting atmosphere)
 - `P`: pressure (optional starting atmosphere)
 - `z`: height (optional starting atmosphere)
-- `feautrier`: use Feutrier solver
+- `feautrier`: use Feautrier solver
 - `use_threads`: use threads
 - `dt_tolerance_rel`: relative temperature tolerance
 - `flux_tolerance_rel`: relative flux tolerance
@@ -165,7 +165,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
     r = []
 
     @optionalTiming relaxation_time for iter in 1:maxiter
-        try
+        if true
             if convection
                 # MLT
                 @optionalTiming mixing_length_time begin
@@ -331,7 +331,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
                 eos=eos, 
                 logg=logg
             )
-        catch e
+        else
             @warn "M1DIS failed. Error: $e"
             break
         end

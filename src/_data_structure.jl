@@ -68,7 +68,11 @@ function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Te
     
     I_top_val = isnothing(I_top) ? zeros(T, Nf) : deepcopy(I_top)
     chi_scat_val = isnothing(chi_scat) ? nothing : deepcopy(chi_scat)
-    dchidT_scat_val = isnothing(dchidT_scat) ? nothing : deepcopy(dchidT_scat)
+    dchidT_scat_val = if isnothing(dchidT_scat)
+        isnothing(chi_scat) ? nothing : fill!(similar(chi_scat), 0.0)
+    else
+        deepcopy(dchidT_scat)
+    end
     
     # Allocation of Internal Storage
     # Memory for convection

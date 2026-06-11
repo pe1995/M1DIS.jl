@@ -13,6 +13,10 @@ using MUST
 using TOML
 using Logging
 using ProgressMeter
+
+# Include the config loader from M1DIS.jl source
+include(joinpath(@__DIR__, "..", "src", "_config_loader.jl"))
+using .ConfigLoader
 using LaTeXStrings
 using Evolutionary  
 using Random
@@ -281,10 +285,10 @@ function resolve_eos_dir(args)
     println("================== M1DIS.jl + TSO.jl Opacity Tables ============================")
     println("================================================================================")
     @info("Searching for tables with requested composition...")
-    eos_c = TOML.parsefile(eos_config_path)
+    eos_c = ConfigLoader.load_config(eos_config_path, dirname(@__DIR__))
 
     try
-        @import_tumult eos_c["m3d_dir"]
+        @import_tumult get(eos_c, "m3d_dir", "")
     catch e
         @warn "Could not import Multi3D. Please provide a valid path via --m3d_dir."
     end
