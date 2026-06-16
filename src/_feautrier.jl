@@ -185,6 +185,12 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
 
         if nan_detected
             j_sum_new .= J_old  
+            for d in 1:D
+                j_old_val = J_old[d]
+                for a in 1:Na
+                    J_nu[a, d] = j_old_val
+                end
+            end
             break
         end
 
@@ -269,6 +275,12 @@ function solve_tridiagonal!(x::Vector{T}, dl::Vector{T}, d::Vector{T}, du::Vecto
         for i in N-1:-1:1
             x[i] = r[i] - du[i] * x[i+1]
         end
+        for i in 1:N
+            if !isfinite(x[i])
+                println("solve_tridiagonal! x[i] is non-finite! i=", i, " x[i]=", x[i])
+                x[i] = 0.0
+            end
+        end
     end
 end
 
@@ -307,6 +319,12 @@ function invert_tridiagonal_column!(x::Vector{T}, dp::Int, dl::Vector{T}, d_inv:
         for i in N-1:-1:1
             x[i] = x[i] - du[i] * x[i+1]
         end
+        # Guard against NaNs or Infs that could propagate to the Schur matrix
+        for i in 1:N
+            if !isfinite(x[i])
+                x[i] = 0.0
+            end
+        end
     end
 end
 
@@ -324,7 +342,7 @@ function get_dtau(tau, f, d)
     end
 end
 
-#=function compute_τ!(τ; z, ρκ)
+function compute_τ!(τ; z, ρκ)
     @inbounds for j in eachindex(τ)
         if j==1
             τ[1] = abs(z[2] - z[1]) * 0.5 * ρκ[j]
@@ -332,13 +350,19 @@ end
             τ[j] = τ[j-1] + abs(z[j] - z[j-1]) * 0.5 * (ρκ[j] + ρκ[j-1])
         end
     end
-end=#
-function compute_τ!(τ; z, ρκ)
+end
+#=function compute_τ!(τ; z, ρκ)
     @inbounds for j in eachindex(τ)
         if j == 1 
             if abs(ρκ[2] - ρκ[1]) / ρκ[1] > 1e-4
-                H = abs(z[2] - z[1]) / log(ρκ[2] / ρκ[1])
-                τ[1] = ρκ[1] * H
+                H_denom = log(ρκ[2] / ρκ[1])
+                if H_denom > 0.0
+                    H = abs(z[2] - z[1]) / H_denom
+                    τ[1] = ρκ[1] * H
+                else
+                    # If opacity decreases inwards, exponential assumption fails.
+                    τ[1] = abs(z[2] - z[1]) * 0.5 * ρκ[1]
+                end
             else
                 τ[1] = abs(z[2] - z[1]) * 0.5 * ρκ[1] 
             end
@@ -356,7 +380,7 @@ function compute_τ!(τ; z, ρκ)
             τ[j] = τ[j-1] + dτ
         end
     end
-end
+end=#
 
 """
     use_RE(d, mode, atm, tau_trans) → Bool

@@ -80,11 +80,19 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:bou
             end
         end
 
+        row = similar(schur[1, :])
         for d in 1:D
-            row_scale = maximum(abs.(schur[d, :])) + 1e-30
-            RHS[d] /= row_scale
-            for j in 1:D
-                schur[d, j] /= row_scale
+            row .= schur[d, :]
+            if all(isfinite, row)
+                row_scale = maximum(abs.(row)) + 1e-30
+                RHS[d] /= row_scale
+                schur[d, :] ./= row_scale
+            else
+                @warn "Schur matrix row $d has non-finite values."
+                @warn eachindex(row)[.!isfinite.(row)]
+                RHS[d] = 0.0
+                schur[d, :] .= 0.0
+                schur[d, d] = 1.0
             end
         end
 
@@ -162,7 +170,9 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
         if do_scattering
             sig_col .= view(atm.chi_scat, f, :)
             dchidT_col_scat .= view(atm.dchidT_scat, f, :)
-            eps_col .= 1.0 .- (sig_col ./ chi_col)
+            @inbounds for d in 1:D
+                eps_col[d] = chi_col[d] > 1e-30 ? 1.0 - (sig_col[d] / chi_col[d]) : 1.0
+            end
         else
             sig_col .= 0.0
             dchidT_col_scat .= 0.0
@@ -216,7 +226,9 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             end
             J_mean[d] = j_sum + J_ini_col[d]
             K_mean[d] = k_sum + K_ini_col[d]
-            f_edd[d]  = k_sum / j_sum          # diffuse-only Eddington factor
+            #f_edd_val = abs(j_sum) > 1e-30 ? k_sum / j_sum : 1.0/3.0
+            #f_edd[d]  = clamp(f_edd_val, 1e-5, 1.0)          # diffuse-only Eddington factor
+            f_edd[d]  = k_sum / j_sum
 
             J_part[d] += w_f * J_mean[d]
             kabs = chi_col[d] - sig_col[d]
@@ -230,9 +242,11 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                 if d == 1
                     dt = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
                     dJ = J_nu[a, 2] - J_nu[a, 1]
+                    dJ_dt = dJ / dt
                 elseif d == D
                     dt = max(tau_lambda_col[D] - tau_lambda_col[D-1], 1e-30)
                     dJ = J_nu[a, D] - J_nu[a, D-1]
+                    dJ_dt = dJ / dt
                 else
                     dt_plus  = max(tau_lambda_col[d+1] - tau_lambda_col[d], 1e-30)
                     dt_minus = max(tau_lambda_col[d]   - tau_lambda_col[d-1], 1e-30)
@@ -243,11 +257,16 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                     dJ_plus  = (J_nu[a, d+1] - J_nu[a, d]) / dt_plus
                     dJ_minus = (J_nu[a, d] - J_nu[a, d-1]) / dt_minus
 
-                    dJ = w_plus * dJ_plus + w_minus * dJ_minus
-                    dt = 1.0
+                    dJ_dt = w_plus * dJ_plus + w_minus * dJ_minus
                 end
-                flux_sum += ang * (dJ / dt)
+                
+                # constraint: |dJ/dτ| <= J / μ
+                #bound = J_nu[a, d] / max(atm.mu[a], 1e-5)
+                #dJ_dt = clamp(dJ_dt, -bound, bound)
+
+                flux_sum += ang * dJ_dt
             end
+
             F_part[d]     += flux_sum + F_ini_col[d]
             g_rad_part[d] += (flux_sum + F_ini_col[d]) * chi_col[d]
         end
@@ -285,10 +304,15 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             H_surf    = 0.0
             j_sum_top = 0.0
             for a in 1:Na
-                H_surf += atm.w_mu[a] * atm.mu[a]^2 * (J_nu[a, 2] - J_nu[a, 1]) / dt1
+                dJ_dt = (J_nu[a, 2] - J_nu[a, 1]) / dt1
+                #bound = J_nu[a, 1] / max(atm.mu[a], 1e-5)
+                #dJ_dt = clamp(dJ_dt, -bound, bound)
+                H_surf += atm.w_mu[a] * atm.mu[a]^2 * dJ_dt
                 j_sum_top += atm.w_mu[a] * J_nu[a, 1]
             end
+            #h_surf_val = abs(j_sum_top) > 1e-30 ? H_surf / j_sum_top : 0.0
             h_surf_val = H_surf / max(j_sum_top, 1e-30)
+            #h_surf_val = clamp(h_surf_val, -1.0, 1.0)
             vef_d[1]  = -2.0*(f_edd[1] + h_surf_val*dt1)/(dt1*dt1) - eps_col[1]
             vef_du[1] = 2.0*f_edd[2]/(dt1*dt1)
         end

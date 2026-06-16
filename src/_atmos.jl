@@ -165,7 +165,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
     r = []
 
     @optionalTiming relaxation_time for iter in 1:maxiter
-        if true
+        try
             if convection
                 # MLT
                 @optionalTiming mixing_length_time begin
@@ -331,7 +331,7 @@ function atmosphere(; T_eff, logg, eos, opacity,
                 eos=eos, 
                 logg=logg
             )
-        else
+        catch e
             @warn "M1DIS failed. Error: $e"
             break
         end
