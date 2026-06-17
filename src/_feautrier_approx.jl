@@ -339,7 +339,7 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, 
             push!(rows, d); push!(cols, d); push!(vals, diag_val)
             RHS[d] = RE_res[d]
         else
-            # --- Flux Conservation ---
+            # Flux Conservation
             F_curr = atm.F_rad[d] + atm.F_conv[d]
             RHS[d] = F_target - F_curr
             

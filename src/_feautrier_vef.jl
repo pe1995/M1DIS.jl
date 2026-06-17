@@ -61,9 +61,7 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:bou
         end
     end
 
-    # -------------------------------------------------------
     # Temperature correction 
-    # -------------------------------------------------------
     if include_dT
         RHS = zeros(T, D)
         for d in 1:D
@@ -181,9 +179,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
 
         J_old .= B_col
 
-        # -------------------------------------------------------
         # Analytic stellar beam 
-        # -------------------------------------------------------
         use_irr_f = atm.I_top[f] > 0.0
         if use_irr_f
             F_arriving = f_redist * π * atm.I_top[f]
@@ -199,9 +195,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             fill!(K_ini_col, zero(T))
         end
 
-        # -------------------------------------------------------
         # Feautrier formal solution (with scattering)
-        # -------------------------------------------------------
         lambda_formal_solution!(
             atm, f, max_scat_iter, tol, do_scattering,
             eps_col, B_col, J_old, J_ini_col, S_col,
@@ -210,9 +204,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             J_history
         )
 
-        # -------------------------------------------------------
         # Compute angle-averaged moments: J, K, H (flux)
-        # -------------------------------------------------------
         w_f = 1
         fill!(J_mean, 0.0)
         fill!(K_mean, 0.0)
@@ -271,9 +263,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             g_rad_part[d] += (flux_sum + F_ini_col[d]) * chi_col[d]
         end
 
-        # -------------------------------------------------------
         # Precalculate coefficients 
-        # -------------------------------------------------------
         for d in 1:D
             if d == 1
                 schur_dt_inv[1] = 1.0 / max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
@@ -289,9 +279,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             end
         end
 
-        # -------------------------------------------------------
         # Build VEF moment equation for the diffuse field
-        # -------------------------------------------------------
         fill!(vef_dl, 0.0)
         fill!(vef_d,  0.0)
         fill!(vef_du, 0.0)
@@ -331,9 +319,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
         # Bottom: diffusion BC
         vef_d[D] = 1.0
 
-        # -------------------------------------------------------
         # Schur complement accumulation
-        # -------------------------------------------------------
         factorize_tridiagonal!(vef_dl, vef_d, vef_du)
 
         for dp in 1:D

@@ -42,7 +42,7 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
             RHS[row] = src_fac * B + ext_fac * atm.I_top[f]
         end
 
-        # --- Flux Constraint ---
+        # Flux Constraint
         if include_dT
             row_flux = idx_T(d)
             if d == 1

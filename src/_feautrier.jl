@@ -112,9 +112,7 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
             end
         end
 
-        # --------------------------------------------------------------------
         # Ng Acceleration
-        # --------------------------------------------------------------------
         for d in 1:D
             J_history[d, 1] = J_history[d, 2]
             J_history[d, 2] = J_history[d, 3]
@@ -168,7 +166,6 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
                 end
             end
         end
-        # --------------------------------------------------------------------
         
         max_err = 0.0
         nan_detected = false
@@ -277,7 +274,6 @@ function solve_tridiagonal!(x::Vector{T}, dl::Vector{T}, d::Vector{T}, du::Vecto
         end
         for i in 1:N
             if !isfinite(x[i])
-                println("solve_tridiagonal! x[i] is non-finite! i=", i, " x[i]=", x[i])
                 x[i] = 0.0
             end
         end
@@ -351,36 +347,6 @@ function compute_τ!(τ; z, ρκ)
         end
     end
 end
-#=function compute_τ!(τ; z, ρκ)
-    @inbounds for j in eachindex(τ)
-        if j == 1 
-            if abs(ρκ[2] - ρκ[1]) / ρκ[1] > 1e-4
-                H_denom = log(ρκ[2] / ρκ[1])
-                if H_denom > 0.0
-                    H = abs(z[2] - z[1]) / H_denom
-                    τ[1] = ρκ[1] * H
-                else
-                    # If opacity decreases inwards, exponential assumption fails.
-                    τ[1] = abs(z[2] - z[1]) * 0.5 * ρκ[1]
-                end
-            else
-                τ[1] = abs(z[2] - z[1]) * 0.5 * ρκ[1] 
-            end
-        else
-            dz = abs(z[j] - z[j-1])
-            χ1 = ρκ[j-1]
-            χ2 = ρκ[j]
-            
-            if abs(χ2 - χ1) / χ1 > 1e-4
-                dτ = dz * (χ2 - χ1) / log(χ2 / χ1)
-            else
-                dτ = dz * 0.5 * (χ1 + χ2)
-            end
-            
-            τ[j] = τ[j-1] + dτ
-        end
-    end
-end=#
 
 """
     use_RE(d, mode, atm, tau_trans) → Bool

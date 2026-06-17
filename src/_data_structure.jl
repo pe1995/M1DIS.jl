@@ -47,62 +47,142 @@ mutable struct Atmosphere{T <: AbstractFloat}
     irrad_mu::T           # Direction cosine of incident radiation
 end
 
-function Atmosphere(; T_eff::T, z::Vector{T}, tau::Vector{T}, rho::Vector{T}, Temp::Vector{T}, P_gas::Vector{T},
-                    mu::Vector{T}, w_mu::Vector{T}, 
-                    chi::Matrix{T}, chi_ref::Vector{T}, 
-					B::Matrix{T}, dBdT::Matrix{T}, dchidT::Matrix{T},
-					I_top::Union{Vector{T}, Nothing}=nothing, chi_scat::Union{Matrix{T}, Nothing}=nothing, dchidT_scat::Union{Matrix{T}, Nothing}=nothing, irrad_iso::Bool=false, irrad_mu::T=1.0/2.0) where T
-    D = length(tau)
-    Nf = size(chi, 1) 
-    Na = length(mu)
-    
-    # Normalize Angle Weights
-    total_w_mu = sum(w_mu)
-    w_mu_norm = (total_w_mu > 0) ? w_mu ./ total_w_mu : deepcopy(w_mu)
+"""
+    Atmosphere(tau, Nf; T_eff, n_angles=4, mu=nothing, w_mu=nothing,
+               with_scattering=false, irrad_iso=false, irrad_mu=0.5)
 
-    # Compute tau_lambda
-    tau_lambda = zeros(T, Nf, D)
-    Threads.@threads for f in 1:Nf
-        compute_τ!(view(tau_lambda, f, :); z=z, ρκ=chi[f,:])
-    end
-    
-    I_top_val = isnothing(I_top) ? zeros(T, Nf) : deepcopy(I_top)
-    chi_scat_val = isnothing(chi_scat) ? nothing : deepcopy(chi_scat)
-    dchidT_scat_val = if isnothing(dchidT_scat)
-        isnothing(chi_scat) ? nothing : fill!(similar(chi_scat), 0.0)
+Allocate a 1D model atmosphere. All physics arrays are **zero-initialized**;
+populate them after construction and call `update!(atm)` to derive `tau_lambda`.
+
+# Positional arguments
+- `tau`  — reference optical depth grid; sets the depth dimension `D = length(tau)`
+- `Nf`   — number of frequency / opacity bins
+
+# Keyword arguments
+- `T_eff`           — effective temperature [K]
+- `n_angles`        — number of Gauss-Legendre angle points (default: 4);
+                      ignored when `mu` is supplied explicitly
+- `mu`              — custom angle cosines; overrides `n_angles`
+- `w_mu`            — custom quadrature weights (required when `mu` is given)
+- `with_scattering` — allocate `chi_scat` / `dchidT_scat` buffers (default: `false`)
+- `irrad_iso`       — isotropic irradiation flag (default: `false`)
+- `irrad_mu`        — direction cosine of incident irradiation (default: `0.5`)
+
+# Typical usage
+```julia
+atm = Atmosphere(τ_grid, Nf; T_eff=5777.0)
+
+atm.Temp .= T_initial
+atm.rho  .= ρ_initial
+atm.z    .= z_initial
+atm.P_gas .= P_initial
+compute_opacities!(atm.chi, atm.chi_ref, atm.B, atm.dBdT, atm.dchidT, eos, opa, atm.Temp, atm.rho)
+update!(atm)   # computes tau_lambda from z and chi
+```
+"""
+function Atmosphere(tau::AbstractVector, Nf::Int;
+                    T_eff::Real,
+                    n_angles::Int                       = 4,
+                    mu::Union{AbstractVector, Nothing}  = nothing,
+                    w_mu::Union{AbstractVector, Nothing} = nothing,
+                    with_scattering::Bool               = false,
+                    irrad_iso::Bool                     = false,
+                    irrad_mu::Real                      = 0.5)
+
+    FT = eltype(tau)
+    D  = length(tau)
+
+    # Angular quadrature
+    # Default: Gauss-Legendre mapped to (0, 1]; custom mu/w_mu override this.
+    _mu, _w_mu = if isnothing(mu)
+        x, w = gausslegendre(n_angles)
+        FT.(x ./ 2 .+ 0.5), FT.(w ./ 2)
     else
-        deepcopy(dchidT_scat)
+        @assert !isnothing(w_mu) "w_mu must be provided when mu is given"
+        FT.(mu), FT.(w_mu)
     end
-    
-    # Allocation of Internal Storage
-    # Memory for convection
-    F_conv         = zeros(T, D)
-    dFconv_dT      = zeros(T, D)
-    v_conv         = zeros(T, D)
-    P_turb         = zeros(T, D)
-    
-    # Memory for RT outputs
-    J_bol      = zeros(T, D)
-	F_bol      = zeros(T, D)
-	F_rad      = zeros(T, D)
-    g_rad      = zeros(T, D)
-    P_rad      = zeros(T, D)
-    Q_rad      = zeros(T, D)
-    dT         = zeros(T, D)
-    J_raw_init = nothing 
+    # Normalize weights to sum = 1
+    s = sum(_w_mu)
+    s > 0 && (_w_mu ./= s)
 
-    # Memory for convergence evaluation
-    F_total   = zeros(T, D)
-    F_err_rel = zeros(T, D)
-    
-    return Atmosphere{T}(
-        T_eff, deepcopy(z), deepcopy(tau), tau_lambda, deepcopy(rho), deepcopy(Temp), deepcopy(P_gas),
-        deepcopy(mu), w_mu_norm, 
-        deepcopy(chi), chi_scat_val, deepcopy(chi_ref), deepcopy(B), deepcopy(dBdT), deepcopy(dchidT), dchidT_scat_val, I_top_val, 
-        F_conv, dFconv_dT, v_conv, P_turb,
-        J_bol, F_bol, F_rad, g_rad, P_rad, Q_rad, J_raw_init,
-        dT, F_total, F_err_rel, irrad_iso, irrad_mu
+    # Optional scattering buffers
+    chi_scat    = with_scattering ? zeros(FT, Nf, D) : nothing
+    dchidT_scat = with_scattering ? zeros(FT, Nf, D) : nothing
+
+    return Atmosphere{FT}(
+        FT(T_eff),
+        # geometry
+        zeros(FT, D),          # z
+        copy(FT.(tau)),        # tau   (deep-copied; caller's array is untouched)
+        zeros(FT, Nf, D),      # tau_lambda  (filled by update!)
+        # thermodynamics
+        zeros(FT, D),          # rho
+        zeros(FT, D),          # Temp
+        zeros(FT, D),          # P_gas
+        # angles (deep-copied)
+        copy(_mu), copy(_w_mu),
+        # opacities & source (filled by compute_opacities!)
+        zeros(FT, Nf, D),      # chi
+        chi_scat,              # chi_scat
+        zeros(FT, D),          # chi_ref
+        zeros(FT, Nf, D),      # B
+        zeros(FT, Nf, D),      # dBdT
+        zeros(FT, Nf, D),      # dchidT
+        dchidT_scat,           # dchidT_scat
+        zeros(FT, Nf),         # I_top
+        # convection
+        zeros(FT, D),          # F_conv
+        zeros(FT, D),          # dFconv_dT
+        zeros(FT, D),          # v_conv
+        zeros(FT, D),          # P_turb
+        # RT outputs
+        zeros(FT, D),          # J_bol
+        zeros(FT, D),          # F_bol
+        zeros(FT, D),          # F_rad
+        zeros(FT, D),          # g_rad
+        zeros(FT, D),          # P_rad
+        zeros(FT, D),          # Q_rad
+        nothing,               # J_raw
+        # convergence
+        zeros(FT, D),          # dT
+        zeros(FT, D),          # F_total
+        zeros(FT, D),          # F_err_rel
+        irrad_iso,
+        FT(irrad_mu)
     )
+end
+
+"""
+    populate!(atm::Atmosphere; kwargs...) → atm
+
+Set one or more fields of `atm` in-place using keyword arguments.
+
+- For **array fields** the existing buffer is filled with `.=` (no allocation).
+- For **scalar / Nothing fields** the value is set with `setfield!`.
+
+After calling `populate!` with geometry or opacity data, call `update!(atm)`
+to recompute `tau_lambda`.
+
+# Example
+```julia
+populate!(atm;
+    Temp=T_initial, rho=ρ_initial, z=z_initial, P_gas=P_initial,
+    chi=chi_arr, chi_ref=chi_ref_arr,
+    B=S_arr, dBdT=dSdT_arr, dchidT=dchidT_arr,
+)
+update!(atm)
+```
+"""
+function populate!(atm::Atmosphere; kwargs...)
+    for (field, val) in kwargs
+        current = getfield(atm, field)
+        if current isa AbstractArray && val isa AbstractArray
+            current .= val          # fill pre-allocated buffer, no allocation
+        else
+            setfield!(atm, field, val)   # scalar, Nothing, or type change
+        end
+    end
+    return atm
 end
 
 function update!(atm::Atmosphere{T}; sync_opacities::Bool=true, sync_geometry::Bool=true, sync_angles::Bool=false) where T
