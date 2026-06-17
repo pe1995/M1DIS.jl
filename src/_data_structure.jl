@@ -176,7 +176,7 @@ update!(atm)
 function populate!(atm::Atmosphere; kwargs...)
     for (field, val) in kwargs
         current = getfield(atm, field)
-        if current isa AbstractArray && val isa AbstractArray
+        if current isa AbstractArray
             current .= val          # fill pre-allocated buffer, no allocation
         else
             setfield!(atm, field, val)   # scalar, Nothing, or type change
