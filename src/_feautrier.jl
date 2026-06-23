@@ -228,18 +228,18 @@ function feautrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
     else
         dtm_safe = max(dt_minus, 1e-30)
         dtp_safe = max(dt_plus, 1e-30)
-        mu = sqrt(mu_sq)
 
-        # Cap μ/Δτ ratios at 1e10 to prevent numerical instability
-        # for very thin layers (matching petitRADTRANS inv_del_tau_min)
-        f1_interior = min(2.0 * mu / (dtm_safe + dtp_safe), 5e9)   # 2μ/(Δτ⁻+Δτ⁺)
-        f2_interior = min(mu / dtp_safe, 1e10)                      # μ/Δτ⁺
-        f3_interior = min(mu / dtm_safe, 1e10)                      # μ/Δτ⁻
-
-        A = -f1_interior * f3_interior
-        C = -f1_interior * f2_interior
-        diag = 1.0 - A - C
-        (A, diag, C, 1.0, 0.0)
+        # Analytically rescaled Feautrier equation to avoid catastrophic
+        # cancellation when `1.0 - A - C` is evaluated for extremely small optical depths.
+        # Original: A = -2μ^2/(dtm*(dtm+dtp)), C = -2μ^2/(dtp*(dtm+dtp)), diag = 1 - A - C, src = 1.0
+        # We rescale the equation by multiplying it by R = (dtm * dtp) / (2μ^2).
+        
+        R = (dtm_safe * dtp_safe) / (2.0 * mu_sq)
+        A = -dtp_safe / (dtm_safe + dtp_safe)
+        C = -dtm_safe / (dtm_safe + dtp_safe)
+        diag = R + 1.0
+        
+        (A, diag, C, R, 0.0)
     end
 end
 

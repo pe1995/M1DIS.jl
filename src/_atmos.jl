@@ -122,8 +122,13 @@ function atmosphere(;
     results             = []
     flux_err_max_prev   = Inf
     flux_err_max_curr   = Inf
+    flux_err_prev       = similar(atm.F_total)
+    dt_limiter          = similar(atm.F_total)
     stabilizer_stage    = 3
     tcmxu_inv           = 1.0 / damping
+
+    flux_err_prev .= Inf
+    dt_limiter .= 1.0
 
     @optionalTiming relaxation_time for iter in 1:maxiter
         try
@@ -163,9 +168,8 @@ function atmosphere(;
 
             # Damping
             _apply_dT_damping!(atm, tcmxu_inv)
-            flux_err_max_prev = flux_err_max_curr
 
-            # Convergence evaluation & snapshot storage
+            # Convergence evaluation 
             converged = evaluate_iteration!(
                 results, atm, iter, maxiter, F_target, T_eff, logg, eos;
                 J=atm.J_bol, 
@@ -174,7 +178,8 @@ function atmosphere(;
                 P_rad=atm.P_rad, 
                 F_err_rel=atm.F_err_rel, 
                 Q_rad=atm.Q_rad,
-                chi_max=maximum(atm.chi, dims=1), chi_min=minimum(atm.chi, dims=1),
+                chi_max=maximum(atm.chi, dims=1), 
+                chi_min=minimum(atm.chi, dims=1),
                 kwargs...
             )
 
@@ -184,8 +189,19 @@ function atmosphere(;
             end
 
             # Temperature correction & hydrostatic equilibrium
+            #for i in eachindex(atm.dT)
+            #    if atm.F_err_rel[i] > flux_err_prev[i]
+            #        dt_limiter[i] = 0.2
+            #   else
+            #        dt_limiter[i] = 1.0
+            #    end
+
             atm.Temp .+= atm.dT
             atm.Temp  .= clamp.(atm.Temp, 10, 1e12)
+            #end
+        
+            flux_err_max_prev = flux_err_max_curr
+            flux_err_prev .= atm.F_err_rel
 
             @optionalTiming hydrostatic_time update_hydrostatic!(
                 atm.P_gas, atm.rho, atm.z, atm.Temp, atm.P_turb, atm.P_rad, atm.tau,

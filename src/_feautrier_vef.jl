@@ -150,14 +150,22 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     J_ini_col = zeros(T, D)
     F_ini_col = zeros(T, D)
     K_ini_col = zeros(T, D)
+    kabs_col  = zeros(T, D)
+
+    is_re_arr = zeros(Bool, D)
+    for d in 1:D
+        is_re_arr[d] = use_RE(d, mode, atm, tau_trans)
+    end
 
     do_scattering = !isnothing(atm.chi_scat)
     max_scat_iter = !do_scattering ? 1 : 500
+    
+    _chi_scat = do_scattering ? (atm.chi_scat::Matrix{T}) : Matrix{T}(undef, 0, 0)
+    _dchidT_scat = do_scattering ? (atm.dchidT_scat::Matrix{T}) : Matrix{T}(undef, 0, 0)
     tol = 1e-6
 
     mu_star = atm.irrad_mu
     f_redist = 0.25     # day-side redistribution factor (f = 1/4 for full redistribution)
-
     @inbounds for f in f_start:f_end
         chi_col        .= view(atm.chi, f, :)
         B_col          .= view(atm.B, f, :)
@@ -166,8 +174,8 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
         dchidT_col     .= view(atm.dchidT, f, :)
 
         if do_scattering
-            sig_col .= view(atm.chi_scat, f, :)
-            dchidT_col_scat .= view(atm.dchidT_scat, f, :)
+            sig_col .= view(_chi_scat, f, :)
+            dchidT_col_scat .= view(_dchidT_scat, f, :)
             @inbounds for d in 1:D
                 eps_col[d] = chi_col[d] > 1e-30 ? 1.0 - (sig_col[d] / chi_col[d]) : 1.0
             end
@@ -175,6 +183,10 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             sig_col .= 0.0
             dchidT_col_scat .= 0.0
             eps_col .= 1.0
+        end
+
+        for d in 1:D
+            kabs_col[d] = chi_col[d] - sig_col[d]
         end
 
         J_old .= B_col
@@ -218,13 +230,10 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             end
             J_mean[d] = j_sum + J_ini_col[d]
             K_mean[d] = k_sum + K_ini_col[d]
-            #f_edd_val = abs(j_sum) > 1e-30 ? k_sum / j_sum : 1.0/3.0
-            #f_edd[d]  = clamp(f_edd_val, 1e-5, 1.0)          # diffuse-only Eddington factor
             f_edd[d]  = k_sum / j_sum
 
             J_part[d] += w_f * J_mean[d]
-            kabs = chi_col[d] - sig_col[d]
-            RE_res[d] += w_f * kabs * (J_mean[d] - B_col[d])
+            RE_res[d] += w_f * kabs_col[d] * (J_mean[d] - B_col[d])
             P_rad_part[d] += (4π * w_f / c_light) * K_mean[d]
 
             flux_sum = 0.0
@@ -251,10 +260,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
 
                     dJ_dt = w_plus * dJ_plus + w_minus * dJ_minus
                 end
-                
-                # constraint: |dJ/dτ| <= J / μ
-                #bound = J_nu[a, d] / max(atm.mu[a], 1e-5)
-                #dJ_dt = clamp(dJ_dt, -bound, bound)
 
                 flux_sum += ang * dJ_dt
             end
@@ -293,14 +298,10 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             j_sum_top = 0.0
             for a in 1:Na
                 dJ_dt = (J_nu[a, 2] - J_nu[a, 1]) / dt1
-                #bound = J_nu[a, 1] / max(atm.mu[a], 1e-5)
-                #dJ_dt = clamp(dJ_dt, -bound, bound)
                 H_surf += atm.w_mu[a] * atm.mu[a]^2 * dJ_dt
                 j_sum_top += atm.w_mu[a] * J_nu[a, 1]
             end
-            #h_surf_val = abs(j_sum_top) > 1e-30 ? H_surf / j_sum_top : 0.0
             h_surf_val = H_surf / max(j_sum_top, 1e-30)
-            #h_surf_val = clamp(h_surf_val, -1.0, 1.0)
             vef_d[1]  = -2.0*(f_edd[1] + h_surf_val*dt1)/(dt1*dt1) - eps_col[1]
             vef_du[1] = 2.0*f_edd[2]/(dt1*dt1)
         end
@@ -336,20 +337,15 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
 
             @inbounds begin
                 for d in 1:D
-                    is_re = use_RE(d, mode, atm, tau_trans)
+                    is_re = is_re_arr[d]
 
                     if is_re
                         # RE Jacobian: d(κ_abs·(J-B))/dT
-                        kabs_d = chi_col[d] - sig_col[d]
                         dJ_d_dTdp = neg_C * vef_sol[d]
                         diag_dB_dT_d = (dp == d) ? dB_col[d] : 0.0
-                        term = kabs_d * (dJ_d_dTdp - diag_dB_dT_d)
+                        term = kabs_col[d] * (dJ_d_dTdp - diag_dB_dT_d)
                         
-                        #diag_dchi_dT_d = (dp == d && isfinite(dchidT_col[d]) && isfinite(dchidT_col_scat[d])) ? dchidT_col[d] - dchidT_col_scat[d] : 0.0
-                        #term2 = diag_dchi_dT_d * (J_mean[d] - B_col[d])
-                        #term2 = min(abs(term2), abs(term)) * sign(term2)
-
-                        schur_part[d, dp] += term #+ term2
+                        schur_part[d, dp] += term
                     else
                         # Flux Jacobian: d(4π·H)/dT
                         if d == 1
