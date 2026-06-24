@@ -11,12 +11,14 @@ const color_opacity = :light_cyan
 const color_spectrum = :light_magenta
 const color_messages = Ref{Symbol}(color_star)
 
-function print_nice(s; category="", kwargs...)
-    if category == ""
-        printstyled(s, "\n"; kwargs...)
-    else 
-        printstyled("[ $(category): "; bold=true, kwargs...)
-        printstyled(s, "\n")
+function print_nice(s; category="", verbosity=verbose[], kwargs...)
+    if verbose[] >= verbosity
+        if category == ""
+            printstyled(s, "\n"; kwargs...)
+        else 
+            printstyled("[ $(category): "; bold=true, kwargs...)
+            printstyled(s, "\n")
+        end
     end
 end
 

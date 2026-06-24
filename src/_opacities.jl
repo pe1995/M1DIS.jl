@@ -274,22 +274,44 @@ end
 # Opacity table computation with M3D
 # ============================================================================
 
-function parse_composition(comp_str::String)
-    if isempty(strip(comp_str))
-        return Dict{Symbol, Float64}()
-    end
-    elements_abundances = split(comp_str, ",", keepempty=false)
-    elements = [Symbol(first(split(a, "_", keepempty=false))) for a in elements_abundances]
-    abundances = [parse(Float64, last(split(a, "_", keepempty=false))) for a in elements_abundances]
-    return Dict{Symbol, Float64}(e=>a for (e, a) in zip(elements, abundances))
-end
-
-function generate_eos_identifier(feh::Float64, comp_dict::Dict{Symbol, Float64}, alpha::Float64, vmic::Float64)
+function generate_eos_identifier(feh::Float64, comp_dict::Dict{String, Float64}, alpha::Float64, vmic::Float64)
     id_parts = ["z_$(feh)_alpha_$(alpha)_vmic_$(vmic)"]
     for k in sort(collect(keys(comp_dict)))
         push!(id_parts, "$(k)_$(round(comp_dict[k], digits=3))")
     end
     return join(id_parts, "_")
+end
+
+"""
+    _find_existing_eos(out_dir, feh, composition, alpha, vmic, eos_id)
+
+Search for an existing EoS table directory. First tries matching via
+`table_info.toml` files (the preferred method), then falls back to the
+old name-based identifier for backwards compatibility.
+
+Returns the path to the matching directory, or `nothing` if not found.
+"""
+function _find_existing_eos(out_dir::String, feh::Float64, composition::String,
+                            alpha::Float64, vmic::Float64, eos_id::String,
+                            version::String="")
+    # 1) Preferred: search by table_info.toml metadata
+    comp_str_dict = TSO.parse_composition(composition)
+    match_dir = TSO.find_table_info(out_dir;
+        feh=feh, alpha=alpha, composition=comp_str_dict, vmic=vmic, version=version)
+    if !isnothing(match_dir)
+        return match_dir
+    end
+
+    # 2) Fallback: old name-based identifier (backwards compatibility)
+    full_eos_id = isempty(version) ? eos_id : "$(eos_id)_$(version)"
+    eos_folder = joinpath(out_dir, full_eos_id)
+    eos_files = filter(f -> startswith(f, "combined_eos_") && endswith(f, ".hdf5") && !contains(f, "eos500"), 
+                        isdir(eos_folder) ? readdir(eos_folder) : String[])
+    if !isempty(eos_files)
+        return eos_folder
+    end
+
+    return nothing
 end
 
 function get_or_compute_eos(
@@ -317,26 +339,33 @@ function get_or_compute_eos(
     lambda_file::String = "input_multi3d/flx_wavelengths_UV.vac",
     absdat_file::String = "./input_multi3d/TS_absdat.dat",
     mini::Bool = false, 
-    mmap::Bool = false
+    mmap::Bool = false,
+    version::String = "",
+    version_info::String = ""
 )
-    comp_dict = parse_composition(composition)
+    comp_dict = TSO.parse_composition(composition)
     eos_id = generate_eos_identifier(feh, comp_dict, alpha, vmic)
-    
-    eos_folder = joinpath(out_dir, eos_id)
-    target_eos_file = joinpath(eos_folder, "combined_eos_$(eos_id).hdf5")
-    
-    if isfile(target_eos_file)
-        (verbose[] >= 1) && print_nice("✅ EoS table for $eos_id already exists.", category="Opacities", color=color_opacity)
-        return eos_folder
+    existing = _find_existing_eos(out_dir, feh, composition, alpha, vmic, eos_id, version)
+    if !isnothing(existing)
+        info = TSO.TableInfo(existing)
+        if !isnothing(info)
+            print_nice("Loading EoS from $(existing) with composition $(TSO.show_composition(info))", category="Opacities", color=color_opacity, verbosity=1)
+        else
+            print_nice("Loading EoS from $(existing)", category="Opacities", color=color_opacity, verbosity=1)
+        end
+        return existing
     end
 
-    (verbose[] >= 1) && print_nice("No EoS table found for the requested chemical composition.", category="Opacities", color=color_opacity)
-    cs = join(["[$(k)/Fe]=$(v)" for (k, v) in comp_dict], ",")
-    cstring = "[Fe/H]=$(feh), [α/Fe]=$(alpha), with: $(cs)"
-    (verbose[] >= 1) && print_nice("Creating tables with composition (relative to $abund): $(cstring)", category="Opacities", color=color_opacity)
+    print_nice("No EoS table found for the requested chemical composition.", category="Opacities", color=color_opacity, verbosity=2)
+    cstring = TSO.show_composition(feh, alpha, comp_dict)
+    print_nice("⏳ Computing EoS with composition $(cstring)", category="Opacities", color=color_opacity, verbosity=1)
 
-    multi_name = "model_$(eos_id)"
-    abund_file_path = MUST.abund_abundances(; α = alpha, comp_dict..., default = abund)
+    full_eos_id = isempty(version) ? eos_id : "$(eos_id)_$(version)"
+    eos_folder = joinpath(out_dir, full_eos_id)
+
+    multi_name = "model_$(full_eos_id)"
+    comp_dict_sym = Dict{Symbol, Float64}(Symbol(k) => v for (k, v) in comp_dict)
+    abund_file_path = MUST.abund_abundances(; α = alpha, comp_dict_sym..., default = abund)
     
     model = TSO.EoSTableInput(
         MUST.@in_m3dis(modelatmosfolder); 
@@ -345,7 +374,7 @@ function get_or_compute_eos(
 
     λ_file_opt = use_lambda_file ? lambda_file : nothing
     
-    (verbose[] >= 1) && print_nice("⏳ Running Multi3D...", category="Opacities", color=color_opacity)
+    print_nice("⏳ Running Multi3D...", category="Opacities", color=color_opacity, verbosity=2)
     try
         MUST.opacityTable(
             model; 
@@ -355,9 +384,9 @@ function get_or_compute_eos(
             slurm=false, nν=nnu, FeH=feh, abund_file=abund_file_path, tmolim=tmolim, absdat_file=absdat_file,
             m3dis_kwargs=Dict(:threads=>multi_threads)
         )
-        (verbose[] >= 1) && print_nice("✅ Multi3D completed.", category="Opacities", color=color_opacity)
+        print_nice("✅ Multi3D completed.", category="Opacities", color=color_opacity, verbosity=2)
     catch e
-        (verbose[] >= 1) && print_nice("❌ Multi3D failed. $e", category="Opacities", color=color_opacity)
+        print_nice("❌ Multi3D failed. $e", category="Opacities", color=color_opacity, verbosity=1)
         error(e)
     end
 
@@ -365,20 +394,35 @@ function get_or_compute_eos(
         mkpath(eos_folder)
     end
 
-    (verbose[] >= 1) && print_nice("⏳ Loading M3D output and collecting opacities...", category="Opacities", color=color_opacity)
+    print_nice("⏳ Loading M3D output and collecting opacities...", category="Opacities", color=color_opacity, verbosity=2)
     run_m3d = MUST.M3DISRun("data/$(model)", read_atmos=false)
     eos, eos500, opa, scat, nan_mask_ross, nan_mask_500 = TSO.collect_opacity(run_m3d, compute_ross=true, mini=mini, mmap=mmap)
     
-    (verbose[] >= 2) && print_nice("⏳ Saving variables...", category="Opacities", color=color_opacity)
+    print_nice("⏳ Saving variables...", category="Opacities", color=color_opacity, verbosity=2)
     eos_mono = deepcopy(eos); eos500_mono = deepcopy(eos500)
     TSO.smoothAccumulate!(eos_mono); TSO.smoothAccumulate!(eos500_mono)
     
-    TSO.save(eos_mono, joinpath(eos_folder, "combined_eos_$(eos_id).hdf5"), nan_mask=nan_mask_ross)
-    TSO.save(eos500_mono, joinpath(eos_folder, "combined_eos500_$(eos_id).hdf5"), nan_mask=nan_mask_500)
-    TSO.save(opa, joinpath(eos_folder, "combined_opacities_$(eos_id).hdf5"))
+    TSO.save(eos_mono, joinpath(eos_folder, "combined_eos_$(full_eos_id).hdf5"), nan_mask=nan_mask_ross)
+    TSO.save(eos500_mono, joinpath(eos_folder, "combined_eos500_$(full_eos_id).hdf5"), nan_mask=nan_mask_500)
+    TSO.save(opa, joinpath(eos_folder, "combined_opacities_$(full_eos_id).hdf5"))
     if !isnothing(scat)
-        TSO.save(scat, joinpath(eos_folder, "combined_sopacities_$(eos_id).hdf5"))
+        TSO.save(scat, joinpath(eos_folder, "combined_sopacities_$(full_eos_id).hdf5"))
     end
+
+    # Save table_info.toml with the composition metadata
+    comp_str_dict = Dict{String, Float64}(string(k) => v for (k, v) in comp_dict)
+    info = TSO.TableInfo(
+        feh=feh, alpha=alpha, composition=comp_str_dict,
+        vmic=vmic, version=version,
+        abund=abund,
+        t_min=t_min, t_max=t_max, rho_min=rho_min, rho_max=rho_max,
+        lambda_min=lambda_min, lambda_max=lambda_max, n_lambda=n_lambda,
+        n_t=n_t, n_rho=n_rho, nnu=nnu, tmolim=tmolim,
+        linelist_dir=linelist_dir, use_lambda_file=use_lambda_file,
+        lambda_file=lambda_file, absdat_file=absdat_file,
+        mini=mini, mmap=mmap, version_info=version_info
+    )
+    TSO.save(info, eos_folder)
 
     # delete the multi3d files
     rm(MUST.@in_tumult("data/$(model)"), recursive=true)

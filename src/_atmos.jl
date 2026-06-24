@@ -184,7 +184,7 @@ function atmosphere(;
             )
 
             if converged
-                (verbose[] >= 1) && print_nice("Atmosphere converged.", category="M1DIS", color=color_messages[])
+                print_nice("✅ Atmosphere converged with $(round(flux_err_max_curr * 100, digits=2))% flux error.", category="Atmosphere", color=color_messages[], verbosity=1)
                 break
             end
 
@@ -253,7 +253,7 @@ function _prepare_eos_opacity(eos, opacity, scattering_opacity, use_threads)
 
     if !isnothing(scattering_opacity)
         @assert typeof(scattering_opacity) <: TSO.MiniOpacityTable "Scattering opacity must be MiniOpacityTable."
-        (verbose[] >= 1) && print_nice("Running with scattering treatment.", category="M1DIS", color=color_messages[])
+        print_nice("Running with scattering treatment.", category="Atmosphere", color=color_messages[], verbosity=2)
     end
 
     return eos, opacity, use_threads
@@ -289,45 +289,26 @@ end
 function _validate_solver(solver)
     valid = (:gustafsson, :vef, :vef_full, :vef_mod, :approximate)
     if solver ∉ valid
-        (verbose[] >= 1) && print_nice(
+        print_nice(
             "Selected solver $(solver) not available. Switching to default :vef.",
-            category="M1DIS", color=color_messages[])
+            category="Atmosphere", color=color_messages[], verbosity=1)
         return :vef
     end
     return solver
 end
 
 function _print_run_header(atm, opacity, solver, vef_mode)
-    (verbose[] >= 2) && print_nice("================================= M1DIS =================================",
-        category="M1DIS", color=color_messages[])
-    if typeof(opacity) <: TSO.MiniOpacityTable
-        (verbose[] >= 2) && print_nice(
-            "Running M1DIS with MiniOpacityTable. Source function is computed on the fly.",
-            category="M1DIS", color=color_messages[])
-    end
-    if !opacity.binned
-        (verbose[] >= 2) && print_nice(
-            "Running M1DIS with unbinned opacity table. Forcing use_threads=true.",
-            category="M1DIS", color=color_messages[])
-    end
     if any(>(0.0), atm.I_top)
-        (verbose[] >= 1) && print_nice("External irradiation has been turned on.",
-            category="M1DIS", color=color_messages[])
+        print_nice("External irradiation has been turned on.",
+            category="Atmosphere", color=color_messages[], verbosity=1)
     end
-    (verbose[] >= 1) && print_nice(
-        "Running RT solver: $(solver) with $(Base.Threads.nthreads()) threads.",
-        category="M1DIS", color=color_messages[])
-    (verbose[] >= 1) && print_nice("dT mode: $(vef_mode).", category="M1DIS", color=color_messages[])
-    (verbose[] >= 2) && print_nice("=========================================================================",
-        category="M1DIS", color=color_messages[])
-
     header = TSO.@sprintf(
         "%s | %s | %s | %s | %s | %s\n%s\n",
         "iteration", "ΔF/F (max, %)", "log(τ) of max. ΔF/F",
         "ΔT/T (max, %)", "log(τ) of max. ΔT/T", "ΔT (max, K)",
         repeat("_", 104)
     )
-    (verbose[] >= 1) && print_nice(header, category="M1DIS", color=color_messages[])
+    print_nice(header, category="Atmosphere", color=color_messages[], verbosity=2)
 end
 
 function _update_opacities!(atm, eos, opacity, scattering_opacity, scratch_z, scratch_lam)
@@ -463,7 +444,7 @@ function evaluate_iteration!(results,
         dT_rel_max   * 100, log10(atm.tau[dT_rel_idx]),
         dT_abs_max
     )
-    (verbose[] >= 1) && print_nice(sinf, category="M1DIS", color=color_messages[])
+    print_nice(sinf, category="Atmosphere", color=color_messages[], verbosity=2)
 
     converged = (dT_abs_max < dt_tolerance) || (flux_err_max < flux_tolerance_rel)
 
