@@ -16,7 +16,7 @@ const update_atmosphere_time = Ref(false)
 const solve_RT_time = Ref(false)
 const relaxation_time = Ref(false)
 
-const timers = [
+#=const timers = [
     initialization_time,
     mixing_length_time,
     radiation_transfer_time,
@@ -28,7 +28,9 @@ const timers = [
     atmosphere_preparation_time,
     prepare_opacities_time,
     allocate_feautrier_time,
-]
+]=#
+
+timers = []
 
 # ============================================================================
 # Activate/Deactivate timers
