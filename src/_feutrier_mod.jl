@@ -303,7 +303,6 @@ function process_frequency_chunk_VEF_mod(atm::Atmosphere{T}, f_start::Int, f_end
                 schur_part[D, dp] += neg_C_4pi * dfdJ_D
             end
         end
-    end
-
+        end
     return (J_part, F_part, RE_res, g_rad_part, P_rad_part, schur_part)
 end
