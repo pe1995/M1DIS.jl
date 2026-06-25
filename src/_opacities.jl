@@ -364,7 +364,8 @@ function get_or_compute_eos(
     eos_folder = joinpath(out_dir, full_eos_id)
 
     multi_name = "model_$(full_eos_id)"
-    comp_dict_sym = Dict{Symbol, Float64}(Symbol(k) => v for (k, v) in comp_dict)
+    #comp_dict_sym = Dict{Symbol, Float64}(Symbol(k) => v for (k, v) in comp_dict)
+    comp_dict_sym = Dict{Symbol, Float64}(Symbol(k)=>(lowercase(k) in ["he", "li"]) ? v + feh : v for (k,v) in comp_dict)
     abund_file_path = MUST.abund_abundances(; α = alpha, comp_dict_sym..., default = abund)
     
     model = TSO.EoSTableInput(
