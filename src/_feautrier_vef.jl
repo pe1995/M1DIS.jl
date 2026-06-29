@@ -86,8 +86,6 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:bou
                 RHS[d] /= row_scale
                 schur[d, :] ./= row_scale
             else
-                @warn "Schur matrix row $d has non-finite values."
-                @warn eachindex(row)[.!isfinite.(row)]
                 RHS[d] = 0.0
                 schur[d, :] .= 0.0
                 schur[d, d] = 1.0
@@ -216,7 +214,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             J_history
         )
 
-        # Compute angle-averaged moments: J, K, H (flux)
+        # angle-averaged moments: J, K, H (flux)
         w_f = 1
         fill!(J_mean, 0.0)
         fill!(K_mean, 0.0)
@@ -320,7 +318,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
         # Bottom: diffusion BC
         vef_d[D] = 1.0
 
-        # Schur complement accumulation
         factorize_tridiagonal!(vef_dl, vef_d, vef_du)
 
         for dp in 1:D
