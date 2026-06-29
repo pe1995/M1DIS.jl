@@ -66,54 +66,59 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
     D, Na = length(atm.tau), length(atm.mu)
 
     for iter in 1:max_scat_iter
-        S_col .= eps_col .* B_col .+ (1.0 .- eps_col) .* (J_old .+ J_ini_col)
+        @. S_col = eps_col * B_col + (1.0 - eps_col) * (J_old + J_ini_col)
         
-        fill!(L_nu, 0.0)
-        fill!(j_sum_new, 0.0)
+        fill!(L_nu, zero(T))
+        fill!(j_sum_new, zero(T))
 
         for a in 1:Na
             mu_sq  = atm.mu[a]^2
             weight = atm.w_mu[a]
             
+            # Bottom Boundary (d = 1)
             (A, B, C, src_fac, _) = feautrier_coeffs(atm, f, 1, mu_sq)
-            tri_d[1]   = B
-            tri_du[1]  = C
-            tri_rhs[1] = src_fac * S_col[1]
-            
-            L_nu[1] += weight * (src_fac / B)
+            @inbounds begin
+                tri_d[1]   = B
+                tri_du[1]  = C
+                tri_rhs[1] = src_fac * S_col[1]
+                L_nu[1]   += weight * (src_fac / B)
+            end
 
+            # Interior 
             for d in 2:D-1
                 (A, B, C, src_fac, ext_fac) = feautrier_coeffs(atm, f, d, mu_sq)
-                tri_dl[d]  = A
-                tri_d[d]   = B
-                tri_du[d]  = C
-                tri_rhs[d] = src_fac * S_col[d]
-                
-                L_nu[d] += weight * (src_fac / B)
+                @inbounds begin
+                    tri_dl[d]  = A
+                    tri_d[d]   = B
+                    tri_du[d]  = C
+                    tri_rhs[d] = src_fac * S_col[d]
+                    L_nu[d]   += weight * (src_fac / B)
+                end
             end
             
+            # Top Boundary (d = D)
             (A, B, C, src_fac, _) = feautrier_coeffs(atm, f, D, mu_sq)
-            tri_dl[D]  = A
-            tri_d[D]   = B
-            tri_rhs[D] = src_fac * S_col[D]
-            
-            L_nu[D] += weight * (src_fac / B)
+            @inbounds begin
+                tri_dl[D]  = A
+                tri_d[D]   = B
+                tri_rhs[D] = src_fac * S_col[D]
+                L_nu[D]   += weight * (src_fac / B)
+            end
             
             solve_tridiagonal!(tri_sol, tri_dl, tri_d, tri_du, tri_rhs)
-            
-            for d in 1:D
+            @inbounds for d in 1:D
                 J_nu[a, d] = tri_sol[d]
             end
         end
 
-        for d in 1:D
+        @inbounds for d in 1:D
             for a in 1:Na
                 j_sum_new[d] += atm.w_mu[a] * J_nu[a, d]
             end
         end
 
         # Ng Acceleration
-        for d in 1:D
+        @inbounds for d in 1:D
             J_history[d, 1] = J_history[d, 2]
             J_history[d, 2] = J_history[d, 3]
             J_history[d, 3] = J_history[d, 4]
@@ -121,10 +126,10 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
         end
 
         if (iter >= 4) && (iter % 4 == 0)
-            A11, A12, A22 = 0.0, 0.0, 0.0
-            B1, B2 = 0.0, 0.0
+            A11, A12, A22 = zero(T), zero(T), zero(T)
+            B1, B2 = zero(T), zero(T)
             
-            for d in 1:D
+            @inbounds for d in 1:D
                 x0 = J_history[d, 1]
                 x1 = J_history[d, 2]
                 x2 = J_history[d, 3]
@@ -135,9 +140,9 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
                 dx3 = x3 - x2
                 
                 d1 = dx3 - dx2
-                d2 = dx2 - dx1
+                d2 = dx3 - dx1 
                 
-                w = 1.0 / max(x3, 1e-30)
+                w = 1.0 / max(x3, T(1e-30))
                 d1_w = d1 * w
                 d2_w = d2 * w
                 dx3_w = dx3 * w
@@ -150,15 +155,16 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
             end
             
             det = A11 * A22 - A12 * A12
-            if abs(det) > 1e-15 * (A11 * A22 + 1e-30)
+            if abs(det) > T(1e-15) * (A11 * A22 + T(1e-30))
                 a1 = (A22 * B1 - A12 * B2) / det
                 a2 = (A11 * B2 - A12 * B1) / det
                 
-                for d in 1:D
+                @inbounds for d in 1:D
                     x1 = J_history[d, 2]
                     x2 = J_history[d, 3]
                     x3 = J_history[d, 4]
                     j_extrap = (1.0 - a1 - a2) * x3 + a1 * x2 + a2 * x1
+                    
                     if j_extrap > 0.0
                         j_sum_new[d] = j_extrap
                         J_history[d, 4] = j_extrap 
@@ -167,22 +173,22 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
             end
         end
         
-        max_err = 0.0
+        max_err = zero(T)
         nan_detected = false
         
-        for d in 1:D
+        @inbounds for d in 1:D
             if isnan(j_sum_new[d]) || isinf(j_sum_new[d])
                 nan_detected = true
                 break
             end
             
-            err = abs(j_sum_new[d] - J_old[d]) / max(j_sum_new[d], 1e-20)
+            err = abs(j_sum_new[d] - J_old[d]) / max(j_sum_new[d], T(1e-20))
             max_err = max(max_err, err)
         end
 
         if nan_detected
             j_sum_new .= J_old  
-            for d in 1:D
+            @inbounds for d in 1:D
                 j_old_val = J_old[d]
                 for a in 1:Na
                     J_nu[a, d] = j_old_val
