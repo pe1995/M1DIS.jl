@@ -130,10 +130,13 @@ function atmosphere(;
     flux_err_prev .= Inf
     dt_limiter .= 1.0
 
+
     @optionalTiming relaxation_time for iter in 1:maxiter
+        use_convection = convection #&& (iter > 5)
+
         try
             # Convection
-            if convection
+            if use_convection
                 @optionalTiming mixing_length_time begin
                     update_mixing_length!(
                         atm.F_conv, atm.v_conv, atm.P_rad, atm.P_turb, atm.dFconv_dT,
@@ -302,13 +305,14 @@ function _print_run_header(atm, opacity, solver, vef_mode)
         print_nice("External irradiation has been turned on.",
             category="Atmosphere", color=color_messages[], verbosity=1)
     end
-    header = TSO.@sprintf(
-        "%s | %s | %s | %s | %s | %s\n%s\n",
+    header_names = TSO.@sprintf(
+        "%-9s │ %-20s │ %-19s │ %-20s │ %-19s │ %-16s",
         "iteration", "ΔF/F (max, %)", "log(τ) of max. ΔF/F",
-        "ΔT/T (max, %)", "log(τ) of max. ΔT/T", "ΔT (max, K)",
-        repeat("_", 104)
+        "ΔT/T (max, %)", "log(τ) of max. ΔT/T", "ΔT (max, K)"
     )
-    print_nice(header, category="Atmosphere", color=color_messages[], verbosity=2)
+    header_line = "──────────┼──────────────────────┼─────────────────────┼──────────────────────┼─────────────────────┼─────────────────"
+    print_nice(header_names, category="Atmosphere", color=color_messages[], verbosity=2)
+    print_nice(header_line, category="Atmosphere", color=color_messages[], verbosity=2)
 end
 
 function _update_opacities!(atm, eos, opacity, scattering_opacity, scratch_z, scratch_lam)
@@ -438,7 +442,7 @@ function evaluate_iteration!(results,
     dT_abs_max      = maximum(abs.(atm.dT))
 
     sinf = TSO.@sprintf(
-        "%4d | %20.4f %% | %6.2f | %14.4f %% | %6.2f | %14.4f K",
+        "%9d │ %18.4e %% │ %19.2f │ %18.4e %% │ %19.2f │ %14.4e K",
         iter,
         flux_err_max * 100, log10(atm.tau[flux_err_idx]),
         dT_rel_max   * 100, log10(atm.tau[dT_rel_idx]),
