@@ -187,6 +187,8 @@ function atmosphere(;
             )
 
             if converged
+                header_line = "──────────┼──────────────────────┼─────────────────────┼──────────────────────┼─────────────────────┼─────────────────"
+                print_nice(header_line, category="Atmosphere", color=color_messages[], verbosity=1)
                 print_nice("✅ Atmosphere converged with $(round(flux_err_max_curr * 100, digits=2))% flux error.", category="Atmosphere", color=color_messages[], verbosity=1)
                 break
             end
@@ -311,8 +313,8 @@ function _print_run_header(atm, opacity, solver, vef_mode)
         "ΔT/T (max, %)", "log(τ) of max. ΔT/T", "ΔT (max, K)"
     )
     header_line = "──────────┼──────────────────────┼─────────────────────┼──────────────────────┼─────────────────────┼─────────────────"
-    print_nice(header_names, category="Atmosphere", color=color_messages[], verbosity=2)
-    print_nice(header_line, category="Atmosphere", color=color_messages[], verbosity=2)
+    print_nice(header_names, category="Atmosphere", color=color_messages[], verbosity=1)
+    print_nice(header_line, category="Atmosphere", color=color_messages[], verbosity=1)
 end
 
 function _update_opacities!(atm, eos, opacity, scattering_opacity, scratch_z, scratch_lam)
@@ -448,7 +450,7 @@ function evaluate_iteration!(results,
         dT_rel_max   * 100, log10(atm.tau[dT_rel_idx]),
         dT_abs_max
     )
-    print_nice(sinf, category="Atmosphere", color=color_messages[], verbosity=2)
+    print_nice(sinf, category="Atmosphere", color=color_messages[], verbosity=1)
 
     converged = (dT_abs_max < dt_tolerance) || (flux_err_max < flux_tolerance_rel)
 
