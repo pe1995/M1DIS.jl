@@ -130,6 +130,8 @@ function atmosphere(;
     flux_err_prev .= Inf
     dt_limiter .= 1.0
 
+    current_tau_trans = vef_mode == :switch ? log10(atm.tau[2]) : tau_trans
+
 
     @optionalTiming relaxation_time for iter in 1:maxiter
         use_convection = convection #&& (iter > 5)
@@ -162,19 +164,26 @@ function atmosphere(;
 
                 @optionalTiming update_atmosphere_time update!(atm)
 
-                @optionalTiming solve_RT_time _run_solver!(atm, solver, vef_mode, tau_trans, steepness)
+                @optionalTiming solve_RT_time _run_solver!(atm, solver, vef_mode, current_tau_trans, steepness)
 
                 atm.F_total   .= atm.F_rad .+ atm.F_conv
                 atm.F_err_rel .= (atm.F_total .- F_target) ./ F_target
                 flux_err_max_curr = maximum(abs.(atm.F_err_rel))
             end
 
+            if vef_mode == :switch && iter > 1
+                improvement = (flux_err_max_prev - flux_err_max_curr) / max(flux_err_max_prev, 1e-10)
+                if improvement < 0.05
+                    current_tau_trans = min(-0.5, current_tau_trans + 0.2)
+                end
+            end
+
             # Damping
-            _apply_dT_damping!(atm, tcmxu_inv)
+            _apply_dT_damping!(atm, tcmxu_inv, damping, flux_err_max_curr, flux_err_max_prev)
 
             # Convergence evaluation 
             converged = evaluate_iteration!(
-                results, atm, iter, maxiter, F_target, T_eff, logg, eos;
+                results, atm, iter, maxiter, F_target, T_eff, logg, eos, vef_mode;
                 J=atm.J_bol, 
                 g_rad=atm.g_rad, 
                 P_turb=atm.P_turb, 
@@ -346,10 +355,17 @@ function _run_solver!(atm, solver, vef_mode, tau_trans, steepness)
     end
 end
 
-function _apply_dT_damping!(atm, tcmxu_inv)
-    for i in eachindex(atm.dT)
-        atm.dT[i] = atm.dT[i] / sqrt(1.0 + (tcmxu_inv * atm.dT[i] / atm.Temp[i])^2)
+function _apply_dT_damping!(atm, tcmxu_inv, damping, flux_err_max_curr, flux_err_max_prev)
+   tcmxu_inv_loc = if flux_err_max_curr > flux_err_max_prev
+        tcmxu_inv * 5.0
+    else
+        tcmxu_inv
     end
+
+    for i in eachindex(atm.dT)
+        atm.dT[i] = atm.dT[i] / sqrt(1.0 + (tcmxu_inv_loc * atm.dT[i] / atm.Temp[i])^2)
+    end
+    #atm.dT .= clamp.(atm.dT, -damping*atm.Temp, damping*atm.Temp)
 end
 
 function _stabilize_convection!(atm, flux_err_max_prev, stabilizer_stage, solver)
@@ -427,9 +443,10 @@ end
 
 function evaluate_iteration!(results,
         atm::Atmosphere, iter::Int, maxiter::Int,
-        F_target, T_eff, logg, eos;
-        dt_tolerance::Float64     = 0.5,
-        flux_tolerance_rel::Float64 = 0.01,
+        F_target, T_eff, logg, eos, vef_mode;
+        dt_tolerance::Float64 = 0.5,
+        dt_tolerance_rel::Float64  = 0.001,
+        flux_tolerance_rel::Float64 = 0.001,
         save_every::Int           = 1,
         kwargs...)
 
@@ -452,7 +469,14 @@ function evaluate_iteration!(results,
     )
     print_nice(sinf, category="Atmosphere", color=color_messages[], verbosity=1)
 
-    converged = (dT_abs_max < dt_tolerance) || (flux_err_max < flux_tolerance_rel)
+    #converged = (dT_abs_max < dt_tolerance) || (flux_err_max < flux_tolerance_rel)
+    converged = flux_err_max < flux_tolerance_rel
+
+    converged = if vef_mode in [:switch, :RE]
+        converged && (dT_rel_max < dt_tolerance_rel)
+    else
+        converged
+    end
 
     store = (save_every > 0) && ((iter % save_every == 0) || (iter == maxiter) || converged)
     if store

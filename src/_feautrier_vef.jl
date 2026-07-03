@@ -337,12 +337,16 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                     is_re = is_re_arr[d]
 
                     if is_re
-                        # RE Jacobian: d(κ_abs·(J-B))/dT
-                        dJ_d_dTdp = neg_C * vef_sol[d]
-                        diag_dB_dT_d = (dp == d) ? dB_col[d] : 0.0
-                        term = kabs_col[d] * (dJ_d_dTdp - diag_dB_dT_d)
-                        
-                        schur_part[d, dp] += term
+                        if dp == d
+                            dJ_d_dTd = L_nu[d] * eps_col[d] * dB_col[d]
+                            term = kabs_col[d] * (dJ_d_dTd - dB_col[d])
+                            
+                            # dκ_abs/dT · (J - B) contribution
+                            #dkabs_dT_d = dchidT_col[d] - dchidT_col_scat[d]
+                            #term += dkabs_dT_d * (J_mean[d] - B_col[d])
+                            
+                            schur_part[d, dp] += term
+                        end
                     else
                         # Flux Jacobian: d(4π·H)/dT
                         if d == 1
