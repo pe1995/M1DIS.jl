@@ -2,7 +2,7 @@
 # Atmosphere from MUST.Box
 # ============================================================================
 
-function Atmosphere(b::MUST.Box, eos, opacity; scattering=nothing, T_eff=b.parameter.teff, downsample=1)
+function Atmosphere(b::MUST.Box, eos, opacity; scattering=nothing, T_eff=b.parameter.teff, downsample=1, interpolate_to_lgtau=nothing)
     b = deepcopy(b)
     MUST.flip!(b, depth=true)
     T   = MUST.profile(TSO.mean, b, :z, :T)[2][1:downsample:end]
@@ -10,6 +10,19 @@ function Atmosphere(b::MUST.Box, eos, opacity; scattering=nothing, T_eff=b.param
     z   = MUST.profile(TSO.mean, b, :z, :z)[2][1:downsample:end]
     τ   = MUST.profile(TSO.mean, b, :z, :log10τ_ross)[2][1:downsample:end] .|> exp10
     Pg  = MUST.profile(TSO.mean, b, :z, :log10Pg)[2][1:downsample:end] .|> exp10
+
+    T, ρ, z, Pg, τ = if !isnothing(interpolate_to_lgtau)
+        lgt = log10.(τ)
+        T  = MUST.linear_interpolation(lgt, T, extrapolation_bc=MUST.Line()).(interpolate_to_lgtau)
+        ρ  = MUST.linear_interpolation(lgt, log10.(ρ), extrapolation_bc=MUST.Line()).(interpolate_to_lgtau) .|> exp10
+        z  = MUST.linear_interpolation(lgt, z, extrapolation_bc=MUST.Line()).(interpolate_to_lgtau)
+        Pg = MUST.linear_interpolation(lgt, log10.(Pg), extrapolation_bc=MUST.Line()).(interpolate_to_lgtau) .|> exp10
+        τ  = interpolate_to_lgtau .|> exp10
+
+        T, ρ, z, Pg, τ
+    else
+        T, ρ, z, Pg, τ
+    end
 
     chi, chi_ref, S, dSdT, dchidT =
         opacity.binned ? compute_opacities(eos, opacity, T, ρ) :

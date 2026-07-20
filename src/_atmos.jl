@@ -71,7 +71,7 @@ function atmosphere(;
         scattering_opacity  = nothing,
         target_flux         = nothing,
         steepness           = 15.0,
-        tau_trans           = -2.0,
+        tau_trans           = -4.0,
         solver              = :vef,
         vef_mode            = :boundary,
         stabilize_convection = false,
