@@ -19,6 +19,7 @@ using PrecompileTools
         opa_mini = TSO.reload(TSO.MiniOpacityTable, opa_file)
         opa_extended = TSO.extended(TSO.reload(opa_file, mmap=true), binned=false)
 
+        M1DIS.USE_RT_THREADS[] = false
         M1DIS.verbose[] = 0
         @compile_workload begin
             println("Compiling M1DIS workload...")
@@ -61,6 +62,7 @@ using PrecompileTools
             end
         end
         M1DIS.verbose[] = 1
+        M1DIS.USE_RT_THREADS[] = true
     else
         @warn "Precompilation data not found at $eos_dir. Skipping M1DIS precompilation."
     end
