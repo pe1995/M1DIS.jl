@@ -40,3 +40,4 @@ TSO = {rev = "main", url = "https://github.com/pe1995/TSO.jl"}
 [compat]
 BoundaryValueDiffEqFIRK = "1.12.0"
 BoundaryValueDiffEqMIRK = "1.12.0"
+Dagger = "0.19.4"
