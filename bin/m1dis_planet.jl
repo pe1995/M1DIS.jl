@@ -188,6 +188,7 @@ function main()
 
         try
             @import_tumult eos_c["m3d_dir"]
+            MUST.@ingredient "compute_hop.jl"
         catch e
             @warn "Could not import Multi3D. Please provide a valid path via --m3d_dir."
         end
@@ -206,10 +207,13 @@ function main()
             vmic = args["vmic"],
             lambda_min = get(eos_c, "lambda_min", 1000.0), 
             lambda_max = get(eos_c, "lambda_max", 200000.0),
-            n_lambda = get(eos_c, "n_lambda", 100000), 
+            R = get(eos_c, "R", 20000),
+            in_air = get(eos_c, "in_air", false),
             n_t = get(eos_c, "n_t", 100), 
             n_rho = get(eos_c, "n_rho", 100),
-            nnu = get(eos_c, "nnu", 32), 
+            nchunks = get(eos_c, "nchunks", 48),
+            nprocs = get(eos_c, "nprocs", 1),
+            line_scattering = get(eos_c, "line_scattering", true),
             tmolim = get(eos_c, "tmolim", 100000.0),
             multi_threads = get(eos_c, "multi_threads", 20),
             linelist_dir = get(eos_c, "linelist_dir", "input_multi3d/master_linelists"),

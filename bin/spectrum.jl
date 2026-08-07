@@ -289,6 +289,7 @@ function main()
         error("m3d_dir not set in $(eos_config_path). Please specify the Multi3D installation path.")
     end
     MUST.@import_tumult m3d_dir
+    MUST.@ingredient "compute_hop.jl"
 
     # ==============================================================================
     # Wavelength grid
