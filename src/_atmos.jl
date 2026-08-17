@@ -532,7 +532,8 @@ end
 # Saving the M1DIS.jl result in Multi3D and Multi1D format
 # ============================================================================
 
-function save!(model_data::MUST.Box, model_name; eos500=nothing, folder="./", vmic=0.0, logg=4.5, information=nothing)
+function save!(model_data::MUST.Box, model_name; eos=nothing, eos500=nothing, folder="./", vmic=0.0, logg=4.5,
+        information=nothing, feh=nothing, alpha=nothing, composition=nothing, abund=nothing)
     base_path = abspath(folder)
     isdir(base_path) || mkpath(base_path)
 
@@ -548,20 +549,35 @@ function save!(model_data::MUST.Box, model_name; eos500=nothing, folder="./", vm
     T       = b[:T][1,1,:]
     vmic_arr = fill(vmic, length(z))
 
+    if !isnothing(eos)
+        kr, ee = TSO.sample(eos, :lnRoss, :lnEi, rho=model_data[:d], T=model_data[:T])
+        model_data.data[:kr] = reshape(exp.(kr), 1, 1, :)
+        model_data.data[:ee] = reshape(exp.(ee), 1, 1, :)
+    end
+
+    if !isnothing(eos500)
+        MUST.flip!(model_data, depth=false)
+        ne, κ500 = TSO.sample(eos500, :lnNe, :lnRoss, rho=model_data[:d], T=model_data[:T])
+        model_data.data[:Ne]   = reshape(exp.(ne),   1, 1, :)
+        model_data.data[:κ500] = reshape(exp.(κ500), 1, 1, :)
+        model_data.data[:τ500] = MUST.optical_depth(model_data, opacity=:κ500, density=:d)
+        MUST.flip!(model_data, depth=true)
+    end
+
+    pe = if haskey(b.data, :Ne)
+        b[:Ne][1,1,:] .* MUST.KBoltzmann .* T
+    else
+        zeros(eltype(T), length(T))
+    end
+
     # 1. M3D format
     f_new = joinpath(run_i, "$(model_name)_m3d.txt")
-    MUST.save_text_m3d(f_new, z, rho, T; header=model_name, vmic=vmic_arr)
+    MUST.save_text_m3d(f_new, z, rho, T; header=model_name, vmic=vmic_arr, pe=pe)
 
     # 2. M1D format
     if !isnothing(eos500)
-        MUST.flip!(model_data, depth=false)
-        model_data.data[:Ne]   = reshape(TSO.lookup(eos500, :lnNe,   log.(model_data[:d]), log.(model_data[:T])) .|> exp, 1, 1, :)
-        model_data.data[:κ500] = reshape(TSO.lookup(eos500, :lnRoss, log.(model_data[:d]), log.(model_data[:T])) .|> exp, 1, 1, :)
-        model_data.data[:τ500] = MUST.optical_depth(model_data, opacity=:κ500, density=:d)
-        MUST.flip!(model_data, depth=true)
-
-        tau500  = log10.(b[:τ500][1,1,:])
-        Ne      = b[:Ne][1,1,:]
+        tau500 = log10.(b[:τ500][1,1,:])
+        Ne     = b[:Ne][1,1,:]
 
         f_new_m1d    = joinpath(run_i, "atmos.$(model_name)")
         f_new_dscale = joinpath(run_i, "dscale.$(model_name)")
@@ -570,7 +586,14 @@ function save!(model_data::MUST.Box, model_name; eos500=nothing, folder="./", vm
         MUST.save_text_m1d_dscale(f_new_dscale, tau500; header=model_name)
     end
 
-    # 3. HDF5 format
+    # 3. MUST 1D format (z, tau_ross and tau500 scale)
+    MUST.save_must1d_all(
+        model_data, joinpath(run_i, model_name);
+        header=model_name, information=information, vmic=vmic_arr,
+        feh=feh, alpha=alpha, composition=composition, abund=abund
+    )
+
+    # 4. HDF5 format
     MUST.flip!(model_data)
     MUST.save(model_data, folder=run_i, name=model_name)
 
