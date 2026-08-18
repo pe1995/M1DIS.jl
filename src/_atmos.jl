@@ -588,7 +588,7 @@ function save!(model_data::MUST.Box, model_name; eos=nothing, eos500=nothing, fo
 
     # 3. MUST 1D format (z, tau_ross and tau500 scale)
     MUST.save_must1d_all(
-        model_data, joinpath(run_i, model_name);
+        model_data, joinpath(run_i, "averageBox_$(model_name)");
         header=model_name, information=information, vmic=vmic_arr,
         feh=feh, alpha=alpha, composition=composition, abund=abund
     )
