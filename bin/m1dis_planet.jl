@@ -368,7 +368,8 @@ function main()
         folder = out_dir, 
         vmic = args["vmic"], 
         logg = logg_planet,
-        eos500 = eos500_complete, information = information
+        eos = eos_complete, eos500 = eos500_complete, information = information,
+        feh = args["feh"], alpha = args["alpha"], composition = args["composition"]
     )
 
     # save the iterations also
@@ -384,7 +385,8 @@ function main()
             folder = joinpath(out_dir, model_name, "iterations"), 
             vmic = args["vmic"], 
             logg = logg_planet,
-            eos500 = eos500_complete
+            eos = eos_complete, eos500 = eos500_complete,
+            feh = args["feh"], alpha = args["alpha"], composition = args["composition"]
         )
     end
     
