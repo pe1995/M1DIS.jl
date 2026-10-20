@@ -121,7 +121,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
     max_scat_iter = !do_scattering ? 1 : 500
     tol = 1e-5
     mu_star = atm.irrad_mu
-    f_redist = 0.25 
+    f_redist = atm.f_redist
     
     @inbounds for f in f_start:f_end
         dchidT_col .= view(atm.dchidT, f, :)

@@ -122,7 +122,7 @@ function process_frequency_chunk_VEF_mod(atm::Atmosphere{T}, f_start::Int, f_end
     tol = 1e-5
 
     mu_star = atm.irrad_mu
-    f_redist = 0.25 
+    f_redist = atm.f_redist
 
     @inbounds for f in f_start:f_end
         chi_col .= view(atm.chi, f, :)

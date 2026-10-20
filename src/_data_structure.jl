@@ -37,7 +37,8 @@ mutable struct Atmosphere{T <: AbstractFloat}
 	g_rad::Vector{T}      # Radiative Acceleration (Size: D) [cm/s^2] 
     P_rad::Vector{T}      # Radiative Pressure (Size: D) [dyne/cm^2]
     Q_rad::Vector{T}      # Radiative Heating [erg/cm^3/s] (Size: D)
-    J_raw                 # Specific Intensity J(mu) (Nf x Na x D)
+    F_beam::Vector{T}     # Attenuated stellar beam flux, filled by update! (Size: D)
+    J_raw                # Specific Intensity J(mu) (Nf x Na x D)
     
     # Convergence Tracking
     dT::Vector{T}         # Temperature Correction (Size: D)
@@ -45,11 +46,12 @@ mutable struct Atmosphere{T <: AbstractFloat}
     F_err_rel::Vector{T}  # Relative Flux Error (Size: D)
     irrad_iso::Bool       # Isotropic irradiation
     irrad_mu::T           # Direction cosine of incident radiation
+    f_redist::T           # Irradiation redistribution factor (1/4 planet-wide, 1/2 day-side)
 end
 
 """
     Atmosphere(tau, Nf; T_eff, n_angles=4, mu=nothing, w_mu=nothing,
-               with_scattering=false, irrad_iso=false, irrad_mu=0.5)
+               with_scattering=false, irrad_iso=false, irrad_mu=0.5, f_redist=0.25)
 
 Allocate a 1D model atmosphere. All physics arrays are **zero-initialized**;
 populate them after construction and call `update!(atm)` to derive `tau_lambda`.
@@ -87,7 +89,8 @@ function Atmosphere(tau::AbstractVector, Nf::Int;
                     w_mu::Union{AbstractVector, Nothing} = nothing,
                     with_scattering::Bool               = false,
                     irrad_iso::Bool                     = false,
-                    irrad_mu::Real                      = 0.5)
+                    irrad_mu::Real                      = 0.5,
+                    f_redist::Real                      = 0.25)
 
     FT = eltype(tau)
     D  = length(tau)
@@ -142,13 +145,15 @@ function Atmosphere(tau::AbstractVector, Nf::Int;
         zeros(FT, D),          # g_rad
         zeros(FT, D),          # P_rad
         zeros(FT, D),          # Q_rad
+        zeros(FT, D),          # F_beam
         nothing,               # J_raw
         # convergence
         zeros(FT, D),          # dT
         zeros(FT, D),          # F_total
         zeros(FT, D),          # F_err_rel
         irrad_iso,
-        FT(irrad_mu)
+        FT(irrad_mu),
+        FT(f_redist)
     )
 end
 
@@ -194,6 +199,7 @@ function update!(atm::Atmosphere{T}; sync_opacities::Bool=true, sync_geometry::B
         Threads.@threads for f in 1:Nf
              compute_τ!(view(atm.tau_lambda, f, :); z=atm.z, ρκ=view(atm.chi, f, :))
         end
+        beam_flux!(atm)
     end
     
     # Re-normalize angular weights (usually only needed if angles change dynamically)
@@ -205,6 +211,19 @@ function update!(atm::Atmosphere{T}; sync_opacities::Bool=true, sync_geometry::B
     end
 
     return nothing
+end
+
+function beam_flux!(atm::Atmosphere)
+    fill!(atm.F_beam, zero(eltype(atm.F_beam)))
+    mu_star = atm.irrad_mu
+    @inbounds for f in axes(atm.chi, 1)
+        atm.I_top[f] > 0.0 || continue
+        F0 = atm.f_redist * π * atm.I_top[f]
+        for d in eachindex(atm.F_beam)
+            atm.F_beam[d] += F0 * exp(-atm.tau_lambda[f, d] / mu_star)
+        end
+    end
+    atm.F_beam
 end
 
 # ============================================================================

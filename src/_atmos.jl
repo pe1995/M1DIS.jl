@@ -65,6 +65,7 @@ function atmosphere(;
         pbeta    = 1.0,
         T_irradiation = nothing, R_irradiation = nothing,
         d_irradiation = nothing, F_irradiation = nothing,
+        f_redist = 0.25,
         T = nothing, ρ = nothing, P = nothing, z = nothing,
         feautrier           = true,
         use_threads         = false,
@@ -82,10 +83,11 @@ function atmosphere(;
     @optionalTiming initialization_time begin
         eos, opacity, use_threads = _prepare_eos_opacity(eos, opacity, scattering_opacity, use_threads)
 
-        τ, T, ρ, P, z = _setup_initial_state(τ, T_eff, logg, eos, T, ρ, P, z)
-
         F_target    = isnothing(target_flux) ? σ_SB * T_eff^4 : target_flux
         teff_target = isnothing(target_flux) ? T_eff : (target_flux / σ_SB)^0.25
+
+        τ, T, ρ, P, z = _setup_initial_state(τ, teff_target, logg, eos, T, ρ, P, z;
+                                             T_irr=T_irradiation, R_irr=R_irradiation, d_irr=d_irradiation)
 
         Irr = isnothing(d_irradiation) ? nothing : irradiate(eos, opacity, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
 
@@ -96,7 +98,7 @@ function atmosphere(;
         Nf = size(chi, 1)
 
         # Construct the atmosphere (all physics arrays zero-initialized, angles default to 4-pt GL)
-        atm = Atmosphere(τ, Nf; T_eff=teff_target, with_scattering=!isnothing(chi_scat))
+        atm = Atmosphere(τ, Nf; T_eff=teff_target, with_scattering=!isnothing(chi_scat), f_redist=f_redist)
 
         # Populate physical state from the initial atmosphere
         populate!(atm;
@@ -130,7 +132,19 @@ function atmosphere(;
     flux_err_prev .= Inf
     dt_limiter .= 1.0
 
-    current_tau_trans = vef_mode == :switch ? log10(atm.tau[2]) : tau_trans
+    has_irradiation = any(>(0.0), atm.I_top)
+
+    if has_irradiation && vef_mode != :switch
+        vef_mode = :switch
+    end
+
+    current_tau_trans = if has_irradiation
+        beam_transition_tau(atm, F_target)
+    elseif vef_mode == :switch
+        log10(atm.tau[2])
+    else
+        tau_trans
+    end
 
 
     @optionalTiming relaxation_time for iter in 1:maxiter
@@ -171,7 +185,11 @@ function atmosphere(;
                 flux_err_max_curr = maximum(abs.(atm.F_err_rel))
             end
 
-            if vef_mode == :switch && iter > 1
+            if has_irradiation
+                current_tau_trans = beam_transition_tau(atm, F_target)
+            end
+
+            if vef_mode == :switch && iter > 1 && !has_irradiation
                 improvement = (flux_err_max_prev - flux_err_max_curr) / max(flux_err_max_prev, 1e-10)
                 if improvement < 0.05
                     current_tau_trans = min(-0.5, current_tau_trans + 0.2)
@@ -184,6 +202,7 @@ function atmosphere(;
             # Convergence evaluation 
             converged = evaluate_iteration!(
                 results, atm, iter, maxiter, F_target, T_eff, logg, eos, vef_mode;
+                current_tau_trans=current_tau_trans,
                 J=atm.J_bol, 
                 g_rad=atm.g_rad, 
                 P_turb=atm.P_turb, 
@@ -273,10 +292,10 @@ function _prepare_eos_opacity(eos, opacity, scattering_opacity, use_threads)
     return eos, opacity, use_threads
 end
 
-function _setup_initial_state(τ, T_eff, logg, eos, T, ρ, P, z)
+function _setup_initial_state(τ, T_eff, logg, eos, T, ρ, P, z; T_irr=nothing, R_irr=nothing, d_irr=nothing)
     τ = deepcopy(τ)
     if isnothing(T)
-        T, ρ, P, z = initial_atmosphere(τ, T_eff=T_eff, logg=logg, eos=eos)
+        T, ρ, P, z = initial_atmosphere(τ, T_eff=T_eff, logg=logg, eos=eos, T_irr=T_irr, R_irr=R_irr, d_irr=d_irr)
     else
         T, ρ, P, z = deepcopy(T), deepcopy(ρ), deepcopy(P), deepcopy(z)
     end
@@ -353,6 +372,20 @@ function _run_solver!(atm, solver, vef_mode, tau_trans, steepness)
     else  # :approximate
         solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
     end
+    return nothing
+end
+
+function beam_transition_tau(atm, F_target; beam_tol=0.01, tau_max=2.0)
+    D = length(atm.tau)
+    level = beam_tol * F_target
+    idx = D - 1
+    for d in 1:D-1
+        if atm.F_beam[d] < level
+            idx = d
+            break
+        end
+    end
+    min(log10(atm.tau[idx]), tau_max)
 end
 
 function _apply_dT_damping!(atm, tcmxu_inv, damping, flux_err_max_curr, flux_err_max_prev)
@@ -418,9 +451,21 @@ end
 # Initial Atmosphere
 # ============================================================================
 
-function initial_atmosphere(τ_grid; T_eff, logg, eos)
+function initial_atmosphere(τ_grid; T_eff, logg, eos, T_irr=nothing, R_irr=nothing, d_irr=nothing)
     # Gray atmosphere (Eddington approximation)
     T_initial = T_eff .* (0.75 .* (τ_grid .+ 2/3)) .^ 0.25
+
+    if !isnothing(T_irr) && !isnothing(R_irr) && !isnothing(d_irr) && (d_irr > 0.0) && (T_irr > 0.0)
+        # Guillot (2010) irradiated planet temperature profile
+        T_star_irr = T_irr * sqrt(R_irr / (2.0 * d_irr))
+        mu_star = 0.5
+        gamma = 0.08  # Optical-to-thermal opacity ratio for non-inverted Hot Jupiters (Guillot 2010)
+        sqrt3 = sqrt(3.0)
+
+        term_irr = @. (2.0 / 3.0) + (1.0 / (gamma * sqrt3)) + ((gamma / sqrt3) - (1.0 / (gamma * sqrt3))) * exp(-gamma * τ_grid * sqrt3)
+        T4 = @. (0.75 * T_eff^4 * (τ_grid + 2.0 / 3.0)) + (0.75 * T_star_irr^4 * mu_star * max(term_irr, 0.0))
+        T_initial .= max.(T4, 1.0) .^ 0.25
+    end
 
     ρ_initial = similar(T_initial)
     P_initial = similar(T_initial)
@@ -444,14 +489,16 @@ end
 function evaluate_iteration!(results,
         atm::Atmosphere, iter::Int, maxiter::Int,
         F_target, T_eff, logg, eos, vef_mode;
+        current_tau_trans::Float64 = 0.0,
         dt_tolerance::Float64 = 0.5,
         dt_tolerance_rel::Float64  = 0.001,
         flux_tolerance_rel::Float64 = 0.001,
+        irradiated_flux_tolerance_rel::Float64 = 0.01,
         save_every::Int           = 1,
         kwargs...)
 
-    F_total     = atm.F_rad .+ atm.F_conv
-    flux_err    = abs.(F_total .- F_target) ./ F_target
+    has_irr     = any(>(0.0), atm.I_top)
+    flux_err    = abs.(atm.F_total .- F_target) ./ F_target
     dT_rel      = abs.(atm.dT ./ atm.Temp)
 
     flux_err_max    = maximum(flux_err)
@@ -470,9 +517,9 @@ function evaluate_iteration!(results,
     print_nice(sinf, category="Atmosphere", color=color_messages[], verbosity=1)
 
     #converged = (dT_abs_max < dt_tolerance) || (flux_err_max < flux_tolerance_rel)
-    converged = flux_err_max < flux_tolerance_rel
+    converged = flux_err_max < (has_irr ? irradiated_flux_tolerance_rel : flux_tolerance_rel)
 
-    converged = if vef_mode in [:switch, :RE]
+    converged = if has_irr || vef_mode in [:switch, :RE]
         converged && (dT_rel_max < dt_tolerance_rel)
     else
         converged

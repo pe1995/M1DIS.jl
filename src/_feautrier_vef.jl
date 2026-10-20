@@ -8,6 +8,7 @@
 # ==============================================================================
 
 function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:boundary, tau_trans::Float64=-2.0) where T
+    irradiated = any(>(0.0), atm.I_top)
     D = length(atm.tau)
     Nf = size(atm.chi, 1)
     sigma_SB = 5.670374419e-5
@@ -30,9 +31,9 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:bou
         f_end   = min(i*chunk_size, Nf)
         if f_start <= f_end
             if USE_RT_THREADS[]
-                t = Dagger.@spawn process_frequency_chunk_VEF(atm, f_start, f_end, mode, tau_trans)
+                t = Dagger.@spawn process_frequency_chunk_VEF(atm, f_start, f_end, mode, tau_trans, irradiated)
             else
-                t = process_frequency_chunk_VEF(atm, f_start, f_end, mode, tau_trans)
+                t = process_frequency_chunk_VEF(atm, f_start, f_end, mode, tau_trans, irradiated)
             end
             push!(tasks, t)
         end
@@ -52,6 +53,16 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:bou
         atm.Q_rad .+= 4π .* RE_r
         RE_res_total .+= RE_r
         schur .+= schur_p
+    end
+
+    # F from dF/dz = Q_rad, anchored at the bottom
+    @inbounds if irradiated
+        F_anchor = atm.F_rad[D]
+        atm.F_rad[D] = F_anchor
+        for d in D-1:-1:1
+            dz = atm.z[d] - atm.z[d+1]
+            atm.F_rad[d] = atm.F_rad[d+1] + 0.5 * (atm.Q_rad[d] + atm.Q_rad[d+1]) * dz
+        end
     end
 
     c_light = 2.99792458e10
@@ -96,7 +107,7 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:bou
     end
 end
 
-function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::Int, mode::Symbol, tau_trans::Float64) where T
+function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::Int, mode::Symbol, tau_trans::Float64, irradiated::Bool) where T
     D, Na = length(atm.tau), length(atm.mu)
     c_light = 2.99792458e10
 
@@ -128,6 +139,9 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     j_sum_new = zeros(T, D)
     J_history = zeros(T, D, 4)
     L_nu      = zeros(T, D)
+    ali_g     = zeros(T, D)
+    ali_piv   = zeros(T, D)
+    ali_src   = zeros(T, D)
 
     J_mean  = zeros(T, D)
     K_mean  = zeros(T, D)
@@ -149,6 +163,9 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     F_ini_col = zeros(T, D)
     K_ini_col = zeros(T, D)
     kabs_col  = zeros(T, D)
+    J_ini_eff = zeros(T, D)
+
+    mu2_mean = sum(atm.w_mu[a] * atm.mu[a]^2 for a in 1:Na)
 
     is_re_arr = zeros(Bool, D)
     for d in 1:D
@@ -163,7 +180,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     tol = 1e-6
 
     mu_star = atm.irrad_mu
-    f_redist = 0.25     # day-side redistribution factor (f = 1/4 for full redistribution)
+    f_redist = atm.f_redist
     @inbounds for f in f_start:f_end
         chi_col        .= view(atm.chi, f, :)
         B_col          .= view(atm.B, f, :)
@@ -175,19 +192,24 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             sig_col .= view(_chi_scat, f, :)
             dchidT_col_scat .= view(_dchidT_scat, f, :)
             @inbounds for d in 1:D
-                eps_col[d] = chi_col[d] > 1e-30 ? 1.0 - (sig_col[d] / chi_col[d]) : 1.0
+                eps_col[d] = if chi_col[d] > 1e-30
+                    clamp(1.0 - sig_col[d] / chi_col[d], irradiated ? EPS_FLOOR : 0.0, 1.0)
+                else
+                    1.0
+                end
+                kabs_col[d] = eps_col[d] * chi_col[d]
+                sig_col[d] = chi_col[d] - kabs_col[d]
             end
         else
             sig_col .= 0.0
             dchidT_col_scat .= 0.0
             eps_col .= 1.0
+            @inbounds for d in 1:D
+                kabs_col[d] = chi_col[d]
+            end
         end
 
-        for d in 1:D
-            kabs_col[d] = chi_col[d] - sig_col[d]
-        end
-
-        J_old .= B_col
+        irradiated ? fill!(J_old, zero(T)) : (J_old .= B_col)
 
         # Analytic stellar beam 
         use_irr_f = atm.I_top[f] > 0.0
@@ -198,9 +220,15 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                 J_ini_col[d] = (F_arriving / (4.0 * π * mu_star)) * attenuation
                 F_ini_col[d] = -F_arriving * attenuation
                 K_ini_col[d] = J_ini_col[d] * mu_star^2
+
+                tm_i = d == 1 ? zero(T) : 0.5 * (tau_lambda_col[d] + tau_lambda_col[d-1])
+                tp_i = d == D ? tau_lambda_col[D] : 0.5 * (tau_lambda_col[d] + tau_lambda_col[d+1])
+                dtc_i = max(tp_i - tm_i, 1e-30)
+                J_ini_eff[d] = F_arriving * (exp(-tm_i / mu_star) - exp(-tp_i / mu_star)) / (4.0 * π * dtc_i)
             end
         else
             fill!(J_ini_col, zero(T))
+            fill!(J_ini_eff, zero(T))
             fill!(F_ini_col, zero(T))
             fill!(K_ini_col, zero(T))
         end
@@ -211,7 +239,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             eps_col, B_col, J_old, J_ini_col, S_col,
             J_nu, j_sum_new, L_nu,
             tri_dl, tri_d, tri_du, tri_rhs, tri_sol,
-            J_history
+            J_history, ali_g, ali_piv, ali_src, irradiated
         )
 
         # angle-averaged moments: J, K, H (flux)
@@ -226,12 +254,15 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                 j_sum += atm.w_mu[a] * J_nu[a, d]
                 k_sum += atm.w_mu[a] * atm.mu[a]^2 * J_nu[a, d]
             end
-            J_mean[d] = j_sum + J_ini_col[d]
-            K_mean[d] = k_sum + K_ini_col[d]
-            f_edd[d]  = k_sum / j_sum
+            j_diff = irradiated ? B_col[d] + j_sum : j_sum
+            k_diff = irradiated ? mu2_mean * B_col[d] + k_sum : k_sum
+
+            J_mean[d] = j_diff + J_ini_col[d]
+            K_mean[d] = k_diff + K_ini_col[d]
+            f_edd[d]  = (j_diff > 1e-30) ? clamp(k_diff / j_diff, 1e-5, 1.0) : 1.0 / 3.0
 
             J_part[d] += w_f * J_mean[d]
-            RE_res[d] += w_f * kabs_col[d] * (J_mean[d] - B_col[d])
+            RE_res[d] += w_f * kabs_col[d] * ((irradiated ? j_sum : j_sum - B_col[d]) + J_ini_eff[d])
             P_rad_part[d] += (4π * w_f / c_light) * K_mean[d]
 
             flux_sum = 0.0
@@ -240,11 +271,11 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                 dJ, dt = 0.0, 1.0
                 if d == 1
                     dt = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
-                    dJ = J_nu[a, 2] - J_nu[a, 1]
+                    dJ = (irradiated ? B_col[2] - B_col[1] : 0.0) + (J_nu[a, 2] - J_nu[a, 1])
                     dJ_dt = dJ / dt
                 elseif d == D
                     dt = max(tau_lambda_col[D] - tau_lambda_col[D-1], 1e-30)
-                    dJ = J_nu[a, D] - J_nu[a, D-1]
+                    dJ = (irradiated ? B_col[D] - B_col[D-1] : 0.0) + (J_nu[a, D] - J_nu[a, D-1])
                     dJ_dt = dJ / dt
                 else
                     dt_plus  = max(tau_lambda_col[d+1] - tau_lambda_col[d], 1e-30)
@@ -253,8 +284,8 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                     w_plus  = dt_minus / (dt_plus + dt_minus)
                     w_minus = dt_plus  / (dt_plus + dt_minus)
 
-                    dJ_plus  = (J_nu[a, d+1] - J_nu[a, d]) / dt_plus
-                    dJ_minus = (J_nu[a, d] - J_nu[a, d-1]) / dt_minus
+                    dJ_plus  = ((irradiated ? B_col[d+1] - B_col[d] : 0.0) + (J_nu[a, d+1] - J_nu[a, d])) / dt_plus
+                    dJ_minus = ((irradiated ? B_col[d] - B_col[d-1] : 0.0) + (J_nu[a, d] - J_nu[a, d-1])) / dt_minus
 
                     dJ_dt = w_plus * dJ_plus + w_minus * dJ_minus
                 end
@@ -295,11 +326,11 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             H_surf    = 0.0
             j_sum_top = 0.0
             for a in 1:Na
-                dJ_dt = (J_nu[a, 2] - J_nu[a, 1]) / dt1
+                dJ_dt = ((irradiated ? B_col[2] - B_col[1] : 0.0) + (J_nu[a, 2] - J_nu[a, 1])) / dt1
                 H_surf += atm.w_mu[a] * atm.mu[a]^2 * dJ_dt
-                j_sum_top += atm.w_mu[a] * J_nu[a, 1]
+                j_sum_top += atm.w_mu[a] * ((irradiated ? B_col[1] : 0.0) + J_nu[a, 1])
             end
-            h_surf_val = H_surf / max(j_sum_top, 1e-30)
+            h_surf_val = (j_sum_top > 1e-30) ? clamp(H_surf / j_sum_top, -1.0, 1.0) : 0.0
             vef_d[1]  = -2.0*(f_edd[1] + h_surf_val*dt1)/(dt1*dt1) - eps_col[1]
             vef_du[1] = 2.0*f_edd[2]/(dt1*dt1)
         end
@@ -337,16 +368,13 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                     is_re = is_re_arr[d]
 
                     if is_re
-                        if dp == d
-                            dJ_d_dTd = L_nu[d] * eps_col[d] * dB_col[d]
-                            term = kabs_col[d] * (dJ_d_dTd - dB_col[d])
-                            
-                            # dκ_abs/dT · (J - B) contribution
-                            #dkabs_dT_d = dchidT_col[d] - dchidT_col_scat[d]
-                            #term += dkabs_dT_d * (J_mean[d] - B_col[d])
-                            
-                            schur_part[d, dp] += term
-                        end
+                            #if irradiated
+                                dJ_d_dTdp = neg_C * vef_sol[d]
+                                diag_dB_dT_d = (dp == d) ? dB_col[d] : 0.0
+                                schur_part[d, dp] += kabs_col[d] * (dJ_d_dTdp - diag_dB_dT_d)
+                            #elseif dp == d
+                            #    schur_part[d, dp] += kabs_col[d] * (L_nu[d] * eps_col[d] * dB_col[d] - dB_col[d])
+                            #end
                     else
                         # Flux Jacobian: d(4π·H)/dT
                         if d == 1

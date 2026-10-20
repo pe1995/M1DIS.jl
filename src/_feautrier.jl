@@ -15,6 +15,7 @@
 # ==============================================================================
 
 const USE_RT_THREADS = Ref(true)
+const EPS_FLOOR = 1e-6
 
 struct Packer{T}
     Nf::Int
@@ -62,26 +63,32 @@ end
 function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int, tol::Float64, do_scattering::Bool,
                                  eps_col::Vector{T}, B_col::Vector{T}, J_old::Vector{T}, J_ini_col::Vector{T}, S_col::Vector{T},
                                  J_nu::Matrix{T}, j_sum_new::Vector{T}, L_nu::Vector{T},
-                                 tri_dl::Vector{T}, tri_d::Vector{T}, tri_du::Vector{T}, tri_rhs::Vector{T}, tri_sol::Vector{T}, J_history::Matrix{T}) where T
+                                 tri_dl::Vector{T}, tri_d::Vector{T}, tri_du::Vector{T}, tri_rhs::Vector{T}, tri_sol::Vector{T}, J_history::Matrix{T},
+                                 ali_g::Vector{T}, ali_piv::Vector{T}, ali_src::Vector{T},
+                                 irradiated::Bool) where T
     D, Na = length(atm.tau), length(atm.mu)
 
+    iters_used = 0
+    last_err = zero(T)
     for iter in 1:max_scat_iter
-        @. S_col = eps_col * B_col + (1.0 - eps_col) * (J_old + J_ini_col)
-        
-        fill!(L_nu, zero(T))
+        iters_used = iter
+        iter == 1 && fill!(L_nu, zero(T))
         fill!(j_sum_new, zero(T))
 
         for a in 1:Na
             mu_sq  = atm.mu[a]^2
             weight = atm.w_mu[a]
-            
-            # Bottom Boundary (d = 1)
-            (A, B, C, src_fac, _) = feautrier_coeffs(atm, f, 1, mu_sq)
+
+            # Top boundary (d = 1)
+            (A, B, C, src_fac, ext_fac) = feautrier_coeffs(atm, f, 1, mu_sq)
             @inbounds begin
                 tri_d[1]   = B
                 tri_du[1]  = C
-                tri_rhs[1] = src_fac * S_col[1]
-                L_nu[1]   += weight * (src_fac / B)
+                tri_rhs[1] = irradiated ?
+                    (src_fac * (1.0 - eps_col[1]) * (J_old[1] + J_ini_col[1]) -
+                     ext_fac * B_col[1] - C * (B_col[2] - B_col[1])) :
+                    src_fac * (eps_col[1]*B_col[1] + (1.0-eps_col[1])*(J_old[1]+J_ini_col[1]))
+                ali_src[1] = src_fac
             end
 
             # Interior 
@@ -91,18 +98,30 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
                     tri_dl[d]  = A
                     tri_d[d]   = B
                     tri_du[d]  = C
-                    tri_rhs[d] = src_fac * S_col[d]
-                    L_nu[d]   += weight * (src_fac / B)
+                    tri_rhs[d] = irradiated ?
+                        (src_fac * (1.0 - eps_col[d]) * (J_old[d] + J_ini_col[d]) -
+                         A * (B_col[d-1] - B_col[d]) - C * (B_col[d+1] - B_col[d])) :
+                        src_fac * (eps_col[d]*B_col[d] + (1.0-eps_col[d])*(J_old[d]+J_ini_col[d]))
+                    ali_src[d] = src_fac
                 end
             end
             
-            # Top Boundary (d = D)
+            # Bottom boundary (d = D)
             (A, B, C, src_fac, _) = feautrier_coeffs(atm, f, D, mu_sq)
             @inbounds begin
                 tri_dl[D]  = A
                 tri_d[D]   = B
-                tri_rhs[D] = src_fac * S_col[D]
-                L_nu[D]   += weight * (src_fac / B)
+                tri_rhs[D] = irradiated ?
+                    src_fac * (1.0 - eps_col[D]) * (J_old[D] + J_ini_col[D]) :
+                    src_fac * (eps_col[D]*B_col[D] + (1.0-eps_col[D])*(J_old[D]+J_ini_col[D]))
+                ali_src[D] = src_fac
+            end
+
+            if iter == 1
+                tridiagonal_inverse_diagonal!(ali_g, ali_piv, tri_dl, tri_d, tri_du)
+                @inbounds for d in 1:D
+                    L_nu[d] += weight * ali_g[d] * ali_src[d]
+                end
             end
             
             solve_tridiagonal!(tri_sol, tri_dl, tri_d, tri_du, tri_rhs)
@@ -114,6 +133,16 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
         @inbounds for d in 1:D
             for a in 1:Na
                 j_sum_new[d] += atm.w_mu[a] * J_nu[a, d]
+            end
+        end
+
+        # Accelerated Λ-iteration
+        if do_scattering && irradiated
+            @inbounds for d in 1:D
+                a_ali = L_nu[d] * (1.0 - eps_col[d])
+                denom = max(1.0 - a_ali, 1e-4)
+                j_acc = (j_sum_new[d] - a_ali * J_old[d]) / denom
+                isfinite(j_acc) && (j_sum_new[d] = j_acc)
             end
         end
 
@@ -142,7 +171,7 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
                 d1 = dx3 - dx2
                 d2 = dx3 - dx1 
                 
-                w = 1.0 / max(x3, T(1e-30))
+                w = 1.0 / max(abs(x3), T(1e-30))
                 d1_w = d1 * w
                 d2_w = d2 * w
                 dx3_w = dx3 * w
@@ -165,9 +194,9 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
                     x3 = J_history[d, 4]
                     j_extrap = (1.0 - a1 - a2) * x3 + a1 * x2 + a2 * x1
                     
-                    if j_extrap > 0.0
+                    if isfinite(j_extrap)
                         j_sum_new[d] = j_extrap
-                        J_history[d, 4] = j_extrap 
+                        J_history[d, 4] = j_extrap
                     end
                 end
             end
@@ -182,7 +211,7 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
                 break
             end
             
-            err = abs(j_sum_new[d] - J_old[d]) / max(j_sum_new[d], T(1e-20))
+            err = abs(j_sum_new[d] - J_old[d]) / max(abs(j_sum_new[d]) + B_col[d], T(1e-20))
             max_err = max(max_err, err)
         end
 
@@ -197,12 +226,14 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
             break
         end
 
+        last_err = max_err
         J_old .= j_sum_new
         
         if (max_err < tol) || (!do_scattering)
             break 
         end
     end
+    return iters_used, last_err
 end
 
 # ==============================================================================
@@ -252,6 +283,30 @@ end
 # ==============================================================================
 # Matrix inversion
 # ==============================================================================
+
+function tridiagonal_inverse_diagonal!(g::Vector{T}, piv::Vector{T}, dl::Vector{T}, d::Vector{T}, du::Vector{T}) where T
+    n = length(d)
+    @inbounds begin
+        piv[1] = abs(d[1]) < 1e-60 ? T(1e-60) : d[1]
+        g[1] = du[1] / piv[1]
+        for i in 2:n
+            p = d[i] - dl[i] * g[i-1]
+            abs(p) < 1e-60 && (p = T(1e-60))
+            piv[i] = p
+            i < n && (g[i] = du[i] / p)
+        end
+
+        gn = 1.0 / piv[n]
+        prev = gn
+        g[n] = gn
+        for i in n-1:-1:1
+            gi = (1.0 + g[i] * dl[i+1] * prev) / piv[i]
+            g[i] = gi
+            prev = gi
+        end
+    end
+    g
+end
 
 function solve_tridiagonal!(x::Vector{T}, dl::Vector{T}, d::Vector{T}, du::Vector{T}, r::Vector{T}) where T
     N = length(d)

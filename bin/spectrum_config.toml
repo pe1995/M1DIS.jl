@@ -64,7 +64,7 @@ vmic = 1.0
 linelists = "input_multi3d/linelists/"
 
 # Default abundance file (relative to M3D or absolute)
-abund = "./input_multi3d/abund/abund_magg"
+abund = "./input/abund/abund_magg22"
 
 # Absdat file (relative to M3D or absolute) -- not added yet
 absdat = "./input_multi3d/TS_absdat.dat"
