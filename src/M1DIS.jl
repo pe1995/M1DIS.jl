@@ -10,6 +10,7 @@ using Dagger
 using FastGaussQuadrature
 using LinearAlgebra
 using SparseArrays
+using Statistics
 
 include("_data_structure.jl")
 include("_timing.jl")

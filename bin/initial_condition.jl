@@ -1,8 +1,8 @@
 cubic_regression_machines = Dict(
-    "bottom_rho" => abspath(joinpath(dirname(pathof(MUST)), "..", "initial_grids", "Stagger", "stagger_bottom_rho_cubic.jlso")),
-    "bottom_T" => abspath(joinpath(dirname(pathof(MUST)), "..", "initial_grids", "Stagger", "stagger_bottom_T_cubic.jlso")),
-    "top_rho" => abspath(joinpath(dirname(pathof(MUST)), "..", "initial_grids", "Stagger", "stagger_top_rho_cubic.jlso")),
-    "top_T" => abspath(joinpath(dirname(pathof(MUST)), "..", "initial_grids", "Stagger", "stagger_top_T_cubic.jlso")),
+    "bottom_rho" => abspath(joinpath(dirname(pathof(MUST)), "..", "initial_grids", "bottom_boundary", "stagger_bottom_rho_cubic.jlso")),
+    "bottom_T" => abspath(joinpath(dirname(pathof(MUST)), "..", "initial_grids", "bottom_boundary", "stagger_bottom_T_cubic.jlso")),
+    "top_rho" => abspath(joinpath(dirname(pathof(MUST)), "..", "initial_grids", "bottom_boundary", "stagger_top_rho_cubic.jlso")),
+    "top_T" => abspath(joinpath(dirname(pathof(MUST)), "..", "initial_grids", "bottom_boundary", "stagger_top_T_cubic.jlso")),
 )
 
 # ============================================================================

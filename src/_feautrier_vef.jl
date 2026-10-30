@@ -163,6 +163,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
     F_ini_col = zeros(T, D)
     K_ini_col = zeros(T, D)
     kabs_col  = zeros(T, D)
+    re_dev_col = zeros(T, D)
     J_ini_eff = zeros(T, D)
 
     mu2_mean = sum(atm.w_mu[a] * atm.mu[a]^2 for a in 1:Na)
@@ -262,7 +263,8 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             f_edd[d]  = (j_diff > 1e-30) ? clamp(k_diff / j_diff, 1e-5, 1.0) : 1.0 / 3.0
 
             J_part[d] += w_f * J_mean[d]
-            RE_res[d] += w_f * kabs_col[d] * ((irradiated ? j_sum : j_sum - B_col[d]) + J_ini_eff[d])
+            re_dev_col[d] = (irradiated ? j_sum : j_sum - B_col[d]) + J_ini_eff[d]
+            RE_res[d] += w_f * kabs_col[d] * re_dev_col[d]
             P_rad_part[d] += (4π * w_f / c_light) * K_mean[d]
 
             flux_sum = 0.0
@@ -372,6 +374,9 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                                 dJ_d_dTdp = neg_C * vef_sol[d]
                                 diag_dB_dT_d = (dp == d) ? dB_col[d] : 0.0
                                 schur_part[d, dp] += kabs_col[d] * (dJ_d_dTdp - diag_dB_dT_d)
+                                if dp == d
+                                    schur_part[d, d] += (dchidT_col[d] - dchidT_col_scat[d]) * re_dev_col[d]
+                                end
                             #elseif dp == d
                             #    schur_part[d, dp] += kabs_col[d] * (L_nu[d] * eps_col[d] * dB_col[d] - dB_col[d])
                             #end

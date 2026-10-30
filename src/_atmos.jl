@@ -192,7 +192,9 @@ function atmosphere(;
             if vef_mode == :switch && iter > 1 && !has_irradiation
                 improvement = (flux_err_max_prev - flux_err_max_curr) / max(flux_err_max_prev, 1e-10)
                 if improvement < 0.05
-                    current_tau_trans = min(-0.5, current_tau_trans + 0.2)
+                    i_conv  = findfirst(>(1e-3 * F_target), atm.F_conv)
+                    tau_cap = isnothing(i_conv) ? -0.5 : clamp(log10(atm.tau[i_conv]) - 0.2, log10(atm.tau[2]), -0.5)
+                    current_tau_trans = min(tau_cap, current_tau_trans + 0.2)
                 end
             end
 
@@ -494,6 +496,8 @@ function evaluate_iteration!(results,
         dt_tolerance_rel::Float64  = 0.001,
         flux_tolerance_rel::Float64 = 0.001,
         irradiated_flux_tolerance_rel::Float64 = 0.01,
+        flux_median_window::Int   = 5,
+        flux_outlier_factor::Float64 = 5.0,
         save_every::Int           = 1,
         kwargs...)
 
@@ -517,7 +521,9 @@ function evaluate_iteration!(results,
     print_nice(sinf, category="Atmosphere", color=color_messages[], verbosity=1)
 
     #converged = (dT_abs_max < dt_tolerance) || (flux_err_max < flux_tolerance_rel)
-    converged = flux_err_max < (has_irr ? irradiated_flux_tolerance_rel : flux_tolerance_rel)
+    flux_tol  = has_irr ? irradiated_flux_tolerance_rel : flux_tolerance_rel
+    converged = (flux_err_max < flux_tol) ||
+        ((maximum(running_median(flux_err, flux_median_window)) < flux_tol) && (flux_err_max < flux_outlier_factor * flux_tol))
 
     converged = if has_irr || vef_mode in [:switch, :RE]
         converged && (dT_rel_max < dt_tolerance_rel)
@@ -531,6 +537,12 @@ function evaluate_iteration!(results,
     end
 
     return converged
+end
+
+function running_median(x, window)
+    h = window ÷ 2
+    n = length(x)
+    [median(view(x, max(1, i - h):min(n, i + h))) for i in 1:n]
 end
 
 function _build_result(atm::Atmosphere, T_eff, logg, eos; kwargs...)
