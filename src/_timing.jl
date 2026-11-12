@@ -46,11 +46,11 @@ deactivate_timing!(t) = begin
     t[] = false
 end
 
-start_timing!(t=generalTimer) = reset_timer!(t) 
+start_timing!(t=generalTimer) = reset_timer!(t)
 end_timing!(t=generalTimer) = begin
     println("")
     show(t)
-    println("") 
+    println("")
 
     t
 end

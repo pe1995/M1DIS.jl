@@ -1,10 +1,10 @@
-# ==============================================================================
+# ============================================================================
 # Data structures
-# ==============================================================================
+# ============================================================================
 
 mutable struct Atmosphere{T <: AbstractFloat}
     # Base Parameters
-    T_eff::T              # Effective Temperature [K] 
+    T_eff::T              # Effective Temperature [K]
     z::Vector{T}          # Height (Size: D)
     tau::Vector{T}        # Reference optical depth (Size: D)
     tau_lambda::Matrix{T} # Reference optical depth (Size: Nf, D)
@@ -13,7 +13,7 @@ mutable struct Atmosphere{T <: AbstractFloat}
     P_gas::Vector{T}      # Gas Pressure [dyne/cm^2] (Size: D)
     mu::Vector{T}         # Angle cosines (Size: Na)
     w_mu::Vector{T}       # Angle weights (Normalized to sum=1)
-    
+
     # Opacities & Source
     chi::Matrix{T}        # Opacity (Nf x D)
     chi_scat::Union{Matrix{T}, Nothing}   # Scattering opacity (Nf x D)
@@ -23,23 +23,23 @@ mutable struct Atmosphere{T <: AbstractFloat}
     dchidT::Matrix{T}     # Derivative of opacity (Nf x D)
     dchidT_scat::Union{Matrix{T}, Nothing} # Derivative of opacity (Nf x D)
     I_top::Vector{T}      # External Irradiation (Size: Nf)
-    
+
     # Convection
-    F_conv::Vector{T}              # Convective Flux (Size: D) 
-    dFconv_dT::Vector{T}           # Jacobian term: dF_conv / dT_local (Size: D) 
+    F_conv::Vector{T}              # Convective Flux (Size: D)
+    dFconv_dT::Vector{T}           # Jacobian term: dF_conv / dT_local (Size: D)
     v_conv::Vector{T}              # Convective velocity (Size: D)
     P_turb::Vector{T}              # Turbulent pressure [dyne/cm^2] (Size: D)
-    
+
     # Radiation Transport Outputs
     J_bol::Vector{T}      # Bolometric Mean Intensity (Size: D)
     F_bol::Vector{T}      # Bolometric Flux on the nodes (Size: D)
     F_rad::Vector{T}      # Radiative Flux at the cell interfaces (Size: D)
-	g_rad::Vector{T}      # Radiative Acceleration (Size: D) [cm/s^2] 
+	g_rad::Vector{T}      # Radiative Acceleration (Size: D) [cm/s^2]
     P_rad::Vector{T}      # Radiative Pressure (Size: D) [dyne/cm^2]
     Q_rad::Vector{T}      # Radiative Heating [erg/cm^3/s] (Size: D)
     F_beam::Vector{T}     # Attenuated stellar beam flux, filled by update! (Size: D)
     J_raw                # Specific Intensity J(mu) (Nf x Na x D)
-    
+
     # Convergence Tracking
     dT::Vector{T}         # Temperature Correction (Size: D)
     F_total::Vector{T}    # Total Flux = F_rad + F_conv (Size: D)
@@ -49,39 +49,6 @@ mutable struct Atmosphere{T <: AbstractFloat}
     f_redist::T           # Irradiation redistribution factor (1/4 planet-wide, 1/2 day-side)
 end
 
-"""
-    Atmosphere(tau, Nf; T_eff, n_angles=4, mu=nothing, w_mu=nothing,
-               with_scattering=false, irrad_iso=false, irrad_mu=0.5, f_redist=0.25)
-
-Allocate a 1D model atmosphere. All physics arrays are **zero-initialized**;
-populate them after construction and call `update!(atm)` to derive `tau_lambda`.
-
-# Positional arguments
-- `tau`  — reference optical depth grid; sets the depth dimension `D = length(tau)`
-- `Nf`   — number of frequency / opacity bins
-
-# Keyword arguments
-- `T_eff`           — effective temperature [K]
-- `n_angles`        — number of Gauss-Legendre angle points (default: 4);
-                      ignored when `mu` is supplied explicitly
-- `mu`              — custom angle cosines; overrides `n_angles`
-- `w_mu`            — custom quadrature weights (required when `mu` is given)
-- `with_scattering` — allocate `chi_scat` / `dchidT_scat` buffers (default: `false`)
-- `irrad_iso`       — isotropic irradiation flag (default: `false`)
-- `irrad_mu`        — direction cosine of incident irradiation (default: `0.5`)
-
-# Typical usage
-```julia
-atm = Atmosphere(τ_grid, Nf; T_eff=5777.0)
-
-atm.Temp .= T_initial
-atm.rho  .= ρ_initial
-atm.z    .= z_initial
-atm.P_gas .= P_initial
-compute_opacities!(atm.chi, atm.chi_ref, atm.B, atm.dBdT, atm.dchidT, eos, opa, atm.Temp, atm.rho)
-update!(atm)   # computes tau_lambda from z and chi
-```
-"""
 function Atmosphere(tau::AbstractVector, Nf::Int;
                     T_eff::Real,
                     n_angles::Int                       = 4,
@@ -157,27 +124,6 @@ function Atmosphere(tau::AbstractVector, Nf::Int;
     )
 end
 
-"""
-    populate!(atm::Atmosphere; kwargs...) → atm
-
-Set one or more fields of `atm` in-place using keyword arguments.
-
-- For **array fields** the existing buffer is filled with `.=` (no allocation).
-- For **scalar / Nothing fields** the value is set with `setfield!`.
-
-After calling `populate!` with geometry or opacity data, call `update!(atm)`
-to recompute `tau_lambda`.
-
-# Example
-```julia
-populate!(atm;
-    Temp=T_initial, rho=ρ_initial, z=z_initial, P_gas=P_initial,
-    chi=chi_arr, chi_ref=chi_ref_arr,
-    B=S_arr, dBdT=dSdT_arr, dchidT=dchidT_arr,
-)
-update!(atm)
-```
-"""
 function populate!(atm::Atmosphere; kwargs...)
     for (field, val) in kwargs
         current = getfield(atm, field)
@@ -201,7 +147,7 @@ function update!(atm::Atmosphere{T}; sync_opacities::Bool=true, sync_geometry::B
         end
         beam_flux!(atm)
     end
-    
+
     # Re-normalize angular weights (usually only needed if angles change dynamically)
     if sync_angles
         total = sum(atm.w_mu)
@@ -244,7 +190,7 @@ function formation_height(atm::M1DIS.Atmosphere; closest=false)
             fh[l] = -MUST.linear_interpolation(log10.(atm.tau_lambda[l, :]), lgt, extrapolation_bc=MUST.Flat())(0.0)
         end
     end
-   
+
     fh
 end
 
@@ -263,7 +209,7 @@ function formation_source_function(atm::M1DIS.Atmosphere; closest=false)
             sf[l] = MUST.linear_interpolation(log_tau_l, log10.(atm.B[l, :]), extrapolation_bc=MUST.Flat())(0.0)
         end
     end
-   
+
     return sf
 end
 
@@ -282,7 +228,7 @@ function formation_opacity(atm::M1DIS.Atmosphere; closest=false)
             sf[l] = MUST.linear_interpolation(log_tau_l, log10.(atm.chi[l, :]), extrapolation_bc=MUST.Flat())(0.0)
         end
     end
-   
+
     return sf
 end
 
@@ -302,6 +248,6 @@ function opacity_at(atm::M1DIS.Atmosphere, logtau; closest=false)
             op[l] = MUST.linear_interpolation(lgt, lgo, extrapolation_bc=MUST.Flat())(logtau)
         end
     end
-   
+
     op
 end

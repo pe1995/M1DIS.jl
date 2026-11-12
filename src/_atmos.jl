@@ -146,7 +146,6 @@ function atmosphere(;
         tau_trans
     end
 
-
     @optionalTiming relaxation_time for iter in 1:maxiter
         use_convection = convection #&& (iter > 5)
 
@@ -201,17 +200,17 @@ function atmosphere(;
             # Damping
             _apply_dT_damping!(atm, tcmxu_inv, damping, flux_err_max_curr, flux_err_max_prev)
 
-            # Convergence evaluation 
+            # Convergence evaluation
             converged = evaluate_iteration!(
                 results, atm, iter, maxiter, F_target, T_eff, logg, eos, vef_mode;
                 current_tau_trans=current_tau_trans,
-                J=atm.J_bol, 
-                g_rad=atm.g_rad, 
-                P_turb=atm.P_turb, 
-                P_rad=atm.P_rad, 
-                F_err_rel=atm.F_err_rel, 
+                J=atm.J_bol,
+                g_rad=atm.g_rad,
+                P_turb=atm.P_turb,
+                P_rad=atm.P_rad,
+                F_err_rel=atm.F_err_rel,
                 Q_rad=atm.Q_rad,
-                chi_max=maximum(atm.chi, dims=1), 
+                chi_max=maximum(atm.chi, dims=1),
                 chi_min=minimum(atm.chi, dims=1),
                 kwargs...
             )
@@ -224,17 +223,10 @@ function atmosphere(;
             end
 
             # Temperature correction & hydrostatic equilibrium
-            #for i in eachindex(atm.dT)
-            #    if atm.F_err_rel[i] > flux_err_prev[i]
-            #        dt_limiter[i] = 0.2
-            #   else
-            #        dt_limiter[i] = 1.0
-            #    end
 
             atm.Temp .+= atm.dT
             atm.Temp  .= clamp.(atm.Temp, 10, 1e12)
-            #end
-        
+
             flux_err_max_prev = flux_err_max_curr
             flux_err_prev .= atm.F_err_rel
 
@@ -400,7 +392,6 @@ function _apply_dT_damping!(atm, tcmxu_inv, damping, flux_err_max_curr, flux_err
     for i in eachindex(atm.dT)
         atm.dT[i] = atm.dT[i] / sqrt(1.0 + (tcmxu_inv_loc * atm.dT[i] / atm.Temp[i])^2)
     end
-    #atm.dT .= clamp.(atm.dT, -damping*atm.Temp, damping*atm.Temp)
 end
 
 function _stabilize_convection!(atm, flux_err_max_prev, stabilizer_stage, solver)
@@ -520,7 +511,6 @@ function evaluate_iteration!(results,
     )
     print_nice(sinf, category="Atmosphere", color=color_messages[], verbosity=1)
 
-    #converged = (dT_abs_max < dt_tolerance) || (flux_err_max < flux_tolerance_rel)
     flux_tol  = has_irr ? irradiated_flux_tolerance_rel : flux_tolerance_rel
     converged = (flux_err_max < flux_tol) ||
         ((maximum(running_median(flux_err, flux_median_window)) < flux_tol) && (flux_err_max < flux_outlier_factor * flux_tol))

@@ -1,18 +1,17 @@
-# ==============================================================================
+# ============================================================================
 # Feautrier RT solver — shared infrastructure
-#
 # This file contains the core routines shared by all solver variants:
-#   - Packer: frequency×angle indexing for the Gustafsson direct solver
-#   - lambda_formal_solution!: Feautrier tridiagonal solve with Λ-iteration
-#     for scattering and Ng acceleration
-#   - feautrier_coeffs: tridiagonal coefficients for the Feautrier equation
-#   - Tridiagonal solvers: solve, factorize, invert column
-#   - Helpers: optical depth integration, RE/flux mode selection
-# ==============================================================================
+# Packer: frequency×angle indexing for the Gustafsson direct solver
+# lambda_formal_solution!: Feautrier tridiagonal solve with Λ-iteration
+# for scattering and Ng acceleration
+# feautrier_coeffs: tridiagonal coefficients for the Feautrier equation
+# Tridiagonal solvers: solve, factorize, invert column
+# Helpers: optical depth integration, RE/flux mode selection
+# ============================================================================
 
-# ==============================================================================
+# ============================================================================
 # Data structures
-# ==============================================================================
+# ============================================================================
 
 const USE_RT_THREADS = Ref(true)
 const EPS_FLOOR = 1e-6
@@ -29,20 +28,20 @@ end
 
 @inline gid(i, d, N) = (d - 1) * N + i
 
-# ==============================================================================
+# ============================================================================
 # Initialization
-# ==============================================================================
+# ============================================================================
 
 function Packer(atm::Atmosphere{T}) where T
-    Nf = size(atm.chi, 1) 
+    Nf = size(atm.chi, 1)
     Na = length(atm.mu)
     N = Nf * Na
-    
+
     weights = zeros(T, N)
     mu_sq = zeros(T, N)
     freq_idx = zeros(Int, N)
     ang_idx = zeros(Int, N)
-    
+
     idx = 1
     for f in 1:Nf
         for a in 1:Na
@@ -54,11 +53,11 @@ function Packer(atm::Atmosphere{T}) where T
         end
     end
     return Packer(Nf, Na, N, weights, mu_sq, freq_idx, ang_idx)
-end 
+end
 
-# ==============================================================================
+# ============================================================================
 # Core Lambda iteration
-# ==============================================================================
+# ============================================================================
 
 function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int, tol::Float64, do_scattering::Bool,
                                  eps_col::Vector{T}, B_col::Vector{T}, J_old::Vector{T}, J_ini_col::Vector{T}, S_col::Vector{T},
@@ -91,7 +90,7 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
                 ali_src[1] = src_fac
             end
 
-            # Interior 
+            # Interior
             for d in 2:D-1
                 (A, B, C, src_fac, ext_fac) = feautrier_coeffs(atm, f, d, mu_sq)
                 @inbounds begin
@@ -105,7 +104,7 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
                     ali_src[d] = src_fac
                 end
             end
-            
+
             # Bottom boundary (d = D)
             (A, B, C, src_fac, _) = feautrier_coeffs(atm, f, D, mu_sq)
             @inbounds begin
@@ -123,7 +122,7 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
                     L_nu[d] += weight * ali_g[d] * ali_src[d]
                 end
             end
-            
+
             solve_tridiagonal!(tri_sol, tri_dl, tri_d, tri_du, tri_rhs)
             @inbounds for d in 1:D
                 J_nu[a, d] = tri_sol[d]
@@ -157,43 +156,43 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
         if (iter >= 4) && (iter % 4 == 0)
             A11, A12, A22 = zero(T), zero(T), zero(T)
             B1, B2 = zero(T), zero(T)
-            
+
             @inbounds for d in 1:D
                 x0 = J_history[d, 1]
                 x1 = J_history[d, 2]
                 x2 = J_history[d, 3]
                 x3 = J_history[d, 4]
-                
+
                 dx1 = x1 - x0
                 dx2 = x2 - x1
                 dx3 = x3 - x2
-                
+
                 d1 = dx3 - dx2
-                d2 = dx3 - dx1 
-                
+                d2 = dx3 - dx1
+
                 w = 1.0 / max(abs(x3), T(1e-30))
                 d1_w = d1 * w
                 d2_w = d2 * w
                 dx3_w = dx3 * w
-                
+
                 A11 += d1_w * d1_w
                 A12 += d1_w * d2_w
                 A22 += d2_w * d2_w
                 B1  += dx3_w * d1_w
                 B2  += dx3_w * d2_w
             end
-            
+
             det = A11 * A22 - A12 * A12
             if abs(det) > T(1e-15) * (A11 * A22 + T(1e-30))
                 a1 = (A22 * B1 - A12 * B2) / det
                 a2 = (A11 * B2 - A12 * B1) / det
-                
+
                 @inbounds for d in 1:D
                     x1 = J_history[d, 2]
                     x2 = J_history[d, 3]
                     x3 = J_history[d, 4]
                     j_extrap = (1.0 - a1 - a2) * x3 + a1 * x2 + a2 * x1
-                    
+
                     if isfinite(j_extrap)
                         j_sum_new[d] = j_extrap
                         J_history[d, 4] = j_extrap
@@ -201,22 +200,22 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
                 end
             end
         end
-        
+
         max_err = zero(T)
         nan_detected = false
-        
+
         @inbounds for d in 1:D
             if isnan(j_sum_new[d]) || isinf(j_sum_new[d])
                 nan_detected = true
                 break
             end
-            
+
             err = abs(j_sum_new[d] - J_old[d]) / max(abs(j_sum_new[d]) + B_col[d], T(1e-20))
             max_err = max(max_err, err)
         end
 
         if nan_detected
-            j_sum_new .= J_old  
+            j_sum_new .= J_old
             @inbounds for d in 1:D
                 j_old_val = J_old[d]
                 for a in 1:Na
@@ -228,17 +227,17 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
 
         last_err = max_err
         J_old .= j_sum_new
-        
+
         if (max_err < tol) || (!do_scattering)
-            break 
+            break
         end
     end
     return iters_used, last_err
 end
 
-# ==============================================================================
+# ============================================================================
 # Core Feautrier kernels
-# ==============================================================================
+# ============================================================================
 
 function feautrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
     dt_minus, dt_plus = get_dtau(atm.tau_lambda, f, d)
@@ -248,7 +247,6 @@ function feautrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
         tau_slab = dt_plus / mu
         eta = atm.chi[f, 1] / atm.chi_ref[1]
         tau_top  = (eta * atm.tau[1]) / mu
-        #tau_top = 0.0
 
         E_slab = (tau_slab < 0.01) ? 1.0 - tau_slab*(1.0 - 0.5*tau_slab) : exp(-tau_slab)
         E_top  = (tau_top < 0.01)  ? 1.0 - tau_top *(1.0 - 0.5*tau_top)  : exp(-tau_top)
@@ -270,19 +268,19 @@ function feautrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
         # cancellation when `1.0 - A - C` is evaluated for extremely small optical depths.
         # Original: A = -2μ^2/(dtm*(dtm+dtp)), C = -2μ^2/(dtp*(dtm+dtp)), diag = 1 - A - C, src = 1.0
         # We rescale the equation by multiplying it by R = (dtm * dtp) / (2μ^2).
-        
+
         R = (dtm_safe * dtp_safe) / (2.0 * mu_sq)
         A = -dtp_safe / (dtm_safe + dtp_safe)
         C = -dtm_safe / (dtm_safe + dtp_safe)
         diag = R + 1.0
-        
+
         (A, diag, C, R, 0.0)
     end
 end
 
-# ==============================================================================
+# ============================================================================
 # Matrix inversion
-# ==============================================================================
+# ============================================================================
 
 function tridiagonal_inverse_diagonal!(g::Vector{T}, piv::Vector{T}, dl::Vector{T}, d::Vector{T}, du::Vector{T}) where T
     n = length(d)
@@ -315,20 +313,20 @@ function solve_tridiagonal!(x::Vector{T}, dl::Vector{T}, d::Vector{T}, du::Vecto
         inv_d1 = 1.0 / piv1
         du[1] *= inv_d1
         r[1]  *= inv_d1
-        
+
         for i in 2:N
             pivot = d[i] - dl[i] * du[i-1]
             if abs(pivot) < 1e-60
                 pivot = sign(pivot) >= 0 ? 1e-60 : -1e-60
             end
             pivot_inv = 1.0 / pivot
-            
+
             if i < N
                 du[i] *= pivot_inv
             end
             r[i] = (r[i] - dl[i] * r[i-1]) * pivot_inv
         end
-        
+
         x[N] = r[N]
         for i in N-1:-1:1
             x[i] = r[i] - du[i] * x[i+1]
@@ -347,8 +345,8 @@ function factorize_tridiagonal!(dl::Vector{T}, d::Vector{T}, du::Vector{T}) wher
         piv1 = abs(d[1]) < 1e-60 ? (sign(d[1]) >= 0 ? 1e-60 : -1e-60) : d[1]
         inv_d1 = 1.0 / piv1
         du[1] *= inv_d1
-        d[1] = inv_d1 
-        
+        d[1] = inv_d1
+
         for i in 2:N
             pivot = d[i] - dl[i] * du[i-1]
             if abs(pivot) < 1e-60
@@ -358,7 +356,7 @@ function factorize_tridiagonal!(dl::Vector{T}, d::Vector{T}, du::Vector{T}) wher
             if i < N
                 du[i] *= pivot_inv
             end
-            d[i] = pivot_inv 
+            d[i] = pivot_inv
         end
     end
 end
@@ -385,9 +383,9 @@ function invert_tridiagonal_column!(x::Vector{T}, dp::Int, dl::Vector{T}, d_inv:
     end
 end
 
-# ==============================================================================
+# ============================================================================
 # Helpers
-# ==============================================================================
+# ============================================================================
 
 function get_dtau(tau, f, d)
     if d == 1
@@ -409,19 +407,6 @@ function compute_τ!(τ; z, ρκ)
     end
 end
 
-"""
-    use_RE(d, mode, atm, tau_trans) → Bool
-
-Determine whether depth point `d` should use the radiative equilibrium (RE)
-constraint rather than the flux conservation constraint for the temperature
-correction.
-
-Modes:
-  - `:RE`       — use RE (k(J-B)=0) everywhere (except bottom boundary)
-  - `:FC`       — use FC (F_target=F_rad+F_conv) everywhere
-  - `:switch`   — use RE above `tau_trans`, flux conservation below
-  - `:boundary` — use RE only at the topmost point (d=1)
-"""
 @inline function use_RE(d, mode, atm, tau_trans)
     is_re = false
     is_re = if mode == :RE
@@ -442,12 +427,11 @@ Modes:
     return is_re
 end
 
-# ==============================================================================
+# ============================================================================
 # Top-level Feutrier solvers
-# ==============================================================================
+# ============================================================================
 
 include("_feautrier_gustafsson.jl")
 include("_feautrier_approx.jl")
 include("_feautrier_vef.jl")
 include("_feautrier_vef_full.jl")
-#include("_feutrier_mod.jl")

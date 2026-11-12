@@ -1,6 +1,6 @@
-# ==============================================================================
+# ============================================================================
 # Full VEF solver
-# ==============================================================================
+# ============================================================================
 
 function solve_VEF_mod!(atm::Atmosphere{T}; include_dT::Bool=true) where T
     D = length(atm.tau)
@@ -140,7 +140,7 @@ function process_frequency_chunk_VEF_mod(atm::Atmosphere{T}, f_start::Int, f_end
 
         J_old .= B_col
 
-        # Analytic Stellar Beam Calculation 
+        # Analytic Stellar Beam Calculation
         if atm.I_top[f] > 0.0
             F_arriving = f_redist * π * atm.I_top[f]
             @inbounds for d in 1:D
@@ -198,13 +198,13 @@ function process_frequency_chunk_VEF_mod(atm::Atmosphere{T}, f_start::Int, f_end
                 else
                     dt_plus  = max(tau_lambda_col[d+1] - tau_lambda_col[d], 1e-60)
                     dt_minus = max(tau_lambda_col[d] - tau_lambda_col[d-1], 1e-60)
-                    
+
                     w_plus  = dt_minus / (dt_plus + dt_minus)
                     w_minus = dt_plus  / (dt_plus + dt_minus)
-                    
+
                     dJ_plus  = (J_nu[a, d+1] - J_nu[a, d]) / dt_plus
                     dJ_minus = (J_nu[a, d] - J_nu[a, d-1]) / dt_minus
-                    
+
                     dJ = w_plus * dJ_plus + w_minus * dJ_minus
                     dt = 1.0
                 end
@@ -215,9 +215,6 @@ function process_frequency_chunk_VEF_mod(atm::Atmosphere{T}, f_start::Int, f_end
         end
 
         # Eddington factor f = K / J
-        #for d in 1:D
-        #    f_edd[d] = max(K_mean[d] / max(J_mean[d], 1e-30), 1.0/3.0)
-        #end
 
         # Precalculate Schur derivative coefficients
         for d in 1:D
@@ -240,7 +237,7 @@ function process_frequency_chunk_VEF_mod(atm::Atmosphere{T}, f_start::Int, f_end
         fill!(vef_d,  0.0)
         fill!(vef_du, 0.0)
 
-        # Surface 
+        # Surface
         begin
             dt1 = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
             # Surface Eddington factor h = H/J
@@ -256,7 +253,7 @@ function process_frequency_chunk_VEF_mod(atm::Atmosphere{T}, f_start::Int, f_end
             vef_du[1] = 2.0*f_edd[2]/(dt1*dt1)
         end
 
-        # Interior 
+        # Interior
         for d in 2:D-1
             dtm = max(tau_lambda_col[d]   - tau_lambda_col[d-1], 1e-30)
             dtp = max(tau_lambda_col[d+1] - tau_lambda_col[d],   1e-30)

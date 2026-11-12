@@ -1,5 +1,5 @@
-const k_B = 1.380649e-16  
-const h   = 6.626070e-27  
+const k_B = 1.380649e-16
+const h   = 6.626070e-27
 const m_u = 1.660539e-24
 const c_light = 2.99792458e10
 const σ_SB = 5.670374e-5
@@ -15,7 +15,7 @@ function print_nice(s; category="", verbosity=verbose[], color_all=true, kwargs.
     if verbose[] >= verbosity
         if category == ""
             printstyled(s, "\n"; kwargs...)
-        else 
+        else
             if !color_all
                 printstyled("[ $(category): "; bold=true, kwargs...)
                 printstyled(s, "\n")
@@ -45,4 +45,3 @@ end
 # helper function for nothing
 import Base.similar
 Base.similar(::Nothing) = nothing
-

@@ -68,21 +68,19 @@ save!(
 ```
 
 # Command line tools
-In case you want to run `M1DIS.jl` from the command line directly, there are scripts available in the `bin/` directory. For star and planet mode, there are default input files available that you can use to run the code. Note that you can override the defaults in the file via the command line directly. This means something like the following will work,
+The command line interface lives in `m3dis.jl` (one level up). Defaults are read from the files in `configs/`, and command line arguments override them, e.g.
 ```bash
-julia -t 10 bin/m1dis_star.jl -c bin/star_config.toml --teff=6500 --logg=4.0 --maxiter=100
+julia -t 10 m3dis.jl star -c configs/star_config.toml --teff=6500 --logg=4.0 --maxiter=100
 ```
-and will create a stellar atmosphere (using 10 CPU threads) with all the default parameters selected in `bin/star_config.toml`, but with an effective temperature of 6500K and surface gravity of 4.0. The code will stop after 100 iterations and store each iteration for you to explore. For all available parameters see `julia bin/m1dis_star.jl --help`. There also is a version available specifically for planets. 
-Note that if you do not specify an EoS, the code will automatically generate an EoS table using Multi3D. For this, please make sure that the settings in `bin/eos_config.toml` are correct. You can then just pass the chemical composition as arguments and the corresponding table will be created. These tables can be quite large, so make sure you have enough RAM and disc space for this computation.
+creates a stellar atmosphere with an effective temperature of 6500 K and surface gravity 4.0. See `julia m3dis.jl star --help` for all parameters; `m3dis.jl planet` is the version for planets. Without an EoS directory, the table is computed with Multi3D using the settings in `configs/eos_config.toml`.
 
-Besides creating the models, the command line tool can also be used to compute the corresponding spectra. For this, there are example scripts available in `bin/spectrum.jl`. The principle is the same:
+Spectra of the models are computed with
 ```bash
-julia bin/spectrum.jl -c bin/spectrum_config.toml -m models/m1dis_model -n 'myspectrum' --feh=-1 --alpha=0.4
+julia m3dis.jl spectrum -c configs/spectrum_config.toml -m models/m1dis_model -n 'myspectrum' --feh=-1 --alpha=0.4
 ```
-Where the default parameters are again stored in a `.toml` file. Multi3D is assumed to be located at the path you specified in the `bin/eos_config.toml`.
 
 # Opacity Binning
 There is an additional usecase of `M1DIS.jl`, which provides great synergy with the 3D RHD code `M3DIS`. In order to start a 3D simulations, there a two very important things that need to be present: The initial atmospheric structure and the opacity table. Because `M3DIS` works with binned opacities, there is a complementary code that computes these binned tables already available (`TSO.jl`, see above). However, there is generally a great uncertainty associated with the bin selection, which is why it is advisable to automate the procedure. `M1DIS.jl` is capable of doing this in a very straightforward way. 
 
-For this, the command line tool `bin/opacity_binning.jl` with the default configuration `bin/binning_config.toml` is available. This script computes -- for a given chemical compostion -- the monochromatic opacity table using `Multi3D`. After specifing $\rm T_{eff}$, $\log g$ the 1D HE atmosphere will be computed. After the atmosphere has been constructed, the opacity binning is optimized iteratively by adjusting the bin assignment matrix with dimensions ($n_{\lambda} \times n_{bins}$), computing the respective binned opacity, and solving the RT using those opacities. The goodness of the binning is judged by comparing cooling error at the cooling-peak with the unbinned result. The code furthermore makes sure that the flux error is kept within bounds. The optimized bin assignment matrix is then used to construct the final binned opacity table, which is then stored together with the corresponding namelist for `M3DIS`, such that it can directly be executed.
+For this, `julia m3dis.jl opacity-binning` with the default configuration `configs/binning_config.toml` is available. This script computes -- for a given chemical compostion -- the monochromatic opacity table using `Multi3D`. After specifing $\rm T_{eff}$, $\log g$ the 1D HE atmosphere will be computed. After the atmosphere has been constructed, the opacity binning is optimized iteratively by adjusting the bin assignment matrix with dimensions ($n_{\lambda} \times n_{bins}$), computing the respective binned opacity, and solving the RT using those opacities. The goodness of the binning is judged by comparing cooling error at the cooling-peak with the unbinned result. The code furthermore makes sure that the flux error is kept within bounds. The optimized bin assignment matrix is then used to construct the final binned opacity table, which is then stored together with the corresponding namelist for `M3DIS`, such that it can directly be executed.
 

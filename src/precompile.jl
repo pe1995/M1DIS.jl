@@ -6,8 +6,8 @@ using PrecompileTools
     # We use the mini opacity table that is only 13MB in size to avoid
     # downloading or checking out large LFS files during precompilation.
     eos_dir = joinpath(@__DIR__, "..", "data", "magg_mini_v1.0")
-    
-    # We only precompile if the dummy table exists locally to avoid breaking 
+
+    # We only precompile if the dummy table exists locally to avoid breaking
     # CI or user installs that don't have this folder yet.
     if isdir(eos_dir)
         eos_file = MUST.glob("*_eos_*.hdf5", eos_dir)[1]
@@ -27,7 +27,6 @@ using PrecompileTools
                 atmosphere(
                     T_eff = 5777.0,
                     logg = 4.44,
-                    #v_mic = 1.0,
                     α_MLT = 1.5,
                     maxiter = 1,
                     eos = eos,
@@ -46,7 +45,6 @@ using PrecompileTools
                 atmosphere(
                     T_eff = 5777.0,
                     logg = 4.44,
-                    #v_mic = 1.0,
                     α_MLT = 1.5,
                     maxiter = 1,
                     eos = eos,

@@ -36,7 +36,7 @@ function compute_opacities!(chi, chi_ref, B, dBdT, dchidT, eos, opa::TSO.Extende
          dchidT .= 0.0
     end
     chi_ref .= exp.(chi_ref) .* ρ
-    
+
     return nothing
 end
 
@@ -58,7 +58,7 @@ function compute_opacities_chunked(eos, opa, T, ρ, λ; opacity_only=false)
     dBdT = opacity_only ? nothing : zeros(Float64, length(λ), length(T))
     dchidT = opacity_only ? nothing : zeros(Float64, length(λ), length(T))
 
-    _compute_opacities_chunked!(chi, chi_ref, B, dBdT, dchidT, eos, opa, T, ρ, λ) 
+    _compute_opacities_chunked!(chi, chi_ref, B, dBdT, dchidT, eos, opa, T, ρ, λ)
 
     return chi, chi_ref, B, dBdT, dchidT
 end
@@ -76,27 +76,27 @@ _is_binned(opa::TSO.MiniOpacityTable) = false
 function _compute_opacities_chunked!(chi, chi_ref, B, dBdT, dchidT, eos, opa, T, ρ, λ)
     lnrho = log.(ρ)
     lnt = log.(T)
-    
+
     grid_T = TSO.EnergyAxis(eos.eos).values
     grid_Rho = TSO.DensityAxis(eos.eos).values
     n_shells = length(lnrho)
-    
+
     coefs_Rho, coefs_T = TSO.weights(eos, lnrho, lnt)
     λ_indices = eachindex(λ)
     chunk_size = cld(length(λ_indices), Threads.nthreads())
-    
+
     ρ_eff = _is_binned(opa) ? ones(eltype(ρ), length(ρ)) : ρ
-    
+
     tasks = map(Iterators.partition(λ_indices, chunk_size)) do range
         Threads.@spawn _compute_opacities_chunk!(range, chi, B, dBdT, dchidT, opa, coefs_T, coefs_Rho, ρ_eff, T, grid_T)
     end
     wait.(tasks)
-    
+
     if !isnothing(chi_ref)
         sample!((chi_ref,), eos, (:lnRoss,), lnrho, lnt)
         chi_ref .= exp.(chi_ref) .* ρ
     end
-    
+
     return nothing
 end
 
@@ -121,14 +121,14 @@ function _inner_compute_chunk_extended!(range, chi, B, dBdT, dchidT, kappa_data,
         for j in 1:n_shells
             ct = coefs_T[j]
             cr = coefs_Rho[j]
-            
+
             it, ir = ct.idx, cr.idx
-            
+
             w00 = ct.w_low  * cr.w_low
             w10 = ct.w_high * cr.w_low
             w01 = ct.w_low  * cr.w_high
             w11 = ct.w_high * cr.w_high
-            
+
             val_k = w00 * log(kappa_data[it,   ir,   i]) +
                     w10 * log(kappa_data[it+1, ir,   i]) +
                     w01 * log(kappa_data[it,   ir+1, i]) +
@@ -142,18 +142,18 @@ function _inner_compute_chunk_extended!(range, chi, B, dBdT, dchidT, kappa_data,
             B[i, j] = exp(val_s) * w_i
 
             dS, dT_diff = if (it > 1) && (it < nT)
-                log(src_data[it+1, ir, i]) - log(src_data[it-1, ir, i]), 
+                log(src_data[it+1, ir, i]) - log(src_data[it-1, ir, i]),
                 grid_T[it+1] - grid_T[it-1]
             elseif it == 1
-                log(src_data[it+1, ir, i]) - log(src_data[it, ir, i]), 
+                log(src_data[it+1, ir, i]) - log(src_data[it, ir, i]),
                 grid_T[it+1] - grid_T[it]
             else
-                log(src_data[it, ir, i]) - log(src_data[it-1, ir, i]), 
+                log(src_data[it, ir, i]) - log(src_data[it-1, ir, i]),
                 grid_T[it] - grid_T[it-1]
             end
-            
+
             dBdT[i, j] = exp(val_s - grid_T[it]) * (dS / dT_diff) * w_i
-            
+
             dChi = if (it > 1) && (it < nT)
                 log(kappa_data[it+1, ir, i]) - log(kappa_data[it-1, ir, i])
             elseif it == 1
@@ -161,7 +161,7 @@ function _inner_compute_chunk_extended!(range, chi, B, dBdT, dchidT, kappa_data,
             else
                 log(kappa_data[it, ir, i]) - log(kappa_data[it-1, ir, i])
             end
-            
+
             dchidT[i, j] = exp(val_k - grid_T[it]) * (dChi / dT_diff) * ρ[j]
         end
     end
@@ -176,14 +176,14 @@ function _inner_compute_chunk_extended!(range, chi, B::Nothing, dBdT::Nothing, d
         for j in 1:n_shells
             ct = coefs_T[j]
             cr = coefs_Rho[j]
-            
+
             it, ir = ct.idx, cr.idx
-            
+
             w00 = ct.w_low  * cr.w_low
             w10 = ct.w_high * cr.w_low
             w01 = ct.w_low  * cr.w_high
             w11 = ct.w_high * cr.w_high
-            
+
             val_k = w00 * log(kappa_data[it,   ir,   i]) +
                     w10 * log(kappa_data[it+1, ir,   i]) +
                     w01 * log(kappa_data[it,   ir+1, i]) +
@@ -204,15 +204,15 @@ function _inner_compute_chunk!(range, chi, B, dBdT, dchidT, kappa_data, λ, weig
         for j in 1:n_shells
             ct = coefs_T[j]
             cr = coefs_Rho[j]
-            
+
             it = ct.idx
             ir = cr.idx
-            
+
             w00 = ct.w_low  * cr.w_low
             w10 = ct.w_high * cr.w_low
             w01 = ct.w_low  * cr.w_high
             w11 = ct.w_high * cr.w_high
-            
+
             val_k = w00 * log(kappa_data[it,  ir,  i]) +
                     w10 * log(kappa_data[it+1,ir,  i]) +
                     w01 * log(kappa_data[it,  ir+1,i]) +
@@ -221,19 +221,19 @@ function _inner_compute_chunk!(range, chi, B, dBdT, dchidT, kappa_data, λ, weig
             chi[i, j] = exp(val_k) * ρ[j]
             B[i, j] = TSO.Bλ_fast(λ_i, T[j]) * w_i
             dBdT[i, j] = TSO.dBdTλ_fast(λ_i, T[j]) * w_i
-            
+
             nT = length(grid_T)
             dChi, dT_diff = if (it > 1) && (it < nT)
-                log(kappa_data[it+1, ir, i]) - log(kappa_data[it-1, ir, i]), 
+                log(kappa_data[it+1, ir, i]) - log(kappa_data[it-1, ir, i]),
                 grid_T[it+1] - grid_T[it-1]
             elseif it == 1
-                log(kappa_data[it+1, ir, i]) - log(kappa_data[it, ir, i]), 
+                log(kappa_data[it+1, ir, i]) - log(kappa_data[it, ir, i]),
                 grid_T[it+1] - grid_T[it]
             else
-                log(kappa_data[it, ir, i]) - log(kappa_data[it-1, ir, i]), 
+                log(kappa_data[it, ir, i]) - log(kappa_data[it-1, ir, i]),
                 grid_T[it] - grid_T[it-1]
             end
-            
+
             dchidT[i, j] = exp(val_k - grid_T[it]) * (dChi / dT_diff) * ρ[j]
         end
     end
@@ -249,15 +249,15 @@ function _inner_compute_chunk!(range, chi, B::Nothing, dBdT::Nothing, dchidT::No
         for j in 1:n_shells
             ct = coefs_T[j]
             cr = coefs_Rho[j]
-            
+
             it = ct.idx
             ir = cr.idx
-            
+
             w00 = ct.w_low  * cr.w_low
             w10 = ct.w_high * cr.w_low
             w01 = ct.w_low  * cr.w_high
             w11 = ct.w_high * cr.w_high
-            
+
             val_k = w00 * log(kappa_data[it,  ir,  i]) +
                     w10 * log(kappa_data[it+1,ir,  i]) +
                     w01 * log(kappa_data[it,  ir+1,i]) +

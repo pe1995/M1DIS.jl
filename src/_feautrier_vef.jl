@@ -1,11 +1,10 @@
-# ==============================================================================
+# ============================================================================
 # VEF solver
-#
 # Solves the radiative transfer equation using the Feautrier method to obtain
 # angle-dependent mean intensities J_nu(mu,d), then computes the Eddington
 # factor f = K/J. A VEF moment equation is solved
 # to obtain the Jacobian for the temperature correction.
-# ==============================================================================
+# ============================================================================
 
 function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:boundary, tau_trans::Float64=-2.0) where T
     irradiated = any(>(0.0), atm.I_top)
@@ -72,7 +71,7 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:bou
         end
     end
 
-    # Temperature correction 
+    # Temperature correction
     if include_dT
         RHS = zeros(T, D)
         for d in 1:D
@@ -175,7 +174,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
 
     do_scattering = !isnothing(atm.chi_scat)
     max_scat_iter = !do_scattering ? 1 : 500
-    
+
     _chi_scat = do_scattering ? (atm.chi_scat::Matrix{T}) : Matrix{T}(undef, 0, 0)
     _dchidT_scat = do_scattering ? (atm.dchidT_scat::Matrix{T}) : Matrix{T}(undef, 0, 0)
     tol = 1e-6
@@ -212,7 +211,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
 
         irradiated ? fill!(J_old, zero(T)) : (J_old .= B_col)
 
-        # Analytic stellar beam 
+        # Analytic stellar beam
         use_irr_f = atm.I_top[f] > 0.0
         if use_irr_f
             F_arriving = f_redist * π * atm.I_top[f]
@@ -299,7 +298,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             g_rad_part[d] += (flux_sum + F_ini_col[d]) * chi_col[d]
         end
 
-        # Precalculate coefficients 
+        # Precalculate coefficients
         for d in 1:D
             if d == 1
                 schur_dt_inv[1] = 1.0 / max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
@@ -321,7 +320,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
         fill!(vef_du, 0.0)
         h_surf_val = 0.0
 
-        # Top boundary 
+        # Top boundary
         begin
             dt1 = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
 
@@ -337,7 +336,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             vef_du[1] = 2.0*f_edd[2]/(dt1*dt1)
         end
 
-        # Interior 
+        # Interior
         for d in 2:D-1
             dtm = max(tau_lambda_col[d]   - tau_lambda_col[d-1], 1e-30)
             dtp = max(tau_lambda_col[d+1] - tau_lambda_col[d],   1e-30)
@@ -355,7 +354,7 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
 
         for dp in 1:D
             C_dp = (dp < D) ? eps_col[dp] * dB_col[dp] : dB_col[dp]
-        
+
             invert_tridiagonal_column!(vef_sol, dp, vef_dl, vef_d, vef_du)
 
             neg_C = (dp == D) ? C_dp : -C_dp
@@ -370,16 +369,12 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                     is_re = is_re_arr[d]
 
                     if is_re
-                            #if irradiated
                                 dJ_d_dTdp = neg_C * vef_sol[d]
                                 diag_dB_dT_d = (dp == d) ? dB_col[d] : 0.0
                                 schur_part[d, dp] += kabs_col[d] * (dJ_d_dTdp - diag_dB_dT_d)
                                 if dp == d
                                     schur_part[d, d] += (dchidT_col[d] - dchidT_col_scat[d]) * re_dev_col[d]
                                 end
-                            #elseif dp == d
-                            #    schur_part[d, dp] += kabs_col[d] * (L_nu[d] * eps_col[d] * dB_col[d] - dB_col[d])
-                            #end
                     else
                         # Flux Jacobian: d(4π·H)/dT
                         if d == 1
