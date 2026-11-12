@@ -139,7 +139,6 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
 
         J_old .= B_col
 
-        # Analytic stellar beam calculation
         if atm.I_top[f] > 0.0
             F_arriving = f_redist * π * atm.I_top[f]
             @inbounds for d in 1:D
@@ -154,7 +153,6 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
             fill!(K_ini_col, zero(T))
         end
 
-        # lambda iterations
         lambda_formal_solution!(
             atm, f, max_scat_iter, tol, do_scattering,
             eps_col, B_col, J_old, J_ini_col, S_col,
@@ -163,7 +161,7 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
             J_history
         )
 
-        w_f = 1 #atm.w_lambda[f]
+        w_f = 1
 
         for d in 1:D
             j_sum = 0.0
@@ -177,7 +175,6 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
             term = w_f * kabs
             RE_res[d] += term * (j_sum + J_ini_col[d] - B_col[d])
 
-            # Accumulate absorption-weighted dB/dT for VEF
             kabs_pos = max(kabs, 0.0)
             dBdT_bol_part[d] += kabs_pos * dB_col[d]
             kappa_bol_part[d] += kabs_pos
@@ -185,8 +182,6 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
             jac_J = term * (L_nu[d] - 1.0) * dB_col[d]
             jac_opacity = w_f * dchidT_col[d] * (j_sum + J_ini_col[d]- B_col[d])
 
-            # Prevent jac_opacity from making RE_jac positive or vanishingly small.
-            # jac_J is always <= 0. We enforce the sum to be <= 0.1 * jac_J.
             RE_jac[d] += jac_J + min(jac_opacity, -0.9 * jac_J)
 
             flux_sum = 0.0
@@ -226,7 +221,6 @@ function process_frequency_chunk(atm::Atmosphere{T}, f_start::Int, f_end::Int) w
                     dJ = J_nu[a, D] - J_nu[a, D-1]
                     dt = tau_lambda_col[D] - tau_lambda_col[D-1]
                 else
-                    # 3-point central flux derivative for non-uniform grid
                     dt_plus = tau_lambda_col[d+1] - tau_lambda_col[d]
                     dt_minus = tau_lambda_col[d] - tau_lambda_col[d-1]
 
@@ -270,7 +264,6 @@ function solve_T_correction_approximate_blended!(atm::Atmosphere{T}, RE_res::Vec
         max(tau_trans, min(0.0, log10(atm.tau[d_conv_top]) - 1.0))
     end
 
-    # Global Scale
     d_scale = argmin(abs.(log10.(atm.tau) .- 0.0))
     diag_RE_scale = max(-RE_jac[d_scale], 1e-30)
     diag_FC_scale = K_rad_diag[d_scale] + atm.dFconv_dT[d_scale]
@@ -279,7 +272,6 @@ function solve_T_correction_approximate_blended!(atm::Atmosphere{T}, RE_res::Vec
     @inbounds for d in 1:D
         log_t = log10(atm.tau[d])
 
-        # Sigmoid Weighting
         arg = clamp(steepness * (log_t - log_tau_trans), -50.0, 50.0)
         w = 1.0 / (1.0 + exp(arg))
 
@@ -289,11 +281,9 @@ function solve_T_correction_approximate_blended!(atm::Atmosphere{T}, RE_res::Vec
             w = 1.0
         end
 
-        # Radiative Equilibrium (RE)
         diag_RE = max(-RE_jac[d], 1e-30)
         rhs_RE  = RE_res[d]
 
-        # Flux Conservation (FC)
         F_curr = atm.F_rad[d] + atm.F_conv[d]
         rhs_FC = F_target - F_curr
 
@@ -327,28 +317,22 @@ function solve_T_correction_approximate!(atm::Atmosphere{T}, RE_res::Vector{T}, 
     RHS = zeros(T, D)
 
     @inbounds for d in 1:D
-        # Use RE only if convection has safely died (<xx % of F_target) and we are near the surface
         is_pure_rad = (atm.F_conv[d] < 1e-4 * F_target)
         if is_pure_rad && (log10(atm.tau[d]) < -1.0)
-            # Use Radiative Equilibrium
             diag_val = -RE_jac[d]
             diag_val = max(diag_val, 1e-30)
             push!(rows, d); push!(cols, d); push!(vals, diag_val)
             RHS[d] = RE_res[d]
         else
-            # Flux Conservation
             F_curr = atm.F_rad[d] + atm.F_conv[d]
             RHS[d] = F_target - F_curr
 
-            # 1. Convection Terms
             val_Conv_d  = atm.dFconv_dT[d]
             val_Conv_p  = -(atm.Temp[d] / atm.Temp[d-1]) * atm.dFconv_dT[d]
 
-            # 2. Radiative Terms
             val_Rad_d = K_rad_diag[d]
             val_Rad_p = K_rad_prev[d]
 
-            # 3. Fill Matrix (Rad + Conv)
             push!(rows, d); push!(cols, d); push!(vals, val_Rad_d + val_Conv_d)
 
             if d > 1

@@ -25,8 +25,6 @@ function hydrostatic_equilibrium!(T_ip, P_rad_ip, P_turb_ip; g, eos)
 end
 
 function update_hydrostatic!(P_gas, ρ, z, T, P_turb, P_rad, τ_grid; eos, logg)
-    # Prepare interpolations in log10(τ)
-    # input P array is P_gas, however the solver expects P_tot
     lgt = log10.(τ_grid)
     T_ip = linear_interpolation(lgt, log.(T))
     P_turb_ip = linear_interpolation(lgt, log.(max.(P_turb, 1e-30)))
@@ -47,7 +45,7 @@ function update_hydrostatic!(P_gas, ρ, z, T, P_turb, P_rad, τ_grid; eos, logg)
     sol = solve(prob, Tsit5(), saveat=lgt, reltol=1e-8, abstol=1e-8, dtmax=0.05)
 
     for i in eachindex(T)
-        P_tot = exp(sol.u[i][1]) # The solver returns ln(P_tot)
+        P_tot = exp(sol.u[i][1])
         P_gas[i] = max(P_tot - P_rad[i] - P_turb[i], 1e-30)
         ρ[i], = sample(eos, (:lnRho,), log(P_gas[i]), log(T[i])) .|> exp
     end
@@ -80,7 +78,6 @@ function update_τ_grid!(τ; T, ρ, z, eos)
 end
 
 function compute_τ_grid!(τ; z, ρκ)
-    # Integrate: τ(z) = [ ∫ ρκ dz ]_z0 ^z
     @inbounds for j in eachindex(τ)
         if j==1
             τ[1] = 0 + (z[2] - z[1]) * 0.5 * (ρκ[j])

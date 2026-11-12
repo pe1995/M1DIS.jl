@@ -1,12 +1,5 @@
 # ============================================================================
 # Feautrier RT solver — shared infrastructure
-# This file contains the core routines shared by all solver variants:
-# Packer: frequency×angle indexing for the Gustafsson direct solver
-# lambda_formal_solution!: Feautrier tridiagonal solve with Λ-iteration
-# for scattering and Ng acceleration
-# feautrier_coeffs: tridiagonal coefficients for the Feautrier equation
-# Tridiagonal solvers: solve, factorize, invert column
-# Helpers: optical depth integration, RE/flux mode selection
 # ============================================================================
 
 # ============================================================================
@@ -78,7 +71,6 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
             mu_sq  = atm.mu[a]^2
             weight = atm.w_mu[a]
 
-            # Top boundary (d = 1)
             (A, B, C, src_fac, ext_fac) = feautrier_coeffs(atm, f, 1, mu_sq)
             @inbounds begin
                 tri_d[1]   = B
@@ -90,7 +82,6 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
                 ali_src[1] = src_fac
             end
 
-            # Interior
             for d in 2:D-1
                 (A, B, C, src_fac, ext_fac) = feautrier_coeffs(atm, f, d, mu_sq)
                 @inbounds begin
@@ -105,7 +96,6 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
                 end
             end
 
-            # Bottom boundary (d = D)
             (A, B, C, src_fac, _) = feautrier_coeffs(atm, f, D, mu_sq)
             @inbounds begin
                 tri_dl[D]  = A
@@ -135,7 +125,6 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
             end
         end
 
-        # Accelerated Λ-iteration
         if do_scattering && irradiated
             @inbounds for d in 1:D
                 a_ali = L_nu[d] * (1.0 - eps_col[d])
@@ -145,7 +134,6 @@ function lambda_formal_solution!(atm::Atmosphere{T}, f::Int, max_scat_iter::Int,
             end
         end
 
-        # Ng Acceleration
         @inbounds for d in 1:D
             J_history[d, 1] = J_history[d, 2]
             J_history[d, 2] = J_history[d, 3]
@@ -264,11 +252,6 @@ function feautrier_coeffs(atm::Atmosphere{T}, f::Int, d::Int, mu_sq::T) where T
         dtm_safe = max(dt_minus, 1e-30)
         dtp_safe = max(dt_plus, 1e-30)
 
-        # Analytically rescaled Feautrier equation to avoid catastrophic
-        # cancellation when `1.0 - A - C` is evaluated for extremely small optical depths.
-        # Original: A = -2μ^2/(dtm*(dtm+dtp)), C = -2μ^2/(dtp*(dtm+dtp)), diag = 1 - A - C, src = 1.0
-        # We rescale the equation by multiplying it by R = (dtm * dtp) / (2μ^2).
-
         R = (dtm_safe * dtp_safe) / (2.0 * mu_sq)
         A = -dtp_safe / (dtm_safe + dtp_safe)
         C = -dtm_safe / (dtm_safe + dtp_safe)
@@ -374,7 +357,6 @@ function invert_tridiagonal_column!(x::Vector{T}, dp::Int, dl::Vector{T}, d_inv:
         for i in N-1:-1:1
             x[i] = x[i] - du[i] * x[i+1]
         end
-        # Guard against NaNs or Infs that could propagate to the Schur matrix
         for i in 1:N
             if !isfinite(x[i])
                 x[i] = 0.0

@@ -1,9 +1,5 @@
 # ============================================================================
 # VEF solver
-# Solves the radiative transfer equation using the Feautrier method to obtain
-# angle-dependent mean intensities J_nu(mu,d), then computes the Eddington
-# factor f = K/J. A VEF moment equation is solved
-# to obtain the Jacobian for the temperature correction.
 # ============================================================================
 
 function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:boundary, tau_trans::Float64=-2.0) where T
@@ -54,7 +50,6 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:bou
         schur .+= schur_p
     end
 
-    # F from dF/dz = Q_rad, anchored at the bottom
     @inbounds if irradiated
         F_anchor = atm.F_rad[D]
         atm.F_rad[D] = F_anchor
@@ -71,7 +66,6 @@ function solve_VEF!(atm::Atmosphere{T}; include_dT::Bool=true, mode::Symbol=:bou
         end
     end
 
-    # Temperature correction
     if include_dT
         RHS = zeros(T, D)
         for d in 1:D
@@ -211,7 +205,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
 
         irradiated ? fill!(J_old, zero(T)) : (J_old .= B_col)
 
-        # Analytic stellar beam
         use_irr_f = atm.I_top[f] > 0.0
         if use_irr_f
             F_arriving = f_redist * π * atm.I_top[f]
@@ -233,7 +226,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             fill!(K_ini_col, zero(T))
         end
 
-        # Feautrier formal solution (with scattering)
         lambda_formal_solution!(
             atm, f, max_scat_iter, tol, do_scattering,
             eps_col, B_col, J_old, J_ini_col, S_col,
@@ -242,7 +234,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             J_history, ali_g, ali_piv, ali_src, irradiated
         )
 
-        # angle-averaged moments: J, K, H (flux)
         w_f = 1
         fill!(J_mean, 0.0)
         fill!(K_mean, 0.0)
@@ -298,7 +289,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             g_rad_part[d] += (flux_sum + F_ini_col[d]) * chi_col[d]
         end
 
-        # Precalculate coefficients
         for d in 1:D
             if d == 1
                 schur_dt_inv[1] = 1.0 / max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
@@ -314,13 +304,11 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             end
         end
 
-        # Build VEF moment equation for the diffuse field
         fill!(vef_dl, 0.0)
         fill!(vef_d,  0.0)
         fill!(vef_du, 0.0)
         h_surf_val = 0.0
 
-        # Top boundary
         begin
             dt1 = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
 
@@ -336,7 +324,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             vef_du[1] = 2.0*f_edd[2]/(dt1*dt1)
         end
 
-        # Interior
         for d in 2:D-1
             dtm = max(tau_lambda_col[d]   - tau_lambda_col[d-1], 1e-30)
             dtp = max(tau_lambda_col[d+1] - tau_lambda_col[d],   1e-30)
@@ -347,7 +334,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
             vef_du[d] = f_edd[d+1] / (dtp * dtc)
         end
 
-        # Bottom: diffusion BC
         vef_d[D] = 1.0
 
         factorize_tridiagonal!(vef_dl, vef_d, vef_du)
@@ -376,7 +362,6 @@ function process_frequency_chunk_VEF(atm::Atmosphere{T}, f_start::Int, f_end::In
                                     schur_part[d, d] += (dchidT_col[d] - dchidT_col_scat[d]) * re_dev_col[d]
                                 end
                     else
-                        # Flux Jacobian: d(4π·H)/dT
                         if d == 1
                             grad_p = (f_vef[2] - f_vef[1]) * schur_dt_inv[1]
                             schur_part[1, dp] += neg_C_4pi * grad_p

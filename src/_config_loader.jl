@@ -18,7 +18,6 @@ All relative paths in the config are resolved relative to base_dir.
 - `config_dict`: Dictionary with all paths expanded to absolute paths
 """
 function load_config(config_path::String, base_dir::String = @__DIR__)
-    # Resolve config file path
     config_file = if isabspath(config_path)
         config_path
     else
@@ -30,10 +29,8 @@ function load_config(config_path::String, base_dir::String = @__DIR__)
         error("Configuration file not found: $config_file")
     end
 
-    # Load TOML
     config = TOML.parsefile(config_file)
 
-    # Expand paths to absolute paths
     _expand_paths!(config, base_dir)
 
     return config
@@ -84,7 +81,6 @@ function _expand_paths!(config::Dict, base_dir::String)
         end
     end
 
-    # Recursively process nested dicts
     for (key, value) in config
         if isa(value, Dict)
             _expand_paths!(value, base_dir)
@@ -94,4 +90,4 @@ function _expand_paths!(config::Dict, base_dir::String)
     return config
 end
 
-end # module ConfigLoader
+end

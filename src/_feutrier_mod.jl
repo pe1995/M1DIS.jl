@@ -140,7 +140,6 @@ function process_frequency_chunk_VEF_mod(atm::Atmosphere{T}, f_start::Int, f_end
 
         J_old .= B_col
 
-        # Analytic Stellar Beam Calculation
         if atm.I_top[f] > 0.0
             F_arriving = f_redist * π * atm.I_top[f]
             @inbounds for d in 1:D
@@ -155,7 +154,6 @@ function process_frequency_chunk_VEF_mod(atm::Atmosphere{T}, f_start::Int, f_end
             fill!(K_ini_col, zero(T))
         end
 
-        # Feutrier formal solution
         lambda_formal_solution!(
             atm, f, max_scat_iter, tol, do_scattering,
             eps_col, B_col, J_old, J_ini_col, S_col,
@@ -164,7 +162,6 @@ function process_frequency_chunk_VEF_mod(atm::Atmosphere{T}, f_start::Int, f_end
             J_history
         )
 
-        # Compute angle-averaged moments: J, K, H (flux)
         w_f = 1
         fill!(J_mean, 0.0)
         fill!(K_mean, 0.0)
@@ -214,9 +211,6 @@ function process_frequency_chunk_VEF_mod(atm::Atmosphere{T}, f_start::Int, f_end
             g_rad_part[d] += (flux_sum + F_ini_col[d]) * chi_col[d]
         end
 
-        # Eddington factor f = K / J
-
-        # Precalculate Schur derivative coefficients
         for d in 1:D
             if d == 1
                 schur_dt_inv[1] = 1.0 / max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
@@ -232,15 +226,12 @@ function process_frequency_chunk_VEF_mod(atm::Atmosphere{T}, f_start::Int, f_end
             end
         end
 
-        # Build VEF moment equation tridiagonal A_ν
         fill!(vef_dl, 0.0)
         fill!(vef_d,  0.0)
         fill!(vef_du, 0.0)
 
-        # Surface
         begin
             dt1 = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
-            # Surface Eddington factor h = H/J
             H_surf = 0.0
             j_sum_top = 0.0
             for a in 1:Na
@@ -253,7 +244,6 @@ function process_frequency_chunk_VEF_mod(atm::Atmosphere{T}, f_start::Int, f_end
             vef_du[1] = 2.0*f_edd[2]/(dt1*dt1)
         end
 
-        # Interior
         for d in 2:D-1
             dtm = max(tau_lambda_col[d]   - tau_lambda_col[d-1], 1e-30)
             dtp = max(tau_lambda_col[d+1] - tau_lambda_col[d],   1e-30)
@@ -264,10 +254,8 @@ function process_frequency_chunk_VEF_mod(atm::Atmosphere{T}, f_start::Int, f_end
             vef_du[d] = f_edd[d+1] / (dtp * dtc)
         end
 
-        # Bottom: diffusion BC, J=B → δJ = dB/dT δT
         vef_d[D] = 1.0
 
-        # Schur complement accumulation
         factorize_tridiagonal!(vef_dl, vef_d, vef_du)
 
         for dp in 1:D

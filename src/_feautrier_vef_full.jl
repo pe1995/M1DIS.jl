@@ -159,7 +159,6 @@ function process_frequency_chunk_VEF_full(atm::Atmosphere{T}, f_start::Int, f_en
 
         J_old .= B_col
 
-        # Analytic Stellar Beam Calculation
         use_irr_f = atm.I_top[f] > 0.0
         if use_irr_f
             F_arriving = f_redist * π * atm.I_top[f]
@@ -185,7 +184,6 @@ function process_frequency_chunk_VEF_full(atm::Atmosphere{T}, f_start::Int, f_en
 
             dt1 = max(tau_lambda_col[2] - tau_lambda_col[1], 1e-30)
 
-            # surface boundary factor (H/J)
             j_sum_top = sum(atm.w_mu[a] * J_nu[a, 1] for a in 1:Na)
             H_surf = 0.0
             for a in 1:Na
@@ -274,7 +272,6 @@ function process_frequency_chunk_VEF_full(atm::Atmosphere{T}, f_start::Int, f_en
             end
         end
 
-        # angle-averaged moments
         w_f = 1
         fill!(J_mean, 0.0)
         fill!(K_mean, 0.0)
@@ -358,13 +355,11 @@ function process_frequency_chunk_VEF_full(atm::Atmosphere{T}, f_start::Int, f_en
                     is_re = use_RE(d, mode, atm, tau_trans)
 
                     if is_re
-                        # RE Jacobian: d(κ_abs·(J-B))/dT
                         kabs_d = chi_col[d] - sig_col[d]
                         dJ_d_dTdp = neg_C * vef_sol[d]
                         diag_dB_dT_d = (dp == d) ? dB_col[d] : 0.0
                         schur_part[d, dp] += kabs_d * (dJ_d_dTdp - diag_dB_dT_d)
                     else
-                        # Flux Jacobian: d(4π·H)/dT
                         if d == 1
                             grad_p = (f_vef[2] - f_vef[1]) * schur_dt_inv[1]
                             schur_part[1, dp] += neg_C_4pi * grad_p

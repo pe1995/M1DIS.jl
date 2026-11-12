@@ -22,7 +22,6 @@ function lnP_boundary(T_top, g_eff_top, eos, τ_top; maxiter=400, tol=1e-9, P_gu
         return lp
     end
 
-    # Bracket the root
     lp1, f1 = lp, f
     lp2, f2 = lp, f
 
@@ -47,7 +46,6 @@ function lnP_boundary(T_top, g_eff_top, eos, τ_top; maxiter=400, tol=1e-9, P_gu
         return lp
     end
 
-    # Bisection
     for i in 1:maxiter
         lp_mid = 0.5 * (lp1 + lp2)
         f_mid = calc_f(lp_mid)
@@ -108,7 +106,6 @@ function irradiate(eos, opa::TSO.ExtendedOpacity, T_irradiation, R_irradiation, 
 end
 
 function irradiate(eos, opa::TSO.MiniOpacityTable, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
-    # the mini table does not contain source function, so we need to compute it on the fly
     S = isnothing(F_irradiation) ? TSO.Bλ_fast.(opa.opacity.λ, Float64(T_irradiation)) : F_irradiation ./ π
     S .= S .* (R_irradiation ./ d_irradiation) .^2 .* opa.weights
 

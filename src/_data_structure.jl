@@ -3,50 +3,45 @@
 # ============================================================================
 
 mutable struct Atmosphere{T <: AbstractFloat}
-    # Base Parameters
-    T_eff::T              # Effective Temperature [K]
-    z::Vector{T}          # Height (Size: D)
-    tau::Vector{T}        # Reference optical depth (Size: D)
-    tau_lambda::Matrix{T} # Reference optical depth (Size: Nf, D)
-    rho::Vector{T}        # Density [g/cm^3] (Size: D)
-    Temp::Vector{T}       # Temperature (Size: D)
-    P_gas::Vector{T}      # Gas Pressure [dyne/cm^2] (Size: D)
-    mu::Vector{T}         # Angle cosines (Size: Na)
-    w_mu::Vector{T}       # Angle weights (Normalized to sum=1)
+    T_eff::T
+    z::Vector{T}
+    tau::Vector{T}
+    tau_lambda::Matrix{T}
+    rho::Vector{T}
+    Temp::Vector{T}
+    P_gas::Vector{T}
+    mu::Vector{T}
+    w_mu::Vector{T}
 
-    # Opacities & Source
-    chi::Matrix{T}        # Opacity (Nf x D)
-    chi_scat::Union{Matrix{T}, Nothing}   # Scattering opacity (Nf x D)
-    chi_ref::Vector{T}    # Reference opacity (Size: D)
-    B::Matrix{T}          # Planck function (Nf x D)
-    dBdT::Matrix{T}       # Derivative of B (Nf x D)
-    dchidT::Matrix{T}     # Derivative of opacity (Nf x D)
-    dchidT_scat::Union{Matrix{T}, Nothing} # Derivative of opacity (Nf x D)
-    I_top::Vector{T}      # External Irradiation (Size: Nf)
+    chi::Matrix{T}
+    chi_scat::Union{Matrix{T}, Nothing}
+    chi_ref::Vector{T}
+    B::Matrix{T}
+    dBdT::Matrix{T}
+    dchidT::Matrix{T}
+    dchidT_scat::Union{Matrix{T}, Nothing}
+    I_top::Vector{T}
 
-    # Convection
-    F_conv::Vector{T}              # Convective Flux (Size: D)
-    dFconv_dT::Vector{T}           # Jacobian term: dF_conv / dT_local (Size: D)
-    v_conv::Vector{T}              # Convective velocity (Size: D)
-    P_turb::Vector{T}              # Turbulent pressure [dyne/cm^2] (Size: D)
+    F_conv::Vector{T}
+    dFconv_dT::Vector{T}
+    v_conv::Vector{T}
+    P_turb::Vector{T}
 
-    # Radiation Transport Outputs
-    J_bol::Vector{T}      # Bolometric Mean Intensity (Size: D)
-    F_bol::Vector{T}      # Bolometric Flux on the nodes (Size: D)
-    F_rad::Vector{T}      # Radiative Flux at the cell interfaces (Size: D)
-	g_rad::Vector{T}      # Radiative Acceleration (Size: D) [cm/s^2]
-    P_rad::Vector{T}      # Radiative Pressure (Size: D) [dyne/cm^2]
-    Q_rad::Vector{T}      # Radiative Heating [erg/cm^3/s] (Size: D)
-    F_beam::Vector{T}     # Attenuated stellar beam flux, filled by update! (Size: D)
-    J_raw                # Specific Intensity J(mu) (Nf x Na x D)
+    J_bol::Vector{T}
+    F_bol::Vector{T}
+    F_rad::Vector{T}
+	g_rad::Vector{T}
+    P_rad::Vector{T}
+    Q_rad::Vector{T}
+    F_beam::Vector{T}
+    J_raw
 
-    # Convergence Tracking
-    dT::Vector{T}         # Temperature Correction (Size: D)
-    F_total::Vector{T}    # Total Flux = F_rad + F_conv (Size: D)
-    F_err_rel::Vector{T}  # Relative Flux Error (Size: D)
-    irrad_iso::Bool       # Isotropic irradiation
-    irrad_mu::T           # Direction cosine of incident radiation
-    f_redist::T           # Irradiation redistribution factor (1/4 planet-wide, 1/2 day-side)
+    dT::Vector{T}
+    F_total::Vector{T}
+    F_err_rel::Vector{T}
+    irrad_iso::Bool
+    irrad_mu::T
+    f_redist::T
 end
 
 function Atmosphere(tau::AbstractVector, Nf::Int;
@@ -62,8 +57,6 @@ function Atmosphere(tau::AbstractVector, Nf::Int;
     FT = eltype(tau)
     D  = length(tau)
 
-    # Angular quadrature
-    # Default: Gauss-Legendre mapped to (0, 1]; custom mu/w_mu override this.
     _mu, _w_mu = if isnothing(mu)
         x, w = gausslegendre(n_angles)
         FT.(x ./ 2 .+ 0.5), FT.(w ./ 2)
@@ -71,53 +64,44 @@ function Atmosphere(tau::AbstractVector, Nf::Int;
         @assert !isnothing(w_mu) "w_mu must be provided when mu is given"
         FT.(mu), FT.(w_mu)
     end
-    # Normalize weights to sum = 1
     s = sum(_w_mu)
     s > 0 && (_w_mu ./= s)
 
-    # Optional scattering buffers
     chi_scat    = with_scattering ? zeros(FT, Nf, D) : nothing
     dchidT_scat = with_scattering ? zeros(FT, Nf, D) : nothing
 
     return Atmosphere{FT}(
         FT(T_eff),
-        # geometry
-        zeros(FT, D),          # z
-        copy(FT.(tau)),        # tau   (deep-copied; caller's array is untouched)
-        zeros(FT, Nf, D),      # tau_lambda  (filled by update!)
-        # thermodynamics
-        zeros(FT, D),          # rho
-        zeros(FT, D),          # Temp
-        zeros(FT, D),          # P_gas
-        # angles (deep-copied)
+        zeros(FT, D),
+        copy(FT.(tau)),
+        zeros(FT, Nf, D),
+        zeros(FT, D),
+        zeros(FT, D),
+        zeros(FT, D),
         copy(_mu), copy(_w_mu),
-        # opacities & source (filled by compute_opacities!)
-        zeros(FT, Nf, D),      # chi
-        chi_scat,              # chi_scat
-        zeros(FT, D),          # chi_ref
-        zeros(FT, Nf, D),      # B
-        zeros(FT, Nf, D),      # dBdT
-        zeros(FT, Nf, D),      # dchidT
-        dchidT_scat,           # dchidT_scat
-        zeros(FT, Nf),         # I_top
-        # convection
-        zeros(FT, D),          # F_conv
-        zeros(FT, D),          # dFconv_dT
-        zeros(FT, D),          # v_conv
-        zeros(FT, D),          # P_turb
-        # RT outputs
-        zeros(FT, D),          # J_bol
-        zeros(FT, D),          # F_bol
-        zeros(FT, D),          # F_rad
-        zeros(FT, D),          # g_rad
-        zeros(FT, D),          # P_rad
-        zeros(FT, D),          # Q_rad
-        zeros(FT, D),          # F_beam
-        nothing,               # J_raw
-        # convergence
-        zeros(FT, D),          # dT
-        zeros(FT, D),          # F_total
-        zeros(FT, D),          # F_err_rel
+        zeros(FT, Nf, D),
+        chi_scat,
+        zeros(FT, D),
+        zeros(FT, Nf, D),
+        zeros(FT, Nf, D),
+        zeros(FT, Nf, D),
+        dchidT_scat,
+        zeros(FT, Nf),
+        zeros(FT, D),
+        zeros(FT, D),
+        zeros(FT, D),
+        zeros(FT, D),
+        zeros(FT, D),
+        zeros(FT, D),
+        zeros(FT, D),
+        zeros(FT, D),
+        zeros(FT, D),
+        zeros(FT, D),
+        zeros(FT, D),
+        nothing,
+        zeros(FT, D),
+        zeros(FT, D),
+        zeros(FT, D),
         irrad_iso,
         FT(irrad_mu),
         FT(f_redist)
@@ -128,9 +112,9 @@ function populate!(atm::Atmosphere; kwargs...)
     for (field, val) in kwargs
         current = getfield(atm, field)
         if current isa AbstractArray
-            current .= val          # fill pre-allocated buffer, no allocation
+            current .= val
         else
-            setfield!(atm, field, val)   # scalar, Nothing, or type change
+            setfield!(atm, field, val)
         end
     end
     return atm
@@ -140,7 +124,6 @@ function update!(atm::Atmosphere{T}; sync_opacities::Bool=true, sync_geometry::B
     D = length(atm.tau)
 	Nf = size(atm.chi, 1)
 
-    # Recompute frequency-dependent optical depth
     if sync_opacities || sync_geometry
         Threads.@threads for f in 1:Nf
              compute_τ!(view(atm.tau_lambda, f, :); z=atm.z, ρκ=view(atm.chi, f, :))
@@ -148,7 +131,6 @@ function update!(atm::Atmosphere{T}; sync_opacities::Bool=true, sync_geometry::B
         beam_flux!(atm)
     end
 
-    # Re-normalize angular weights (usually only needed if angles change dynamically)
     if sync_angles
         total = sum(atm.w_mu)
         if total > 0

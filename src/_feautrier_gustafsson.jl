@@ -8,7 +8,6 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
     N = pack.N_total
     M = include_dT ? N + 1 : N
 
-    # allocate J_raw if not already allocated
     if isnothing(atm.J_raw)
         atm.J_raw = zeros(T, pack.Nf, pack.Na, D)
     end
@@ -42,7 +41,6 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
             RHS[row] = src_fac * B + ext_fac * atm.I_top[f]
         end
 
-        # Flux Constraint
         if include_dT
             row_flux = idx_T(d)
             if d == 1
@@ -69,7 +67,6 @@ function solve_gustafsson!(atm::Atmosphere{T}; include_dT::Bool=true) where T
                     push!(rows, row_flux); push!(cols, idx_J(k,d-1)); push!(vals, -coeff)
                 end
 
-                # dFconv/dT: local term at d, plus cross-term from F_conv[d]'s dependence on T[d-1]
                 val_Td = 0.5 * atm.dFconv_dT[d]
                 push!(rows, row_flux); push!(cols, idx_T(d)); push!(vals, val_Td)
 
@@ -112,7 +109,6 @@ function solve_feautrier_1D!(atm::Atmosphere{T}, f::Int, J_out::Matrix{T}, L_acc
         mu_sq = atm.mu[a]^2
 
         @inbounds for d in 1:D
-            # Get coeffs
             (A, B_diag, C, src_fac, ext_fac) = feautrier_coeffs(atm, f, d, mu_sq)
 
             if A != 0; push!(rows, d); push!(cols, d-1); push!(vals, A); end
@@ -156,7 +152,7 @@ function compute_flux!(atm::Atmosphere{T}) where T
     fill!(atm.F_rad, 0.0); fill!(atm.g_rad, 0.0); fill!(atm.P_rad, 0.0)
 
     for f in 1:Nf
-        w_f = 1 #atm.w_lambda[f]
+        w_f = 1
         for a in 1:Na
             ang_f = 4π * atm.w_mu[a] * atm.mu[a]^2 * w_f
             for d in 1:D
@@ -167,7 +163,6 @@ function compute_flux!(atm::Atmosphere{T}) where T
                     dt = atm.tau_lambda[f, D] - atm.tau_lambda[f, D-1]
                     dJ = atm.J_raw[f,a,D] - atm.J_raw[f,a,D-1]
                 else
-                    # 3-point central flux derivative for non-uniform grid
                     dt_plus = atm.tau_lambda[f, d+1] - atm.tau_lambda[f, d]
                     dt_minus = atm.tau_lambda[f, d] - atm.tau_lambda[f, d-1]
 

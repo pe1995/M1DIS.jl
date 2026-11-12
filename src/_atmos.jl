@@ -79,7 +79,6 @@ function atmosphere(;
         convection          = true,
         kwargs...)
 
-    # Initialisation
     @optionalTiming initialization_time begin
         eos, opacity, use_threads = _prepare_eos_opacity(eos, opacity, scattering_opacity, use_threads)
 
@@ -97,10 +96,8 @@ function atmosphere(;
 
         Nf = size(chi, 1)
 
-        # Construct the atmosphere (all physics arrays zero-initialized, angles default to 4-pt GL)
         atm = Atmosphere(τ, Nf; T_eff=teff_target, with_scattering=!isnothing(chi_scat), f_redist=f_redist)
 
-        # Populate physical state from the initial atmosphere
         populate!(atm;
             Temp=T, rho=ρ, z=z, P_gas=P,
             chi=chi, chi_ref=chi_ref,
@@ -109,18 +106,15 @@ function atmosphere(;
         isnothing(chi_scat) || populate!(atm; chi_scat=chi_scat, dchidT_scat=dchidT_scat)
         isnothing(Irr)      || populate!(atm; I_top=Irr)
 
-        # Scratch arrays for scattering opacity updates (reused each iteration)
         scattering_bin_z   = similar(chi_ref)
         scattering_bin_lam = isnothing(chi_scat) ? nothing : similar(chi_scat)
 
-        # Derive tau_lambda from z and chi, then print header
         update!(atm)
 
         solver = _validate_solver(solver)
         _print_run_header(atm, opacity, solver, vef_mode)
     end
 
-    # Iteration
     results             = []
     flux_err_max_prev   = Inf
     flux_err_max_curr   = Inf
@@ -147,10 +141,9 @@ function atmosphere(;
     end
 
     @optionalTiming relaxation_time for iter in 1:maxiter
-        use_convection = convection #&& (iter > 5)
+        use_convection = convection
 
         try
-            # Convection
             if use_convection
                 @optionalTiming mixing_length_time begin
                     update_mixing_length!(
@@ -168,7 +161,6 @@ function atmosphere(;
                 populate!(atm, F_conv=0.0, dFconv_dT=0.0, v_conv=0.0, P_turb=0.0)
             end
 
-            # Radiative Transfer
             @optionalTiming radiation_transfer_time begin
                 @optionalTiming compute_opacities_time _update_opacities!(
                     atm, eos, opacity, scattering_opacity,
@@ -197,10 +189,8 @@ function atmosphere(;
                 end
             end
 
-            # Damping
             _apply_dT_damping!(atm, tcmxu_inv, damping, flux_err_max_curr, flux_err_max_prev)
 
-            # Convergence evaluation
             converged = evaluate_iteration!(
                 results, atm, iter, maxiter, F_target, T_eff, logg, eos, vef_mode;
                 current_tau_trans=current_tau_trans,
@@ -221,8 +211,6 @@ function atmosphere(;
                 print_nice("✅ Atmosphere converged with $(round(flux_err_max_curr * 100, digits=2))% flux error.", category="Atmosphere", color=color_messages[], verbosity=1)
                 break
             end
-
-            # Temperature correction & hydrostatic equilibrium
 
             atm.Temp .+= atm.dT
             atm.Temp  .= clamp.(atm.Temp, 10, 1e12)
@@ -363,7 +351,7 @@ function _run_solver!(atm, solver, vef_mode, tau_trans, steepness)
         solve_VEF_full!(atm, mode=vef_mode, tau_trans=tau_trans)
     elseif solver == :vef_mod
         solve_VEF_mod!(atm)
-    else  # :approximate
+    else
         solve_approximate!(atm; steepness=steepness, tau_trans=tau_trans)
     end
     return nothing
@@ -445,14 +433,12 @@ end
 # ============================================================================
 
 function initial_atmosphere(τ_grid; T_eff, logg, eos, T_irr=nothing, R_irr=nothing, d_irr=nothing)
-    # Gray atmosphere (Eddington approximation)
     T_initial = T_eff .* (0.75 .* (τ_grid .+ 2/3)) .^ 0.25
 
     if !isnothing(T_irr) && !isnothing(R_irr) && !isnothing(d_irr) && (d_irr > 0.0) && (T_irr > 0.0)
-        # Guillot (2010) irradiated planet temperature profile
         T_star_irr = T_irr * sqrt(R_irr / (2.0 * d_irr))
         mu_star = 0.5
-        gamma = 0.08  # Optical-to-thermal opacity ratio for non-inverted Hot Jupiters (Guillot 2010)
+        gamma = 0.08
         sqrt3 = sqrt(3.0)
 
         term_irr = @. (2.0 / 3.0) + (1.0 / (gamma * sqrt3)) + ((gamma / sqrt3) - (1.0 / (gamma * sqrt3))) * exp(-gamma * τ_grid * sqrt3)
@@ -619,11 +605,9 @@ function save!(model_data::MUST.Box, model_name; eos=nothing, eos500=nothing, fo
         zeros(eltype(T), length(T))
     end
 
-    # 1. M3D format
     f_new = joinpath(run_i, "$(model_name)_m3d.txt")
     MUST.save_text_m3d(f_new, z, rho, T; header=model_name, vmic=vmic_arr, pe=pe)
 
-    # 2. M1D format
     if !isnothing(eos500)
         tau500 = log10.(b[:τ500][1,1,:])
         Ne     = b[:Ne][1,1,:]
@@ -635,14 +619,12 @@ function save!(model_data::MUST.Box, model_name; eos=nothing, eos500=nothing, fo
         MUST.save_text_m1d_dscale(f_new_dscale, tau500; header=model_name)
     end
 
-    # 3. MUST 1D format (z, tau_ross and tau500 scale)
     MUST.save_must1d_all(
         model_data, joinpath(run_i, "averageBox_$(model_name)");
         header=model_name, information=information, vmic=vmic_arr,
         feh=feh, alpha=alpha, composition=composition, abund=abund
     )
 
-    # 4. HDF5 format
     MUST.flip!(model_data)
     MUST.save(model_data, folder=run_i, name=model_name)
 

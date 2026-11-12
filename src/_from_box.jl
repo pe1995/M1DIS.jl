@@ -13,7 +13,6 @@ function Atmosphere(b::MUST.Box, eos, opacity; scattering=nothing, T_eff=b.param
 
     T, ρ, z, Pg, τ = if !isnothing(interpolate_to_lgtau)
         lgt = log10.(τ)
-        # isothermal above the top of the box
         T_top = T[argmin(lgt)]
         T  = MUST.linear_interpolation(lgt, T, extrapolation_bc=MUST.Line()).(interpolate_to_lgtau)
         T[interpolate_to_lgtau .< minimum(lgt)] .= T_top
