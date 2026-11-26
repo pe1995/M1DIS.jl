@@ -606,6 +606,15 @@ function save!(model_data::MUST.Box, model_name; eos=nothing, folder="./", vmic=
         feh=feh, alpha=alpha, composition=composition, abund=abund
     )
 
+    info = eos isa TSO.EquationOfState ? TSO.TableInfo(eos) : nothing
+    model_data.parameter.composition = if !isnothing(info)
+        TSO.composition_dict(info)
+    elseif !isnothing(feh)
+        TSO.composition_dict(feh, something(alpha, 0.0), composition)
+    else
+        model_data.parameter.composition
+    end
+
     MUST.flip!(model_data)
     MUST.save(model_data, folder=run_i, name=model_name)
 
