@@ -22,24 +22,27 @@ After the intstallation is done, you need to load an opacity table that was gene
 using M1DIS
 using TSO
 
-# make sure to load the tables on the T-rho grid!
-eos = reload("path/to/eos_table_T.hdf5")
-opa_binned = reload("path/to/opacity_table_T.hdf5")) |> extended
+# a binned table (the temperature grid is loaded by default)
+table = EquationOfState("path/to/binned_table")
 
-# or alternatively load a un-binned table
-opa_unbinned = reload("path/to/unbinned_table.hdf5", mmap=true) |> extended
+# or an un-binned table (the opacities are memory-mapped)
+table = EquationOfState("path/to/unbinned_table")
 
-# you can also ignore the source function for un-binned tables by using TSO.MiniOpacityTable
-opa_unbinned_mini = reload(TSO.MiniOpacityTable, "path/to/unbinned_table.hdf5")
+# you can also ignore the source function of un-binned tables (the Planck function is used instead)
+table = EquationOfState("path/to/unbinned_table"; mini=true)
+
+# the scattering opacity of an un-binned table, if wanted
+scat = scattering(EquationOfState("path/to/unbinned_table"; mini=true, parts=(:eos, :scattering)))
 ```
-These tables can then be used to compute opacities and source function at a given temperature and density. The code should detect automaticaly if you are passing an unbinned table. If for some reason this is not the case, you can skip the convenient `extended()` function and use `TSO.ExtendedOpacity(opa=TSO.reload(opa_file, mmap=true), binned=false)` instead.
+These tables can then be used to compute opacities and source function at a given temperature and density. Whether a table is binned is stored in the table itself.
 
 # Computing Atmospheres
 To compute a 1D HE atmosphere, simply call the `atmosphere` function and pass the desired effective temperature $T_{\rm eff}$, surface gravity $\log g$, and the optical depth grid you want to compute the model on. Note that the distinction between $\tau_{500}$ and $\tau_{\rm ross}$ is made when you load the EoS table. For $\tau_{500}$, you need to load the corresponding EoS table! Running the code as e.g.
 ```julia
 models = atmosphere(
-    T_eff, logg,                         # target Teff and logg
-    eos, opacity,                        # tables from above
+    T_eff=T_eff, logg=logg,              # target Teff and logg
+    table=table,                         # table from above
+    scattering_opacity=nothing,          # or `scat` from above
 	τ=10 .^range(-6.0, 2.0, length=100), # optical depth grid
 	α_MLT=1.5,                           # Mixing-length parameter
 	maxiter=50,                          # maximum number of iterations
@@ -63,7 +66,7 @@ save!(
 	folder = out_dir, 
 	vmic = vmic,     # added to the output atmosphere 
 	logg = logg,
-	eos500 = eos500	 # For Multi1D a tau500 scale is needed. You can pass the EoS here.
+	eos = table      # For Multi1D a tau500 scale is needed, it is taken from the table.
 )
 ```
 

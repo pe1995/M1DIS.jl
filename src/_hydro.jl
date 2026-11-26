@@ -50,7 +50,7 @@ function update_hydrostatic!(P_gas, ρ, z, T, P_turb, P_rad, τ_grid; eos, logg)
         ρ[i], = sample(eos, (:lnRho,), log(P_gas[i]), log(T[i])) .|> exp
     end
 
-    update_z_grid!(z, T=T, ρ=ρ, τ=τ_grid, eos=eos.eos)
+    update_z_grid!(z, T=T, ρ=ρ, τ=τ_grid, eos=eos)
 end
 
 # ============================================================================

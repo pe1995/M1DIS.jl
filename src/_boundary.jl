@@ -92,22 +92,17 @@ end
 # External irradiation boundary conditions
 # ============================================================================
 
-function irradiate(eos, opa::TSO.ExtendedOpacity, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
-    rho_min, rho_max = TSO.limits(TSO.table(eos), 2)
-    rho_irr = exp((rho_max + rho_min) / 2)
-    S = if isnothing(F_irradiation)
-        sample(eos, opa, (:src,), Float64(log(rho_irr)), Float64(log(T_irradiation)))[1]
-    else
+function irradiate(eos, opa::TSO.EquationOfState, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
+    S = if !isnothing(F_irradiation)
         F_irradiation ./ π
+    elseif _has_source(opa)
+        rho_min, rho_max = TSO.limits(eos, 2)
+        rho_irr = exp((rho_max + rho_min) / 2)
+        sample(merge(eos, opa), (:src,), Float64(log(rho_irr)), Float64(log(T_irradiation)))[1]
+    else
+        TSO.Bλ_fast.(opa.opacity.λ, Float64(T_irradiation))
     end
-    S .= S .* (R_irradiation ./ d_irradiation) .^2 .* opa.weights
-
-    S
-end
-
-function irradiate(eos, opa::TSO.MiniOpacityTable, T_irradiation, R_irradiation, d_irradiation, F_irradiation)
-    S = isnothing(F_irradiation) ? TSO.Bλ_fast.(opa.opacity.λ, Float64(T_irradiation)) : F_irradiation ./ π
-    S .= S .* (R_irradiation ./ d_irradiation) .^2 .* opa.weights
+    S .= S .* (R_irradiation ./ d_irradiation) .^2 .* opa.opacity.weights
 
     S
 end

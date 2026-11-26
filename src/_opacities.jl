@@ -11,27 +11,37 @@ end
 # Opacity computations for Feutrier solvers
 # ============================================================================
 
-function compute_opacities(eos, opa::TSO.ExtendedOpacity, T, ρ)
-    chi = zeros(Float64, length(opa.opa.λ), length(T))
+_has_source(opa::TSO.EquationOfState) = haskey(opa.opacity, :src)
+_is_binned(opa::TSO.EquationOfState) = opa.opacity.binned
+_wavelength(opa::TSO.EquationOfState) = opa.opacity.λ
+
+function compute_opacities(eos, opa::TSO.EquationOfState, T, ρ)
+    _has_source(opa) || return compute_opacities_chunked(eos, opa, T, ρ)
+
+    λ = _wavelength(opa)
+    chi = zeros(Float64, length(λ), length(T))
     chi_ref = zeros(Float64, length(T))
-    B = zeros(Float64, length(opa.opa.λ), length(T))
-    dBdT = zeros(Float64, length(opa.opa.λ), length(T))
-    dchidT = zeros(Float64, length(opa.opa.λ), length(T))
+    B = zeros(Float64, length(λ), length(T))
+    dBdT = zeros(Float64, length(λ), length(T))
+    dchidT = zeros(Float64, length(λ), length(T))
 
     compute_opacities!(chi, chi_ref, B, dBdT, dchidT, eos, opa, T, ρ)
 
     return chi, chi_ref, B, dBdT, dchidT
 end
 
-function compute_opacities!(chi, chi_ref, B, dBdT, dchidT, eos, opa::TSO.ExtendedOpacity, T, ρ)
+function compute_opacities!(chi, chi_ref, B, dBdT, dchidT, eos, opa::TSO.EquationOfState, T, ρ)
+    _has_source(opa) || return _compute_opacities_chunked!(chi, chi_ref, B, dBdT, dchidT, eos, opa, T, ρ, _wavelength(opa))
+
     lnrho = log.(ρ)
     lnt = log.(T)
+    tab = merge(eos, opa)
 
-    if haskey(opa.extensions, :dκ_dT)
-         sample!((chi, B, dBdT, dchidT, chi_ref), eos, opa, (:κ, :src, :dS_dT, :dκ_dT, :lnRoss), lnrho, lnt)
+    if haskey(opa.opacity, :dκ_dT)
+         sample!((chi, B, dBdT, dchidT, chi_ref), tab, (:κ, :src, :dS_dT, :dκ_dT, :lnRoss), lnrho, lnt)
          dchidT .= dchidT .* ρ'
     else
-         sample!((chi, B, dBdT, chi_ref), eos, opa, (:κ, :src, :dS_dT, :lnRoss), lnrho, lnt)
+         sample!((chi, B, dBdT, chi_ref), tab, (:κ, :src, :dS_dT, :lnRoss), lnrho, lnt)
          dchidT .= 0.0
     end
     chi_ref .= exp.(chi_ref) .* ρ
@@ -39,15 +49,12 @@ function compute_opacities!(chi, chi_ref, B, dBdT, dchidT, eos, opa::TSO.Extende
     return nothing
 end
 
-compute_opacities(eos, opa::TSO.MiniOpacityTable, T, ρ) = compute_opacities_chunked(eos, opa, T, ρ)
-compute_opacities!(chi, chi_ref, B, dBdT, dchidT, eos, opa::TSO.MiniOpacityTable, T, ρ) = _compute_opacities_chunked!(chi, chi_ref, B, dBdT, dchidT, eos, opa, T, ρ, opa.opacity.λ)
-
 # ============================================================================
 # Chunked opacity computation for large tables
 # ============================================================================
 
-compute_opacities_chunked(eos, opa::TSO.ExtendedOpacity, T, ρ; kwargs...) = compute_opacities_chunked(eos, opa, T, ρ, opa.opa.λ; kwargs...)
-compute_opacities_chunked(eos, opa::TSO.MiniOpacityTable, T, ρ; kwargs...) = compute_opacities_chunked(eos, opa, T, ρ, opa.opacity.λ; kwargs...)
+compute_opacities_chunked(eos, opa::TSO.EquationOfState, T, ρ; kwargs...) = compute_opacities_chunked(eos, opa, T, ρ, _wavelength(opa); kwargs...)
+compute_opacities_chunked(table::TSO.EquationOfState, T, ρ; kwargs...) = compute_opacities_chunked(table, table, T, ρ; kwargs...)
 
 function compute_opacities_chunked(eos, opa, T, ρ, λ; opacity_only=false)
     chi = zeros(Float64, length(λ), length(T))
@@ -61,22 +68,18 @@ function compute_opacities_chunked(eos, opa, T, ρ, λ; opacity_only=false)
     return chi, chi_ref, B, dBdT, dchidT
 end
 
-compute_opacities_chunked!(chi, chi_ref, B, dBdT, dchidT, eos, opa::TSO.ExtendedOpacity, T, ρ) = _compute_opacities_chunked!(chi, chi_ref, B, dBdT, dchidT, eos, opa, T, ρ, opa.opa.λ)
-compute_opacities_chunked!(chi, chi_ref, B, dBdT, dchidT, eos, opa::TSO.MiniOpacityTable, T, ρ) = _compute_opacities_chunked!(chi, chi_ref, B, dBdT, dchidT, eos, opa, T, ρ, opa.opacity.λ)
+compute_opacities_chunked!(chi, chi_ref, B, dBdT, dchidT, eos, opa::TSO.EquationOfState, T, ρ) = _compute_opacities_chunked!(chi, chi_ref, B, dBdT, dchidT, eos, opa, T, ρ, _wavelength(opa))
 
 # ============================================================================
 # Chunked core computations
 # ============================================================================
 
-_is_binned(opa::TSO.ExtendedOpacity) = opa.binned
-_is_binned(opa::TSO.MiniOpacityTable) = false
-
 function _compute_opacities_chunked!(chi, chi_ref, B, dBdT, dchidT, eos, opa, T, ρ, λ)
     lnrho = log.(ρ)
     lnt = log.(T)
 
-    grid_T = TSO.EnergyAxis(eos.eos).values
-    grid_Rho = TSO.DensityAxis(eos.eos).values
+    grid_T = TSO.EnergyAxis(eos).values
+    grid_Rho = TSO.DensityAxis(eos).values
     n_shells = length(lnrho)
 
     coefs_Rho, coefs_T = TSO.weights(eos, lnrho, lnt)
@@ -98,12 +101,13 @@ function _compute_opacities_chunked!(chi, chi_ref, B, dBdT, dchidT, eos, opa, T,
     return nothing
 end
 
-@inline _compute_opacities_chunk!(range, chi, B, dBdT, dchidT, opa::TSO.MiniOpacityTable, coefs_T, coefs_Rho, ρ, T, grid_T) = begin
-    _inner_compute_chunk!(range, chi, B, dBdT, dchidT, opa.opacity.κ, opa.opacity.λ, opa.weights, coefs_T, coefs_Rho, ρ, T, grid_T)
-end
-
-@inline _compute_opacities_chunk!(range, chi, B, dBdT, dchidT, opa::TSO.ExtendedOpacity, coefs_T, coefs_Rho, ρ_eff, T, grid_T) = begin
-    _inner_compute_chunk_extended!(range, chi, B, dBdT, dchidT, opa.opa.κ, opa.opa.src, opa.weights, coefs_T, coefs_Rho, ρ_eff, T, grid_T)
+@inline _compute_opacities_chunk!(range, chi, B, dBdT, dchidT, opa::TSO.EquationOfState, coefs_T, coefs_Rho, ρ, T, grid_T) = begin
+    o = opa.opacity
+    if _has_source(opa)
+        _inner_compute_chunk_extended!(range, chi, B, dBdT, dchidT, o[:κ], o[:src], o.weights, coefs_T, coefs_Rho, ρ, T, grid_T)
+    else
+        _inner_compute_chunk!(range, chi, B, dBdT, dchidT, o[:κ], o.λ, o.weights, coefs_T, coefs_Rho, ρ, T, grid_T)
+    end
 end
 
 function _inner_compute_chunk_extended!(range, chi, B, dBdT, dchidT, kappa_data, src_data, weights, coefs_T, coefs_Rho, ρ, T, grid_T)

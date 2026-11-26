@@ -2,7 +2,7 @@
 # Atmosphere from MUST.Box
 # ============================================================================
 
-function Atmosphere(b::MUST.Box, eos, opacity; scattering=nothing, T_eff=b.parameter.teff, downsample=1, interpolate_to_lgtau=nothing)
+function Atmosphere(b::MUST.Box, table; scattering=nothing, T_eff=b.parameter.teff, downsample=1, interpolate_to_lgtau=nothing)
     b = deepcopy(b)
     MUST.flip!(b, depth=true)
     T   = MUST.profile(TSO.mean, b, :z, :T)[2][1:downsample:end]
@@ -27,10 +27,10 @@ function Atmosphere(b::MUST.Box, eos, opacity; scattering=nothing, T_eff=b.param
     end
 
     chi, chi_ref, S, dSdT, dchidT =
-        opacity.binned ? compute_opacities(eos, opacity, T, ρ) :
-                         compute_opacities_chunked(eos, opacity, T, ρ)
+        _is_binned(table) ? compute_opacities(table, table, T, ρ) :
+                       compute_opacities_chunked(table, table, T, ρ)
     chi_scat = isnothing(scattering) ? nothing :
-        compute_opacities_chunked(eos, scattering, T, ρ, opacity_only=true)[1]
+        compute_opacities_chunked(table, scattering, T, ρ, opacity_only=true)[1]
 
     Nf  = size(chi, 1)
     atm = Atmosphere(τ, Nf; T_eff=T_eff, with_scattering=!isnothing(chi_scat))

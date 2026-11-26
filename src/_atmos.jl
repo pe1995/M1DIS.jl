@@ -3,7 +3,7 @@
 # ============================================================================
 
 """
-    atmosphere(; T_eff, logg, eos, opacity, kwargs...)
+    atmosphere(; T_eff, logg, table, kwargs...)
 
 Compute a 1D model atmosphere iteratively using the given opacity table,
 effective temperature, and surface gravity.
@@ -21,8 +21,7 @@ the specified tolerance.
 # Required arguments
 - `T_eff`    — effective temperature [K]
 - `logg`     — log₁₀ of surface gravity [cgs]
-- `eos`      — equation of state (`TSO.ExtendedEoS` or compatible)
-- `opacity`  — opacity table (`TSO.ExtendedOpacity` or `TSO.MiniOpacityTable`)
+- `table`    — EoS and opacity table (`TSO.EquationOfState` on the temperature grid; without source function the Planck function is used)
 
 # Iteration control
 - `τ`                  — optical depth grid (default: 10^(-6..2), 100 points)
@@ -44,7 +43,7 @@ the specified tolerance.
                          (default: `:boundary`)
 - `tau_trans`          — log₁₀(τ) transition for `:switch` mode (default: -2.0)
 - `steepness`          — steepness for approximate solver (default: 15.0)
-- `scattering_opacity` — additional scattering opacity (`TSO.MiniOpacityTable`)
+- `scattering_opacity` — additional scattering opacity (`TSO.scattering(tab)`)
 
 # Starting atmosphere (all optional; gray atmosphere used if omitted)
 - `T`, `ρ`, `P`, `z` — initial temperature, density, pressure, height profiles
@@ -56,7 +55,7 @@ the specified tolerance.
 - A single `MUST.Box` if only one snapshot is stored, otherwise a `Vector{MUST.Box}`.
 """
 function atmosphere(;
-        T_eff, logg, eos, opacity,
+        T_eff, logg, table,
         τ = 10 .^ range(-6.0, 2.0, length=100),
         α_MLT    = 1.5,
         maxiter  = 20,
@@ -80,7 +79,7 @@ function atmosphere(;
         kwargs...)
 
     @optionalTiming initialization_time begin
-        eos, opacity, use_threads = _prepare_eos_opacity(eos, opacity, scattering_opacity, use_threads)
+        eos, opacity, use_threads = _prepare_table(table, scattering_opacity, use_threads)
 
         F_target    = isnothing(target_flux) ? σ_SB * T_eff^4 : target_flux
         teff_target = isnothing(target_flux) ? T_eff : (target_flux / σ_SB)^0.25
@@ -236,42 +235,23 @@ end
 # Private helpers for atmosphere()
 # ============================================================================
 
-function _prepare_eos_opacity(eos, opacity, scattering_opacity, use_threads)
-    eos = if typeof(eos) <: TSO.ExtendedEoS
-        @assert !TSO.is_internal_energy(eos.eos)
-        eos
-    else
-        @assert !TSO.is_internal_energy(@axed(eos))
-        eos = TSO.extended(eos)
-        TSO.add_thermodynamics!(eos)
-        eos
-    end
+function _prepare_table(table, scattering_opacity, use_threads)
+    @assert table isa TSO.EquationOfState && !TSO.is_internal_energy(table) "The table has to be a TSO.EquationOfState on the temperature grid."
+    @assert TSO.has_eos(table) && TSO.has_opacity(table) "The table needs its EoS and opacity."
+    haskey(table.eos, :∇ₐ) || TSO.add_thermodynamics!(table)
 
-    opacity = if typeof(opacity) <: TSO.SqOpacity
-        o = TSO.ExtendedOpacity(opa=opacity)
-        @verbose_warn 2 "Opacity was passed without wrapping it into an ExtendedOpacity. Guessing: $(o.binned ? "binned" : "not binned")"
-        o
-    else
-        opacity
-    end
-
-    @assert typeof(opacity) <: Union{TSO.ExtendedOpacity, TSO.MiniOpacityTable} "Opacity must be an ExtendedOpacity or MiniOpacityTable."
-
-    if opacity.binned
-        @assert typeof(opacity) <: TSO.ExtendedOpacity "Binned opacities must use ExtendedOpacity."
-        if !haskey(opacity.extensions, :dS_dT)
-            TSO.gradients!(TSO.table(eos), opacity)
-        end
+    if _is_binned(table)
+        @assert _has_source(table) "Binned opacities need their source function."
+        haskey(table.opacity, :dS_dT) || TSO.source_gradient!(table)
     else
         use_threads = true
     end
 
     if !isnothing(scattering_opacity)
-        @assert typeof(scattering_opacity) <: TSO.MiniOpacityTable "Scattering opacity must be MiniOpacityTable."
         print_nice("Running with scattering treatment.", category="Atmosphere", color=color_messages[], verbosity=2)
     end
 
-    return eos, opacity, use_threads
+    return table, table, use_threads
 end
 
 function _setup_initial_state(τ, T_eff, logg, eos, T, ρ, P, z; T_irr=nothing, R_irr=nothing, d_irr=nothing)
@@ -290,8 +270,8 @@ function _compute_initial_opacities(feautrier, eos, opacity, scattering_opacity,
     end
 
     chi, chi_ref, S, dSdT, dchidT =
-        opacity.binned ? compute_opacities(eos, opacity, T, ρ) :
-                         compute_opacities_chunked(eos, opacity, T, ρ)
+        _is_binned(opacity) ? compute_opacities(eos, opacity, T, ρ) :
+                              compute_opacities_chunked(eos, opacity, T, ρ)
 
     chi_scat = isnothing(scattering_opacity) ? nothing :
         compute_opacities_chunked(eos, scattering_opacity, T, ρ, opacity_only=true)[1]
@@ -328,7 +308,7 @@ function _print_run_header(atm, opacity, solver, vef_mode)
 end
 
 function _update_opacities!(atm, eos, opacity, scattering_opacity, scratch_z, scratch_lam)
-    if opacity.binned
+    if _is_binned(opacity)
         compute_opacities!(atm.chi, atm.chi_ref, atm.B, atm.dBdT, atm.dchidT,
                            eos, opacity, atm.Temp, atm.rho)
     else
@@ -567,7 +547,7 @@ end
 # Saving the M1DIS.jl result in Multi3D and Multi1D format
 # ============================================================================
 
-function save!(model_data::MUST.Box, model_name; eos=nothing, eos500=nothing, folder="./", vmic=0.0, logg=4.5,
+function save!(model_data::MUST.Box, model_name; eos=nothing, folder="./", vmic=0.0, logg=4.5,
         information=nothing, feh=nothing, alpha=nothing, composition=nothing, abund=nothing)
     base_path = abspath(folder)
     isdir(base_path) || mkpath(base_path)
@@ -590,9 +570,10 @@ function save!(model_data::MUST.Box, model_name; eos=nothing, eos500=nothing, fo
         model_data.data[:ee] = reshape(exp.(ee), 1, 1, :)
     end
 
-    if !isnothing(eos500)
+    with500 = !isnothing(eos) && haskey(eos, :lnK500)
+    if with500
         MUST.flip!(model_data, depth=false)
-        ne, κ500 = TSO.sample(eos500, :lnNe, :lnRoss, rho=model_data[:d], T=model_data[:T])
+        ne, κ500 = TSO.sample(eos, :lnNe, :lnK500, rho=model_data[:d], T=model_data[:T])
         model_data.data[:Ne]   = reshape(exp.(ne),   1, 1, :)
         model_data.data[:κ500] = reshape(exp.(κ500), 1, 1, :)
         model_data.data[:τ500] = MUST.optical_depth(model_data, opacity=:κ500, density=:d)
@@ -608,7 +589,7 @@ function save!(model_data::MUST.Box, model_name; eos=nothing, eos500=nothing, fo
     f_new = joinpath(run_i, "$(model_name)_m3d.txt")
     MUST.save_text_m3d(f_new, z, rho, T; header=model_name, vmic=vmic_arr, pe=pe)
 
-    if !isnothing(eos500)
+    if with500
         tau500 = log10.(b[:τ500][1,1,:])
         Ne     = b[:Ne][1,1,:]
 

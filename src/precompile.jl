@@ -6,14 +6,8 @@ using PrecompileTools
     eos_dir = joinpath(@__DIR__, "..", "data", "magg_mini_v1.0")
 
     if isdir(eos_dir)
-        eos_file = MUST.glob("*_eos_*.hdf5", eos_dir)[1]
-        eos500_file = MUST.glob("*_eos500_*.hdf5", eos_dir)[1]
-        opa_file = MUST.glob("*_opacities_*.hdf5", eos_dir)[1]
-
-        eos = TSO.reload(eos_file)
-        eos500 = TSO.reload(eos500_file)
-        opa_mini = TSO.reload(TSO.MiniOpacityTable, opa_file)
-        opa_extended = TSO.extended(TSO.reload(opa_file, mmap=true), binned=false)
+        table_mini = TSO.EquationOfState(eos_dir; mini=true)
+        table_extended = TSO.EquationOfState(eos_dir)
 
         M1DIS.USE_RT_THREADS[] = false
         M1DIS.verbose[] = 0
@@ -25,16 +19,15 @@ using PrecompileTools
                     logg = 4.44,
                     α_MLT = 1.5,
                     maxiter = 1,
-                    eos = eos,
-                    opacity = opa_mini,
+                    table = table_mini,
                     damping = 0.1,
                     τ = 10.0 .^ range(-4.0, 1.0, length=30),
                     use_threads = true,
                     feautrier = true,
                 )
-                println("✅ Precompiled with MiniOpacityTable.")
+                println("✅ Precompiled without source function.")
             catch e
-                @warn "❌ Precompilation M1DIS workload failed with the MiniOpacityTable." exception=(e, catch_backtrace())
+                @warn "❌ Precompilation M1DIS workload failed without source function." exception=(e, catch_backtrace())
             end
 
             try
@@ -43,16 +36,15 @@ using PrecompileTools
                     logg = 4.44,
                     α_MLT = 1.5,
                     maxiter = 1,
-                    eos = eos,
-                    opacity = opa_extended,
+                    table = table_extended,
                     damping = 0.1,
                     τ = 10.0 .^ range(-4.0, 1.0, length=30),
                     use_threads = true,
                     feautrier = true,
                 )
-                println("✅ Precompiled with ExtendedOpacity.")
+                println("✅ Precompiled with source function.")
             catch e
-                @warn "❌ Precompilation M1DIS workload failed with the ExtendedOpacity." exception=(e, catch_backtrace())
+                @warn "❌ Precompilation M1DIS workload failed with source function." exception=(e, catch_backtrace())
             end
         end
         M1DIS.verbose[] = 1
