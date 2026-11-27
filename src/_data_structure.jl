@@ -34,7 +34,7 @@ mutable struct Atmosphere{T <: AbstractFloat}
     P_rad::Vector{T}
     Q_rad::Vector{T}
     F_beam::Vector{T}
-    J_raw
+    J_raw::Union{Array{T,3}, Nothing}
 
     dT::Vector{T}
     F_total::Vector{T}
